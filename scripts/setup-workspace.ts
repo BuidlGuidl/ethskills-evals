@@ -4,24 +4,10 @@ import { access, cp, mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import yaml from "js-yaml";
-import type { RunMetadata, TaskSpec } from "../lib/types.js";
+import type { RunMetadata, TaskSpec, Variant } from "../lib/types.js";
 
-const ALLOWED_VARIANTS = [
-  "no_skill",
-  "no_skill_clean",
-  "repo_context",
-  "current_skill",
-  "forced_skill",
-  "candidate_skill",
-  "human_skill",
-  "agents_md_index",
-  "skill_plus_agents_md",
-  "full_docs",
-] as const;
-
-const SKILL_VARIANTS = new Set(["current_skill", "forced_skill", "skill_plus_agents_md"]);
-const OVERRIDE_SKILL_VARIANTS = new Set(["candidate_skill", "human_skill"]);
 const ROOT = process.cwd();
+const VARIANTS = new Set<Variant>(["no_skill", "with_skill"]);
 
 const fail = async (message: string, runDir?: string): Promise<never> => {
   if (runDir) {
@@ -74,9 +60,13 @@ const requireNumber = (value: unknown, name: string) => {
   return value;
 };
 
-const requireStringArray = (value: unknown, name: string) => {
+const optionalStringArray = (value: unknown, name: string) => {
+  if (value === undefined) {
+    return undefined;
+  }
+
   if (!Array.isArray(value) || value.some(item => typeof item !== "string")) {
-    throw new Error(`missing required string array field: ${name}`);
+    throw new Error(`${name} must be a string array when present`);
   }
 
   return value;
@@ -93,8 +83,7 @@ const loadTaskSpec = (taskPath: string): TaskSpec => {
   }
 
   const workspace = loaded.workspace;
-  const verifier = loaded.verifier;
-  const variants = requireStringArray(loaded.variants, "variants");
+  const skillSource = loaded.skill_source;
   const hasRepo = isRecord(workspace) && typeof workspace.repo === "string";
   const hasCommit = isRecord(workspace) && typeof workspace.commit === "string";
   const hasTemplate = isRecord(workspace) && typeof workspace.template === "string";
@@ -107,8 +96,8 @@ const loadTaskSpec = (taskPath: string): TaskSpec => {
     throw new Error("workspace must contain exactly one of repo+commit or template");
   }
 
-  if (!isRecord(verifier)) {
-    throw new Error("missing required field: verifier");
+  if (!isRecord(skillSource)) {
+    throw new Error("missing required field: skill_source");
   }
 
   const spec: TaskSpec = {
@@ -119,39 +108,25 @@ const loadTaskSpec = (taskPath: string): TaskSpec => {
     workspace: hasTemplate
       ? { template: workspace.template as string }
       : { repo: workspace.repo as string, commit: workspace.commit as string },
-    variants,
-    verifier: {
-      type: requireString(verifier.type, "verifier.type"),
-      file: requireString(verifier.file, "verifier.file"),
-    },
-    success_metric: requireString(loaded.success_metric, "success_metric"),
+    skill_source: { path: requireString(skillSource.path, "skill_source.path") },
+    verifier: requireString(loaded.verifier, "verifier"),
+    expect: optionalStringArray(loaded.expect, "expect"),
     runs_per_variant: requireNumber(loaded.runs_per_variant, "runs_per_variant"),
   };
-
-  if (loaded.variant_overlays !== undefined) {
-    if (
-      !isRecord(loaded.variant_overlays) ||
-      Object.values(loaded.variant_overlays).some(value => typeof value !== "string")
-    ) {
-      throw new Error("variant_overlays must be a string map when present");
-    }
-
-    spec.variant_overlays = loaded.variant_overlays as Record<string, string>;
-  }
-
-  if (loaded.skill_source !== undefined) {
-    if (!isRecord(loaded.skill_source)) {
-      throw new Error("skill_source must be a mapping when present");
-    }
-
-    spec.skill_source = { path: requireString(loaded.skill_source.path, "skill_source.path") };
-  }
 
   if (loaded.notes !== undefined) {
     spec.notes = requireString(loaded.notes, "notes");
   }
 
   return spec;
+};
+
+const parseVariant = (value: string): Variant => {
+  if (!VARIANTS.has(value as Variant)) {
+    throw new Error(`unknown variant: ${value}`);
+  }
+
+  return value as Variant;
 };
 
 const utcRunTimestamp = (date: Date) =>
@@ -285,20 +260,21 @@ const main = async () => {
   try {
     const args = parseArgs();
     const taskArg = requireString(args.task, "--task");
-    const variant = requireString(args.variant, "--variant");
+    const variant = parseVariant(requireString(args.variant, "--variant"));
     const run = requireString(args.run, "--run");
+    const skillPathArg = args["skill-path"];
+    const forced = args["force-skill"] === true;
 
-    if (!ALLOWED_VARIANTS.includes(variant as (typeof ALLOWED_VARIANTS)[number])) {
-      throw new Error(`unknown variant: ${variant}`);
+    if (variant === "no_skill" && skillPathArg !== undefined) {
+      throw new Error("--skill-path is only valid with --variant with_skill");
+    }
+
+    if (variant === "no_skill" && forced) {
+      throw new Error("--force-skill is only valid with --variant with_skill");
     }
 
     const taskPath = resolveRootPath(taskArg);
     const spec = loadTaskSpec(taskPath);
-
-    if (!spec.variants.includes(variant)) {
-      throw new Error(`variant ${variant} is not listed in task ${spec.id}`);
-    }
-
     const timestamp = utcRunTimestamp(new Date());
     const runId = `${timestamp}-${variant.replaceAll("_", "-")}-${run}`;
     const runDir = path.join(ROOT, "artifacts", spec.id, runId);
@@ -319,48 +295,27 @@ const main = async () => {
 
       await writeFile(path.join(workspacePath, "TASK.md"), spec.input);
 
-      const skillPathArg = args["skill-path"];
-      const needsSourceSkill = SKILL_VARIANTS.has(variant);
-      const needsOverrideSkill = OVERRIDE_SKILL_VARIANTS.has(variant);
-      let installedSkillSource: string | null = null;
-
-      if (needsOverrideSkill) {
-        if (typeof skillPathArg !== "string") {
-          throw new Error(`${variant} requires --skill-path`);
-        }
-
-        installedSkillSource = resolveRootPath(skillPathArg);
-      } else if (needsSourceSkill) {
-        if (!spec.skill_source?.path) {
-          throw new Error(`${variant} requires skill_source.path in the task spec`);
-        }
-
-        installedSkillSource = resolveRootPath(spec.skill_source.path);
-      }
+      const installedSkillSource =
+        variant === "with_skill"
+          ? resolveRootPath(typeof skillPathArg === "string" ? skillPathArg : spec.skill_source.path)
+          : null;
 
       if (installedSkillSource) {
         await installSkill(installedSkillSource, spec.skill, workspacePath);
       }
 
-      const overlay = spec.variant_overlays?.[variant];
-      const overlayApplied = Boolean(overlay);
-
-      if (overlay) {
-        await copyDirContents(resolveRootPath(overlay), workspacePath);
-      }
-
-      await guardAgainstLeaks(workspacePath, taskPath, spec.verifier.file, runDir);
+      await guardAgainstLeaks(workspacePath, taskPath, spec.verifier, runDir);
 
       const skillVersion = installedSkillSource ? getSkillVersion(installedSkillSource) : null;
       const metadata: RunMetadata = {
         task_id: spec.id,
         run_id: runId,
         variant,
+        forced,
         created: new Date().toISOString(),
         workspace: path.relative(ROOT, workspacePath),
         skill_version: skillVersion,
         skill_installed: installedSkillSource !== null,
-        overlay_applied: overlayApplied,
       };
 
       await writeFile(path.join(runDir, "run.yaml"), yaml.dump(metadata, { lineWidth: -1 }));

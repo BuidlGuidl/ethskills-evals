@@ -1,3 +1,5 @@
+export type Variant = "no_skill" | "with_skill";
+
 export type WorkspaceSpec =
   | {
       repo: string;
@@ -16,32 +18,37 @@ export type TaskSpec = {
   domain: string;
   input: string;
   workspace: WorkspaceSpec;
-  variants: string[];
-  variant_overlays?: Record<string, string>;
-  skill_source?: {
+  skill_source: {
     path: string;
   };
-  verifier: {
-    type: string;
-    file: string;
-  };
-  success_metric: string;
+  verifier: string;
+  expect?: string[];
   runs_per_variant: number;
   notes?: string;
 };
 
 export type AssertionStatus = "pass" | "fail";
 
+export type ResultOutcome =
+  | "pass"
+  | "task_fail"
+  | "cheat"
+  | "infra_error"
+  | "timeout"
+  | "judge_error";
+
 export type ResultRecord = {
   task_id: string;
   run_id: string;
-  variant: string;
+  variant: Variant;
+  forced: boolean;
   model: string | null;
   skill_version: string | null;
-  pass: boolean;
+  outcome: ResultOutcome;
   score: number;
   max_score: number;
   assertions: Record<string, AssertionStatus>;
+  expects: Record<string, AssertionStatus>;
   metrics: {
     seconds: number | null;
     input_tokens: number | null;
@@ -57,12 +64,12 @@ export type ResultRecord = {
 export type RunMetadata = {
   task_id: string;
   run_id: string;
-  variant: string;
+  variant: Variant;
+  forced: boolean;
   created: string;
   workspace: string;
   skill_version: string | null;
   skill_installed: boolean;
-  overlay_applied: boolean;
 };
 
 export type VerifierReport = {
