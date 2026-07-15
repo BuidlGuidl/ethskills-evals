@@ -1,25 +1,15 @@
 # ethskills-evals
 
-Evals for every skill in the [ethskills](https://ethskills.com) library: does the model already pass without the skill? Built on [skill-eval-framework](https://github.com/BuidlGuidl/skill-eval-framework) — same harness, same loop. This repo adds the vendored skills (pinned, one snapshot for every runner), the pre-crafted tasks, and the run protocol in `AGENTS.md`. The tracking issue has the why, the verdict rubric, and the per-skill assignments.
+Evals for every skill in the [ethskills](https://ethskills.com) library, built on [skill-eval-framework](https://github.com/BuidlGuidl/skill-eval-framework).
 
 To run your part: point your [claude code](https://github.com/anthropics/claude-code) or [codex](https://github.com/openai/codex) at this repo and it orchestrates the whole benchmark itself.
-
-The loop it's built around:
-
-1. write or edit a skill
-2. run the benchmark
-3. read what the runs got wrong
-4. patch the skill where they point
-5. run again
-
-The loop repeats until the skill is crisp, or you learn it isn't valuable.
 
 ## Using it
 
 Two harnesses are supported right now, [claude code](https://github.com/anthropics/claude-code) and [codex](https://github.com/openai/codex), so make sure the ones you'll use are installed. Either can fill any of the three roles in a benchmark: the orchestrator you open here, the executors that perform the runs, and the judge that grades them. Mixing is fine (claude orchestrating, codex executing), and so is running everything on one. Opening it up to opencode and other harnesses is planned.
 
 ```bash
-git clone https://github.com/technophile-04/ethskills-evals.git
+git clone https://github.com/BuidlGuidl/ethskills-evals.git
 cd ethskills-evals
 yarn install
 claude   # or codex
@@ -38,7 +28,7 @@ When the benchmark is done, everything it produced is still on disk, so you can 
 ## Layout
 
 ```
-skill-eval-framework/
+ethskills-evals/
 ├─ AGENTS.md                     the rules; the orchestrator reads this first
 ├─ skills/                       vendored skill versions under test
 ├─ tasks/                        task specs, one yaml per task (filename = task id)
