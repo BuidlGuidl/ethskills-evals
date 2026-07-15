@@ -1,6 +1,8 @@
-# skill-eval-framework
+# ethskills-evals
 
-A minimal, extensible eval framework for agent skills. To start using just point your [claude code](https://github.com/anthropics/claude-code) or [codex](https://github.com/openai/codex) at this repo and it orchestrates the whole benchmark itself.
+Evals for every skill in the [ethskills](https://ethskills.com) library: does the model already pass without the skill? Built on [skill-eval-framework](https://github.com/BuidlGuidl/skill-eval-framework) — same harness, same loop. This repo adds the vendored skills (pinned, one snapshot for every runner), the pre-crafted tasks, and the run protocol in `AGENTS.md`. The tracking issue has the why, the verdict rubric, and the per-skill assignments.
+
+To run your part: point your [claude code](https://github.com/anthropics/claude-code) or [codex](https://github.com/openai/codex) at this repo and it orchestrates the whole benchmark itself.
 
 The loop it's built around:
 
@@ -17,8 +19,8 @@ The loop repeats until the skill is crisp, or you learn it isn't valuable.
 Two harnesses are supported right now, [claude code](https://github.com/anthropics/claude-code) and [codex](https://github.com/openai/codex), so make sure the ones you'll use are installed. Either can fill any of the three roles in a benchmark: the orchestrator you open here, the executors that perform the runs, and the judge that grades them. Mixing is fine (claude orchestrating, codex executing), and so is running everything on one. Opening it up to opencode and other harnesses is planned.
 
 ```bash
-git clone https://github.com/technophile-04/skill-eval-framework.git
-cd skill-eval-framework
+git clone https://github.com/technophile-04/ethskills-evals.git
+cd ethskills-evals
 yarn install
 claude   # or codex
 ```

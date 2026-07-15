@@ -21,6 +21,15 @@ Ask one question, wait for the answer, then ask the next. Never batch them. **Wi
 
 Then write `tasks/<id>.yaml` and run the loop. Report back at the end, not during.
 
+## Running a pre-crafted task
+
+This repo is [skill-eval-framework](https://github.com/BuidlGuidl/skill-eval-framework) pointed at the ethskills library: the skills under `skills/` are vendored at a pinned commit and the tasks under `tasks/` are pre-crafted and reviewed. When the human points you at an existing task, or pastes the prompt from one of the per-skill eval issues:
+
+1. Skip the interview above (steps 1–3). Never edit a task spec. If an expect line looks wrong, say so and stop — the fix is a comment on that skill's issue, not a patch.
+2. Ask exactly one question: the stack. Detect which harness you are running on and propose running everything on it — executor and judge both (claude → opus, codex → the model in `~/.codex/config.toml`). One skill runs on one stack, start to finish. If the human offers both subs, the second stack is a separate benchmark with its own runs and report, never blended into one table.
+3. Run the loop as written, grading every run with `--judge-agent <your agent> --judge-model <your model>`.
+4. File the results PR titled `eval: <skill> (<stack>)`, report included, body ending with `Fixes #<the skill's issue>`.
+
 ## The loop
 
 1. `yarn setup --task tasks/<id>.yaml --variant <no_skill|with_skill> --run <n> --executor <claude|codex>`
