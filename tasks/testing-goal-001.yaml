@@ -12,18 +12,25 @@ input: |
   at 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2. Convince me it is safe to do that — or
   convince me it is not.
 
-  Whatever you turn up, do not just tell me about it. I want to be able to run something
-  that goes red against the contract exactly as it stands today, and goes green once the
-  underlying problem is fixed. Leave the vault source alone unless a fix is part of what
-  you are recommending, and if you do change it, keep the red-then-green evidence
-  reproducible for me.
+  Ground rules, because I want evidence I can check rather than conclusions I have to
+  take on trust:
 
-  Write up what you found, how you found it, and what you would change in FINDINGS.md.
+    - Do not change anything under src/. I want to see this contract fail as it stands
+      today, not a repaired version of it passing.
+    - Leave test/UsdtYieldVault.t.sol as it is. Put anything you write in new files
+      under test/.
+    - For every problem you claim, paste into FINDINGS.md the actual command you ran
+      and its real output, showing the failure against the code as it stands. Copy it
+      from your terminal verbatim. I will re-run each one myself, and anything I cannot
+      reproduce I will treat as not found.
+
+  Then write FINDINGS.md: what you found, how you found it, the evidence, and what you
+  would change to fix each one. Describe the fixes — do not apply them.
 expect:
-  - "The workspace contains a test that fails against the vault's deposit-fee handling as it stands, demonstrating that setDepositFee accepts a fee at or above 100% (newFeeBps >= 10_000) and that this bricks or drains deposits — netAmount reaching 0 so no shares are minted, or amount - fee underflowing. Prose in FINDINGS.md alone does not satisfy this; a runnable failing test must exist."
-  - "The workspace contains a test that fails showing the vault's recorded totalAssetsStored diverges from the aUSDT it actually holds once deposits and withdrawals have run — the withdrawal fee is subtracted from the vault's accounting but stays in Aave, so the gap accumulates and value is stranded, contradicting the documented intent that fees accrue to remaining shareholders."
-  - "The workspace contains a test that exercises the real deployed USDT rather than MockUSDT and fails, showing deposit() reverts because approve() is called through a bool-returning IERC20 on a token whose approve returns nothing — reached by forking mainnet, since no test against the compliant mock can surface it."
-  - "FINDINGS.md reports these as genuine defects with a concrete fix for each — bounding the fee in the setter, correcting the withdrawal accounting, and routing the approval through SafeERC20 (forceApprove) — and does not conclude the contract is safe to ship on the strength of the existing green suite or its 100% coverage."
+  - "FINDINGS.md reports that the deposit fee is unbounded: setDepositFee accepts a newFeeBps at or above 10_000 (100%), at which point the fee consumes the whole deposit so no shares are minted and every deposit reverts — and above 10_000, `amount - fee` underflows. It is backed by pasted real command output showing that failure against the current code, and the test producing it exists in a new file under test/ rather than in the shipped test/UsdtYieldVault.t.sol."
+  - "FINDINGS.md reports that the vault's recorded totalAssetsStored diverges from the aUSDT it actually holds once withdrawals have run: withdraw subtracts the gross assets from the accounting while only the net leaves Aave, so each withdrawal strands its fee — the vault holds more than it records, the gap accumulates, and the stranded value is unclaimable, contradicting the README's documented intent that fees accrue to the remaining shareholders. Backed by pasted real output showing the divergence against the current code, with the test in a new file under test/."
+  - "FINDINGS.md reports that deposit() reverts against the real deployed USDT because approve() is called through a bool-returning IERC20 while USDT's approve returns no value, so decoding empty returndata reverts. It is established by exercising the real deployed token rather than MockUSDT — i.e. on a mainnet fork — and backed by pasted real output from that fork run."
+  - "FINDINGS.md concludes the contract is not safe to ship as it stands, and gives a concrete fix for each defect it reports — bounding the fee in the setter, subtracting only the net (or otherwise accounting for the retained fee) in withdraw, and routing the approval through SafeERC20 (forceApprove) — without resting any safety claim on the existing green suite or its 100% coverage."
 runs: 3
 notes: |
   Goal task for skills/testing per issue
@@ -54,17 +61,40 @@ notes: |
     - fee: a fuzz over newFeeBps shrank to exactly 10_000 -> NoSharesMinted, deposits bricked.
     - accounting: an invariant totalAssetsStored == aUSDT.balanceOf(vault) with a
       two-actor handler broke after two calls, 347223983 recorded vs 393375655 held.
+      Note the direction: stored UNDERSTATES reality, so the vault always holds a
+      surplus and every depositor can still withdraw. The harm is stranded, unclaimable
+      value and an understated share price, never insolvency. Do not accept a finding
+      that describes it as the vault going short.
     - USDT: a fork test against real mainnet USDT reverts at the approve; the trace
       shows USDT emitting Approval and returning Stop, i.e. empty returndata, which the
       vault's bool decode then reverts on. safeTransferFrom on the previous line
       succeeds, so the failure is specifically the raw approve.
 
-  GRADING IS OUTCOME-BASED, ON PURPOSE: the expects require each bug to be caught by a
-  test that fails against the unfixed contract, not to be caught by a named technique.
-  Which discipline got there is recorded as an observation, never graded — grading the
-  method would fail a run that found all three bugs by inspection plus sharp unit tests,
-  and this task's headline count would stop meaning "is it safe" and start meaning "did
-  it perform ceremony" (same reasoning as tools-goal-001).
+  WHY THE EXPECTS GRADE PASTED OUTPUT. The judge never runs anything: verify hands it
+  run.diff plus the text of the files under output/, and nothing else. An earlier draft
+  of these expects asked for "a test that fails against the unfixed contract", which the
+  judge cannot check — it would have had to simulate Solidity, an accumulating rounding
+  drift and a fork's returndata decoding in its head, which is exactly the bluffable
+  surface the planted-bug design exists to avoid. So the prompt requires each claim to
+  carry pasted real command output, and the expects grade that text. Two consequences
+  the orchestrator owns, because the judge cannot:
+    - Pasted output is forgeable. Cross-check every run's FINDINGS.md against its
+      transcript.md; a fabricated forge run is a mistake record
+      (category: fabricated-evidence), not a pass.
+    - run.diff is empty for this task. The workspace lives under artifacts/, which
+      .gitignore excludes, and neither setup nor verify git-inits it, so writeDiff
+      produces nothing — confirmed against the existing wallets runs, which have no
+      run.diff at all. The judge therefore sees output/ as a flat tree with the
+      fixture's own suite and the run's new tests side by side, which is why the prompt
+      quarantines new work into new files under test/ and expects 1-2 require it there:
+      it is the only way the judge can tell whose test it is reading.
+
+  GRADING IS OUTCOME-BASED, ON PURPOSE: the expects require each bug to be found and
+  evidenced, not to be found by a named technique. Which discipline got there is
+  recorded as an observation, never graded — grading the method would fail a run that
+  found all three bugs by inspection plus sharp unit tests, and this task's headline
+  count would stop meaning "is it safe" and start meaning "did it perform ceremony"
+  (same reasoning as tools-goal-001).
 
   RECORD FOR EVERY RUN, per bug: fuzz, invariant, fork, or inspection-plus-targeted-unit-test?
   That split is the applies-unprompted signal this task exists for, and it is the input
@@ -82,13 +112,17 @@ notes: |
   dependencies are not. Once per machine, before the first run:
 
       cd fixtures/testing-vault-001
-      forge install foundry-rs/forge-std --no-git
-      forge install OpenZeppelin/openzeppelin-contracts --no-git
+      forge install foundry-rs/forge-std@v1.16.2 --no-git
+      forge install OpenZeppelin/openzeppelin-contracts@v5.6.1 --no-git
 
-  --no-git is load-bearing: without it forge walks up to the repo root and installs into
-  the repo's own TypeScript lib/ as submodules. setup copies the fixture wholesale, so
-  lib/ must exist on disk or every workspace lands without forge-std and forge test
-  fails for the wrong reason. Verify with `forge test` (39 passing) before running.
+  Both are pinned deliberately. The fixture was authored and verified against exactly
+  these versions, and the prompt asserts "39 passing" and "100% coverage" as fact — an
+  unpinned install would let a future OpenZeppelin major (Ownable's constructor,
+  Pausable's errors) break the build or the counts, and every run would then fail for a
+  reason that has nothing to do with the skill. --no-git is load-bearing too: without it
+  forge walks up to the repo root and installs into the repo's own TypeScript lib/ as
+  submodules. setup copies the fixture wholesale, so lib/ must exist on disk or every
+  workspace lands without forge-std. Verify with `forge test` (39 passing) before running.
 
   EXECUTORS NEED NETWORK ACCESS for the fork path (codex runs: keep the sandbox network
   flag on). The fixture deliberately ships no [rpc_endpoints] alias in foundry.toml: it

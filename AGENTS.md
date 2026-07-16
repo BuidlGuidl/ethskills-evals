@@ -96,7 +96,12 @@ runs: 3                          # per variant
 notes: free text                 # optional
 ```
 
-`templates/` is gitignored. For a repo-shaped task, record in `notes` how to regenerate the template (e.g. `npx create-eth@latest`).
+`template:` takes any repo-relative path. Two kinds of workspace seed live at two paths:
+
+- `templates/` — generated scaffolds (`npx create-eth@latest`). Gitignored, because they are reproducible from a command; record that command in `notes`.
+- `fixtures/` — hand-authored ground truth, e.g. a contract carrying planted bugs the task exists to measure. Committed, because a command cannot regenerate it and reviewers need to read it in the PR.
+
+A fixture's own dependencies still are not committed (`lib/`, `node_modules/`). `setup` copies the seed directory as it stands on disk, so whatever a run needs must already be there: record the exact install commands in `notes`, pin their versions, and say what a run should see when it works (e.g. `forge test` → 39 passing). Unpinned installs silently rot the ground truth a benchmark rests on.
 
 ## Variants
 

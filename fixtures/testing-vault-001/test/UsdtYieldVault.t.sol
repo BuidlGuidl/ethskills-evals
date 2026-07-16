@@ -261,8 +261,8 @@ contract UsdtYieldVaultTest is Test {
         assertEq(vault.totalAssets(), 0);
     }
 
-    function test_SharePriceStartsAtScale() public view {
-        assertEq(vault.sharePrice(), vault.SHARE_SCALE());
+    function test_SharePriceStartsAtOneUsdt() public view {
+        assertEq(vault.sharePrice(), 1e6);
     }
 
     function test_SharePriceAfterDeposit() public {

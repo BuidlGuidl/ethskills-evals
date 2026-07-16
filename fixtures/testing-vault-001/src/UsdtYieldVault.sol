@@ -171,7 +171,7 @@ contract UsdtYieldVault is Ownable, Pausable, ReentrancyGuard {
 
     /// @notice Current share price, expressed as USDT base units per 1e18 shares.
     function sharePrice() external view returns (uint256) {
-        if (totalShares == 0) return SHARE_SCALE;
+        if (totalShares == 0) return 1e18 / SHARE_SCALE;
         return totalAssetsStored.mulDiv(1e18, totalShares);
     }
 }
