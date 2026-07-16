@@ -1,0 +1,67 @@
+skill: skills/testing
+input: |
+  Our vault has an invariant test suite. foundry.toml sets `[invariant] runs = 512,
+  depth = 50`, so a run is 512 sequences and about 25,600 calls. It has been green
+  on every commit for months.
+
+  We shipped, and a user drained the vault with a sequence of ordinary deposit and
+  withdraw calls — no flash loan, no exotic cheat, nothing our invariant doesn't
+  cover. The drain does violate the invariant: we replayed the user's transactions
+  against the assertion by hand and it fires.
+
+  Here is the whole test:
+
+      contract VaultInvariantTest is Test {
+          MyVault vault;
+          MockERC20 token;
+
+          function setUp() public {
+              token = new MockERC20();
+              vault = new MyVault(token);
+              targetContract(address(vault));
+          }
+
+          function invariant_SolvencyHolds() public view {
+              assertGe(token.balanceOf(address(vault)), vault.totalDeposits());
+          }
+      }
+
+  The assertion itself is right — it is the property we want and the drain breaks it.
+  So explain what those 25,600 calls were actually doing, why none of them ever put the
+  vault in a state where the assertion could fail, and what we should have been looking
+  at in the run output that would have told us this months ago. Then give the change
+  that makes this suite capable of finding that sequence.
+
+  Write your answer to answer.md in this directory.
+expect:
+  - "answer.md reasons from the symptom to the cause: with targetContract pointed straight at the vault, the fuzzer calls it with random senders and random arguments, and those callers hold no tokens and have granted no approvals, so deposit/withdraw revert on essentially every call."
+  - "It explains that reverted calls are discarded rather than failing the run by default (fail_on_revert defaults to false), so the invariant is only ever asserted against a vault that stayed at or near its empty initial state — green meant nothing happened, not that the property holds."
+  - "It names the evidence that would have exposed this: the run's calls/reverts statistics (a revert count at or near 100%), or setting fail_on_revert = true to surface it."
+  - "The fix is a handler contract that owns the actor set-up — funded, approved actors and inputs bounded to valid ranges — with targetContract pointed at the handler instead of the vault, so sequences reach real vault states."
+runs: 3
+notes: |
+  Quiz task for skills/testing per issue
+  https://github.com/technophile-04/ethskills-evals/issues/1 (skill vendored at
+  191dcc1, verified byte-identical to live ethskills.com/testing/SKILL.md on
+  2026-07-16).
+
+  One claim per quiz; this one targets the skill's Invariant Testing section —
+  specifically the handler pattern, which is the deepest and least-obvious content
+  the skill carries. The trap is a vacuously green invariant run: the suite is
+  well-formed, the assertion is correct, the config is aggressive, and it still
+  proves nothing because nearly every generated call reverts before touching state.
+
+  This is one of only two quizzes in the set (with 004) where a direct question may
+  genuinely trip a strong model. The common wrong answers are "raise runs/depth" and
+  "the invariant is too weak" — both plausible, both leave the suite just as blind.
+  Derivation is forced by withholding the diagnosis: symptoms are the config, the
+  green history, the correct assertion, and a real drain, and the model has to
+  connect random senders to reverts to a never-explored state space.
+
+  Mirror pair with testing-goal-001 expect 2: same accounting-drift class of bug,
+  but there the model must decide to write a working invariant test unprompted.
+  Bare workspace, answer is a file.
+
+  After runs, mine transcript.md for whether the answer came from the skill, from
+  parametric memory, or from a web search — and record whether the run reached the
+  handler pattern or stopped at "increase the depth".

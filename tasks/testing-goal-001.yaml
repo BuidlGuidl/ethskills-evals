@@ -1,0 +1,100 @@
+skill: skills/testing
+template: fixtures/testing-vault-001
+input: |
+  This workspace is our USDT yield vault. It is code-complete and we ship Monday.
+
+  The team considers it done: `forge test` is green at 39 passing, and `forge coverage`
+  reports 100% of the lines and 100% of the functions on src/UsdtYieldVault.sol. I am
+  the one who has to sign off, and a green tick is not what I want to sign off on.
+
+  On Monday this holds real user deposits on mainnet. The underlying is the real USDT
+  at 0xdAC17F958D2ee523a2206206994597C13D831ec7, supplied into Aave V3 through the pool
+  at 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2. Convince me it is safe to do that — or
+  convince me it is not.
+
+  Whatever you turn up, do not just tell me about it. I want to be able to run something
+  that goes red against the contract exactly as it stands today, and goes green once the
+  underlying problem is fixed. Leave the vault source alone unless a fix is part of what
+  you are recommending, and if you do change it, keep the red-then-green evidence
+  reproducible for me.
+
+  Write up what you found, how you found it, and what you would change in FINDINGS.md.
+expect:
+  - "The workspace contains a test that fails against the vault's deposit-fee handling as it stands, demonstrating that setDepositFee accepts a fee at or above 100% (newFeeBps >= 10_000) and that this bricks or drains deposits — netAmount reaching 0 so no shares are minted, or amount - fee underflowing. Prose in FINDINGS.md alone does not satisfy this; a runnable failing test must exist."
+  - "The workspace contains a test that fails showing the vault's recorded totalAssetsStored diverges from the aUSDT it actually holds once deposits and withdrawals have run — the withdrawal fee is subtracted from the vault's accounting but stays in Aave, so the gap accumulates and value is stranded, contradicting the documented intent that fees accrue to remaining shareholders."
+  - "The workspace contains a test that exercises the real deployed USDT rather than MockUSDT and fails, showing deposit() reverts because approve() is called through a bool-returning IERC20 on a token whose approve returns nothing — reached by forking mainnet, since no test against the compliant mock can surface it."
+  - "FINDINGS.md reports these as genuine defects with a concrete fix for each — bounding the fee in the setter, correcting the withdrawal accounting, and routing the approval through SafeERC20 (forceApprove) — and does not conclude the contract is safe to ship on the strength of the existing green suite or its 100% coverage."
+runs: 3
+notes: |
+  Goal task for skills/testing per issue
+  https://github.com/technophile-04/ethskills-evals/issues/1 (skill vendored at
+  191dcc1, verified byte-identical to live ethskills.com/testing/SKILL.md on
+  2026-07-16).
+
+  The prompt never says fuzz, fork, or invariant. Each of the three planted bugs is a
+  decision on the way to "convince me it is safe", and each is reachable in practice by
+  exactly one discipline the skill argues for. Reads together with the quizzes as
+  knows-when-asked vs applies-unprompted: expect 1 mirrors quiz-002 (fuzz the fee
+  maths), expect 2 mirrors quiz-005 and the handler pattern of quiz-001 (invariant
+  tying accounting to real holdings), expect 3 mirrors quiz-003 (fork against real
+  USDT). quiz-004 (pinning) has no mirror: the fork bug reverts at any block.
+
+  WHY THE FIXTURE IS SHAPED THIS WAY. The premise in the prompt is literally true, not
+  set dressing: the shipped suite really is 39 green tests at 100% line and function
+  coverage on the vault, and it really does miss all three bugs. That is claim E of the
+  skill ("you test getters and trivial functions", "tests that mirror the
+  implementation") standing in the workspace as an artifact the model has to confront
+  rather than a question it gets asked. The mocks are both the trap and the alibi —
+  they are why the suite is green, and MockUSDT returning true from approve is exactly
+  what a fork replaces.
+
+  Every planted bug was confirmed with a throwaway detector before this task was
+  written, not reasoned about (the detectors were deleted; they must never ship in the
+  fixture):
+    - fee: a fuzz over newFeeBps shrank to exactly 10_000 -> NoSharesMinted, deposits bricked.
+    - accounting: an invariant totalAssetsStored == aUSDT.balanceOf(vault) with a
+      two-actor handler broke after two calls, 347223983 recorded vs 393375655 held.
+    - USDT: a fork test against real mainnet USDT reverts at the approve; the trace
+      shows USDT emitting Approval and returning Stop, i.e. empty returndata, which the
+      vault's bool decode then reverts on. safeTransferFrom on the previous line
+      succeeds, so the failure is specifically the raw approve.
+
+  GRADING IS OUTCOME-BASED, ON PURPOSE: the expects require each bug to be caught by a
+  test that fails against the unfixed contract, not to be caught by a named technique.
+  Which discipline got there is recorded as an observation, never graded — grading the
+  method would fail a run that found all three bugs by inspection plus sharp unit tests,
+  and this task's headline count would stop meaning "is it safe" and start meaning "did
+  it perform ceremony" (same reasoning as tools-goal-001).
+
+  RECORD FOR EVERY RUN, per bug: fuzz, invariant, fork, or inspection-plus-targeted-unit-test?
+  That split is the applies-unprompted signal this task exists for, and it is the input
+  to the issue's verdict table, so it costs nothing extra and must not be skipped. Bugs
+  1 and 2 are inspection-resistant by construction rather than by fiat — the unbounded
+  setter reads like every other setter, and the accounting drift accumulates instead of
+  presenting as a single wrong line — but a strong model may still reason its way to
+  them from the source. Bug 3 is the only one where the discipline is forced by physics:
+  no mock will ever tell the truth about USDT. If all three no_skill runs find
+  everything by inspection, this task measured code review rather than testing judgment
+  — say so in the report rather than reading it as a skill result.
+
+  FIXTURE SETUP. templates/ is gitignored for regenerable scaffolds; this fixture is
+  hand-authored ground truth, so it is committed under fixtures/ instead — but its
+  dependencies are not. Once per machine, before the first run:
+
+      cd fixtures/testing-vault-001
+      forge install foundry-rs/forge-std --no-git
+      forge install OpenZeppelin/openzeppelin-contracts --no-git
+
+  --no-git is load-bearing: without it forge walks up to the repo root and installs into
+  the repo's own TypeScript lib/ as submodules. setup copies the fixture wholesale, so
+  lib/ must exist on disk or every workspace lands without forge-std and forge test
+  fails for the wrong reason. Verify with `forge test` (39 passing) before running.
+
+  EXECUTORS NEED NETWORK ACCESS for the fork path (codex runs: keep the sandbox network
+  flag on). The fixture deliberately ships no [rpc_endpoints] alias in foundry.toml: it
+  would nudge toward fork testing, which is the decision under test. Runs must therefore
+  find their own endpoint. Both ethereum-rpc.publicnode.com and eth.drpc.org served
+  latest-block forks fine while drafting; note that neither serves archive requests, so
+  a run that pins an old block will fail on RPC access rather than on the bug. Record
+  that if it happens — it is the same skill gap quiz-004 expect 4 targets, showing up in
+  a second place.
