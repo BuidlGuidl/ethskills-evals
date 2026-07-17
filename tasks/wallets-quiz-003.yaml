@@ -1,62 +1,75 @@
 skill: skills/wallets
 input: |
-  We're shipping a new ERC-4337 paymaster on Ethereum mainnet, and it needs to
-  work with the bundlers our users actually use today (Pimlico, Alchemy). A
-  draft PR hardcodes the EntryPoint singleton the paymaster deposits to and
-  validates against as:
+  Our ERC-4337 paymaster has been live on Ethereum mainnet for a week and it is
+  broken. The symptom: users' UserOperations keep getting rejected at validation
+  with an error that the paymaster has no deposit — even though we ran the
+  deposit-and-stake step, that transaction succeeded, and a block explorer shows
+  our ETH sitting in the EntryPoint under the paymaster right now.
+
+  What the deploy actually did: the paymaster contract was constructed with,
+  deposits to, and validates against this EntryPoint singleton:
 
     0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789
 
-  Is that the EntryPoint address a brand-new deployment should target today? If
-  not, what address and version should it use instead, and why is the one in
-  the PR a problem?
+  The smart accounts our users hold and the bundlers we rely on (Pimlico,
+  Alchemy) are the current mainstream stack — everything set up the way a new
+  project would set it up today.
+
+  The deposit is provably on-chain, yet every UserOperation fails as if it were
+  missing. Explain what is actually mismatched here and give the one change that
+  fixes it. Be concrete about what has to line up for the deposit to be seen.
 
   Write your answer to answer.md in this directory, showing your reasoning.
 expect:
-  - "answer.md identifies 0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789 as the deprecated EntryPoint v0.6 and says a new paymaster should NOT hardcode it as its sole/primary target."
-  - "It steers the deployment to a current, bundler-supported EntryPoint, naming a version together with an address that matches it: v0.7 at 0x0000000071727De22E5E9d8BAf0edAc6f37da032, or v0.8 at 0x4337084D9E255Ff0702461CF8895CE9E3b5Ff108. Naming EntryPoint v0.9 (0x433709009B8330FDa32311DF1C2AFA402eD8D009) passes ONLY if the answer also notes that Pimlico/Alchemy bundler support for v0.9 is not yet broad — the prompt requires it work with those bundlers today. A version/address mismatch, or an address that fits none of these, fails."
-  - "The reason given is version/currency — v0.6 is an older EntryPoint that current bundler and account tooling has moved past — not an unrelated issue like a bad checksum, a typo, or the address being fake."
+  - "answer.md diagnoses the root cause as an EntryPoint-version MISMATCH: the paymaster deposits to and validates against one EntryPoint singleton, while the current accounts and bundlers submit their UserOperations to a DIFFERENT, newer EntryPoint — so validation runs on an EntryPoint where the paymaster has no balance, and the real deposit sitting in the other EntryPoint is invisible to it. It does NOT attribute the failure to an unrelated cause (too little deposit, missing stake, a bad signature, gas, or the paymaster contract logic)."
+  - "It identifies 0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789 as the deprecated EntryPoint v0.6 and recognizes that a current mainstream 4337 stack (Pimlico/Alchemy bundlers with today's accounts) does not operate on v0.6 — which is why the deposit and the validation land on different EntryPoints."
+  - "The fix is to move the paymaster onto the EntryPoint the current stack actually uses — deposit to and validate against the current EntryPoint — naming a version together with an address that matches it: v0.7 at 0x0000000071727De22E5E9d8BAf0edAc6f37da032, or v0.8 at 0x4337084D9E255Ff0702461CF8895CE9E3b5Ff108. NOT 'add more deposit' or 're-stake' on the v0.6 EntryPoint, and not a version/address pair that does not match."
 runs: 3
 notes: |
   Quiz task for skills/wallets per issue
   https://github.com/BuidlGuidl/ethskills-evals/issues/1. One claim per file:
   targets the skill's current-EntryPoint reference (v0.7
-  0x0000000071727De22E5E9d8BAf0edAc6f37da032). Framed as a PR review that plants
-  the deprecated v0.6 address as the trap, so the task is a decision ("should a
-  new deployment target this?") rather than a bare "what's the address" lookup,
-  and it lands squarely on the hallucination-prone claim: models confidently
-  emit the v0.6 EntryPoint.
+  0x0000000071727De22E5E9d8BAf0edAc6f37da032, SKILL.md L12).
+
+  Reworked from retrieval to derivation after PR #5 review (rin-st): the earlier
+  version framed a PR that hardcodes v0.6 and asked "what address should it use
+  instead", whose graded surface is a bare address lookup a web search answers —
+  the shape issue #1 rules out. This version buries the claim inside a diagnosis:
+  a paymaster whose UserOperations fail at validation despite a provably on-chain
+  deposit. Passing requires the 4337-architecture insight that a paymaster's
+  deposit lives inside one specific EntryPoint singleton and bundlers submit to
+  one specific EntryPoint, so if the paymaster deposited to v0.6 while today's
+  accounts/bundlers run on v0.7+, the EntryPoint doing validation looks for the
+  deposit in its own ledger, finds nothing, and rejects. Recognizing 0x5FF... as
+  v0.6 is necessary but not sufficient — the reasoning about WHY the deposit is
+  invisible is the discriminator, and a bare address recall does not produce it.
 
   EntryPoint version landscape as of this eval (checked against
   eth-infinitism/account-abstraction releases and Pimlico/Alchemy bundler docs):
-    v0.6  0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789  deprecated — the trap
+    v0.6  0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789  deprecated — the deposit lands here
     v0.7  0x0000000071727De22E5E9d8BAf0edAc6f37da032  what the skill teaches
     v0.8  0x4337084D9E255Ff0702461CF8895CE9E3b5Ff108  native EIP-7702 support
     v0.9  0x433709009B8330FDa32311DF1C2AFA402eD8D009  "latest" on GitHub
-  Why the expect does NOT simply demand "the newest": the prompt requires the
-  paymaster work with the bundlers users run today, and that constraint — not
-  recency — defines the answer. Alchemy runs v0.6/v0.7/v0.8; Pimlico runs
-  v0.6/v0.7 (+ the 7702 hybrid). v0.7 is the common denominator both support and
-  the safest target; v0.8 is fine where Alchemy is enough; v0.9 exists on GitHub
-  but is not broadly bundler-supported yet, so targeting it alone would violate
-  the very constraint the prompt sets — hence it passes only with that caveat.
-  Addresses are pinned in the expect so a blind judge can verify version against
-  address; do not drop them back to a bare version name. Re-check this table when
-  re-running: bundler v0.9 adoption is the thing most likely to have moved.
+  The fix targets the EntryPoint today's bundlers actually run: Alchemy runs
+  v0.6/v0.7/v0.8, Pimlico runs v0.6/v0.7 (+ the 7702 hybrid), so v0.7 is the safe
+  common target and v0.8 is fine for Alchemy. v0.9 exists on GitHub but is not
+  broadly bundler-supported yet, so it is not an accepted fix target here.
+  Addresses are pinned in expect_3 so a blind judge can verify version against
+  address; do not drop them to a bare version name. Re-check this table on a
+  re-run — bundler v0.9 adoption is the thing most likely to have moved.
 
-  Skill-staleness note: SKILL.md L12 names only v0.7. That is still a passing
-  answer here (bundlers support it), so this quiz does not fail the skill — but
-  the skill is now one to two EntryPoint versions behind the deployed set, which
-  is a candidate skill edit. File it as a mistake record if a with_skill run
-  parrots v0.7 as "the current EntryPoint" while missing that v0.8/v0.9 shipped;
-  do not bake it into this task's grading.
+  Skill-staleness note: SKILL.md L12 names only v0.7. That is still a passing fix
+  target here (bundlers support it), so this quiz does not fail the skill — but
+  the skill is now one to two EntryPoint versions behind the deployed set, a
+  candidate skill edit. File it as a mistake record if a with_skill run parrots
+  v0.7 as "the current EntryPoint" while missing that v0.8/v0.9 shipped; do not
+  bake it into this task's grading.
 
-  Caveat: this claim is web-searchable, so a no_skill run with live search can
-  pass without any skill. Mine each run's transcript.md for whether the pass
-  came from parametric knowledge or a live lookup, and report it — a wiki
-  verdict weakens the skill-vs-no-skill discrimination and should be called out
-  rather than counted as a skill win. Also flag if a run defends v0.6 as still
-  valid because some bundlers keep supporting it; the expect wants a new
-  deployment steered to a current EntryPoint, not a claim that v0.6 is broken.
-  Skill vendored at skills/wallets (source ethskills.com/wallets/SKILL.md, skill
-  source @ 191dcc1). Bare workspace, answer is a file.
+  Caveat: the EntryPoint addresses are web-searchable, so a no_skill run with
+  live search can recall them. But the pass here hinges on the deposit-namespace
+  diagnosis, not the address — mine each run's transcript.md for whether the run
+  reasoned to the mismatch or merely swapped an address it looked up, and report
+  it. Also flag any run that "fixes" it by topping up the v0.6 deposit, which is
+  prior-preserving and should fail expect_3. Skill vendored at skills/wallets
+  (source ethskills.com/wallets/SKILL.md, skill source @ 191dcc1). Bare
+  workspace, answer is a file.
