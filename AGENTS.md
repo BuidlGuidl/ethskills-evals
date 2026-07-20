@@ -89,14 +89,14 @@ Omit `--judge-model` to let that agent's CLI pick its own default. Keep one judg
 skill: skills/gas                # path to the skill dir; basename = install name
 input: |                         # executor prompt; identical for every variant
   ...
-template: templates/create-eth   # optional; omit for a bare workspace (just TASK.md)
+template: templates/se-2         # optional; omit for a bare workspace (just TASK.md)
 expect:                          # judged conditions, at least one
   - "..."
 runs: 3                          # per variant
 notes: free text                 # optional
 ```
 
-`templates/` is gitignored. For a repo-shaped task, record in `notes` how to regenerate the template (e.g. `npx create-eth@latest`).
+Templates are committed under `templates/` — stripped of `.git` and `node_modules`, with `yarn.lock` baked so dependency resolution stays stable across runs. Record in `notes` how the template was generated.
 
 ## Variants
 
@@ -166,7 +166,7 @@ Every report ends with this table. Answer the last row honestly: sometimes the e
 
 ## What gets committed
 
-Committed: task specs, vendored skills under test, `result.yaml`, `run.diff`, `output/`, mistake records, reports. Gitignored: workspaces, transcripts, `templates/`.
+Committed: task specs, vendored skills under test, workspace templates under `templates/`, `result.yaml`, `run.diff`, `output/`, mistake records, reports. Gitignored: workspaces, transcripts.
 
 ## Code style
 
