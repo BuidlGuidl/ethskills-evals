@@ -89,17 +89,17 @@ Omit `--judge-model` to let that agent's CLI pick its own default. Keep one judg
 skill: skills/gas                # path to the skill dir; basename = install name
 input: |                         # executor prompt; identical for every variant
   ...
-template: templates/create-eth   # optional; omit for a bare workspace (just TASK.md)
+template: templates/se-2         # optional; omit for a bare workspace (just TASK.md)
 expect:                          # judged conditions, at least one
   - "..."
 runs: 3                          # per variant
 notes: free text                 # optional
 ```
 
-`template:` takes any repo-relative path. Two kinds of workspace seed live at two paths:
+`template:` takes any repo-relative path. Two kinds of workspace seed live under two committed paths:
 
-- `templates/` — generated scaffolds (`npx create-eth@latest`). Gitignored, because they are reproducible from a command; record that command in `notes`.
-- `fixtures/` — hand-authored ground truth, e.g. a contract carrying planted bugs the task exists to measure. Committed, because a command cannot regenerate it and reviewers need to read it in the PR.
+- `templates/` — generated scaffolds (e.g. `npx create-eth@latest`), stripped of `.git` and `node_modules` with `yarn.lock` baked so dependency resolution stays stable across runs. Record in `notes` how the template was generated.
+- `fixtures/` — hand-authored ground truth, e.g. a contract carrying planted bugs the task exists to measure. Committed because a command cannot regenerate it and reviewers need to read it in the PR.
 
 A fixture's own dependencies still are not committed (`lib/`, `node_modules/`). `setup` copies the seed directory as it stands on disk, so whatever a run needs must already be there: record the exact install commands in `notes`, pin their versions, and say what a run should see when it works (e.g. `forge test` → 39 passing). Unpinned installs silently rot the ground truth a benchmark rests on.
 
@@ -171,7 +171,7 @@ Every report ends with this table. Answer the last row honestly: sometimes the e
 
 ## What gets committed
 
-Committed: task specs, vendored skills under test, `result.yaml`, `run.diff`, `output/`, mistake records, reports. Gitignored: workspaces, transcripts, `templates/`.
+Committed: task specs, vendored skills under test, workspace templates under `templates/`, hand-authored fixtures under `fixtures/`, `result.yaml`, `run.diff`, `output/`, mistake records, reports. Gitignored: workspaces, transcripts.
 
 ## Code style
 
