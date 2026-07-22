@@ -96,7 +96,7 @@ runs: 3                          # per variant
 notes: free text                 # optional
 ```
 
-Templates are committed under `templates/` — stripped of `.git` and `node_modules`, with `yarn.lock` baked so dependency resolution stays stable across runs. Record in `notes` how the template was generated.
+Templates are committed under `templates/`; `templates/README.md` records what each one is and how to regenerate it.
 
 ## Variants
 
