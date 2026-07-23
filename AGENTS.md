@@ -96,7 +96,7 @@ runs: 3                          # per variant
 notes: free text                 # optional
 ```
 
-Templates are committed under `templates/`; `templates/README.md` records what each one is and how to regenerate it.
+Every workspace seed — generated scaffold or hand-authored ground truth — is committed under `templates/`; `templates/README.md` records what each one is and how to regenerate it. Commit sources only: dependencies (`node_modules/`, `lib/`) stay out, and `setup` copies the seed exactly as it stands on disk, so install them once per machine before the first run — the task notes carry the exact pinned commands and what a working install looks like (e.g. `forge test` → 39 passing). Unpinned installs silently rot the ground truth a benchmark rests on.
 
 ## Variants
 

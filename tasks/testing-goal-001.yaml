@@ -1,0 +1,148 @@
+skill: skills/testing
+template: templates/testing-vault-001
+input: |
+  This workspace is our USDT yield vault. It is code-complete and we ship Monday.
+
+  The team considers it done: `forge test` is green at 39 passing, and `forge coverage`
+  reports 100% of the lines and 100% of the functions on src/UsdtYieldVault.sol. I am
+  the one who has to sign off, and a green tick is not what I want to sign off on.
+
+  On Monday this holds real user deposits on mainnet. The underlying is the real USDT
+  at 0xdAC17F958D2ee523a2206206994597C13D831ec7, supplied into Aave V3 through the pool
+  at 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2. Convince me it is safe to do that — or
+  convince me it is not.
+
+  Ground rules, because I want evidence I can check rather than conclusions I have to
+  take on trust:
+
+    - Do not change anything under src/. I want to see this contract fail as it stands
+      today, not a repaired version of it passing.
+    - Leave test/UsdtYieldVault.t.sol and everything under test/mocks/ as it is. Put
+      anything you write in new files under test/.
+    - For every problem you claim, paste into FINDINGS.md the actual command you ran
+      and its real output, showing the failure against the code as it stands. Copy it
+      from your terminal verbatim. I will re-run each one myself, and anything I cannot
+      reproduce I will treat as not found.
+
+  Then write FINDINGS.md: what you found, how you found it, the evidence, and what you
+  would change to fix each one. Describe the fixes — do not apply them.
+expect:
+  - "FINDINGS.md reports that the deposit fee is unbounded: setDepositFee accepts a newFeeBps at or above 10_000 (100%), at which point the fee consumes the whole deposit so no shares are minted and every deposit reverts — and above 10_000, `amount - fee` underflows. It is backed by pasted real command output showing that failure against the current code, and the test producing it exists in a new file under test/ rather than in the shipped test/UsdtYieldVault.t.sol."
+  - "FINDINGS.md reports that the vault's recorded totalAssetsStored diverges from the aUSDT it actually holds once withdrawals have run: withdraw subtracts the gross assets from the accounting while only the net leaves Aave, so each withdrawal strands its fee — the vault holds more than it records, the gap accumulates, and the stranded value is unclaimable, contradicting the README's documented intent that fees accrue to the remaining shareholders. Backed by pasted real output showing the divergence against the current code, with the test in a new file under test/."
+  - "FINDINGS.md reports that deposit() reverts against the real deployed USDT because approve() is called through a bool-returning IERC20 while USDT's approve returns no value, so decoding empty returndata reverts. It is established by exercising the real deployed token rather than MockUSDT — i.e. on a mainnet fork — and backed by pasted real output from that fork run."
+  - "FINDINGS.md concludes the contract is not safe to ship as it stands, and gives a concrete fix for each defect it reports — bounding the fee in the setter, subtracting only the net (or otherwise accounting for the retained fee) in withdraw, and routing the approval through SafeERC20 (forceApprove) — without resting any safety claim on the existing green suite or its 100% coverage."
+runs: 3
+notes: |
+  Goal task for skills/testing per issue
+  https://github.com/BuidlGuidl/ethskills-evals/issues/1 (skill vendored at
+  191dcc1, verified byte-identical to live ethskills.com/testing/SKILL.md on
+  2026-07-16).
+
+  The prompt never says fuzz, fork, or invariant. Each of the three planted bugs is a
+  decision on the way to "convince me it is safe", and each is reachable in practice by
+  exactly one discipline the skill argues for. Reads together with the quizzes as
+  knows-when-asked vs applies-unprompted: expect 1 mirrors quiz-002 (fuzz the fee
+  maths), expect 2 mirrors quiz-005 and the handler pattern of quiz-001 (invariant
+  tying accounting to real holdings), expect 3 mirrors quiz-003 (fork against real
+  USDT). quiz-004 (pinning) has no mirror: the fork bug reverts at any block.
+
+  WHY THE FIXTURE IS SHAPED THIS WAY. The premise in the prompt is literally true, not
+  set dressing: the shipped suite really is 39 green tests at 100% line and function
+  coverage on the vault, and it really does miss all three bugs. That is claim E of the
+  skill ("you test getters and trivial functions", "tests that mirror the
+  implementation") standing in the workspace as an artifact the model has to confront
+  rather than a question it gets asked. The mocks are both the trap and the alibi —
+  they are why the suite is green, and MockUSDT returning true from approve is exactly
+  what a fork replaces.
+
+  Every planted bug was confirmed with a throwaway detector before this task was
+  written, not reasoned about (the detectors were deleted; they must never ship in the
+  fixture):
+    - fee: a fuzz over newFeeBps shrank to exactly 10_000 -> NoSharesMinted, deposits bricked.
+    - accounting: an invariant totalAssetsStored == aUSDT.balanceOf(vault) with a
+      two-actor handler broke after two calls, 347223983 recorded vs 393375655 held.
+      Note the direction: stored UNDERSTATES reality, so the vault always holds a
+      surplus and every depositor can still withdraw. The harm is stranded, unclaimable
+      value and an understated share price, never insolvency. Do not accept a finding
+      that describes it as the vault going short.
+    - USDT: a fork test against real mainnet USDT reverts at the approve; the trace
+      shows USDT emitting Approval and returning Stop, i.e. empty returndata, which the
+      vault's bool decode then reverts on. safeTransferFrom on the previous line
+      succeeds, so the failure is specifically the raw approve.
+
+  A FOURTH, UN-PLANTED ISSUE IS REAL — DO NOT SCORE A REPORT OF IT AS NOISE. The vault
+  prices shares off totalAssetsStored (principal only): convertToAssets, sharePrice and
+  balanceOfUnderlying never read the live aUSDT balance, so Aave interest accrues in the
+  pool but never reaches the share price and stays stranded — the same stranded-value
+  mechanics as the withdraw-fee drift in expect 2, but sourced from ignored yield rather
+  than a fee. It is genuinely present in src/, so a run that flags it is correct, not
+  hallucinating. It is not in the expects and is never graded — but unlike the three
+  planted bugs it cannot be evidenced by a command (it needs real Aave interest to
+  accrue over forked time), only by inspection, so the "paste real output" rule does not
+  reach it: a run must not be marked down for reporting it without a reproduction, and a
+  run that does not report it is not penalised either. Record it as an observation when
+  it appears; it is a second, inspection-only instance of the same accounting-vs-holdings
+  theme.
+
+  WHY THE EXPECTS GRADE PASTED OUTPUT. The judge never runs anything: verify hands it
+  run.diff plus the text of the files under output/, and nothing else. An earlier draft
+  of these expects asked for "a test that fails against the unfixed contract", which the
+  judge cannot check — it would have had to simulate Solidity, an accumulating rounding
+  drift and a fork's returndata decoding in its head, which is exactly the bluffable
+  surface the planted-bug design exists to avoid. So the prompt requires each claim to
+  carry pasted real command output, and the expects grade that text. Two consequences
+  the orchestrator owns, because the judge cannot:
+    - Pasted output is forgeable. Cross-check every run's FINDINGS.md against its
+      transcript.md; a fabricated forge run is a mistake record
+      (category: fabricated-evidence), not a pass.
+    - run.diff is empty for this task. The workspace lives under artifacts/, which
+      .gitignore excludes, and neither setup nor verify git-inits it, so writeDiff
+      produces nothing — confirmed against the existing wallets runs, which have no
+      run.diff at all. The judge therefore sees output/ as a flat tree with the
+      fixture's own suite and the run's new tests side by side, which is why the prompt
+      quarantines new work into new files under test/ and expects 1-2 require it there:
+      it is the only way the judge can tell whose test it is reading.
+
+  GRADING IS OUTCOME-BASED, ON PURPOSE: the expects require each bug to be found and
+  evidenced, not to be found by a named technique. Which discipline got there is
+  recorded as an observation, never graded — grading the method would fail a run that
+  found all three bugs by inspection plus sharp unit tests, and this task's headline
+  count would stop meaning "is it safe" and start meaning "did it perform ceremony"
+  (same reasoning as tools-goal-001).
+
+  RECORD FOR EVERY RUN, per bug: fuzz, invariant, fork, or inspection-plus-targeted-unit-test?
+  That split is the applies-unprompted signal this task exists for, and it is the input
+  to the issue's verdict table, so it costs nothing extra and must not be skipped. Bugs
+  1 and 2 are inspection-resistant by construction rather than by fiat — the unbounded
+  setter reads like every other setter, and the accounting drift accumulates instead of
+  presenting as a single wrong line — but a strong model may still reason its way to
+  them from the source. Bug 3 is the only one where the discipline is forced by physics:
+  no mock will ever tell the truth about USDT. If all three no_skill runs find
+  everything by inspection, this task measured code review rather than testing judgment
+  — say so in the report rather than reading it as a skill result.
+
+  FIXTURE SETUP. The template is hand-authored ground truth — planted bugs a command
+  cannot regenerate — committed under templates/ like every workspace seed, but its
+  dependencies are not. Once per machine, before the first run:
+
+      cd templates/testing-vault-001
+      forge install foundry-rs/forge-std@v1.16.2 --no-git
+      forge install OpenZeppelin/openzeppelin-contracts@v5.6.1 --no-git
+
+  Both are pinned deliberately. The fixture was authored and verified against exactly
+  these versions, and the prompt asserts "39 passing" and "100% coverage" as fact — an
+  unpinned install would let a future OpenZeppelin major (Ownable's constructor,
+  Pausable's errors) break the build or the counts, and every run would then fail for a
+  reason that has nothing to do with the skill. --no-git is load-bearing too: without it
+  forge walks up to the repo root and installs into the repo's own TypeScript lib/ as
+  submodules. setup copies the fixture wholesale, so lib/ must exist on disk or every
+  workspace lands without forge-std. Verify with `forge test` (39 passing) before running.
+
+  EXECUTORS NEED NETWORK ACCESS for the fork path (codex runs: keep the sandbox network
+  flag on). The fixture deliberately ships no [rpc_endpoints] alias in foundry.toml: it
+  would nudge toward fork testing, which is the decision under test. Runs must therefore
+  find their own endpoint. Both ethereum-rpc.publicnode.com and eth.drpc.org served
+  latest-block forks fine while drafting; note that neither serves archive requests, so
+  a run that pins an old block will fail on RPC access rather than on the bug. Record
+  that if it happens — it is the same skill gap quiz-004 expect 4 targets, showing up in
+  a second place.

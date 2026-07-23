@@ -21,3 +21,11 @@ rm -rf packages/foundry/lib/*/.git
 ```
 
 The lib submodules (forge-std, openzeppelin-contracts, solidity-bytes-utils) become plain dirs — forge reads them as such (`libs = ['lib', 'node_modules']`), and the revs create-eth pinned live in `foundry.lock`.
+
+## qa-target
+
+Scaffold-ETH 2 payouts app seeded with QA-checklist violations. Used by qa-goal-001 and qa-goal-002. Not regenerable by one command: re-copy `templates/se-2` and reapply the seeded files listed in qa-goal-001's notes.
+
+## testing-vault-001
+
+Hand-authored USDT yield vault (foundry) with three planted bugs under a green 39-test suite. Used by testing-goal-001. The source is the ground truth — no regen command; the pinned install commands live in testing-goal-001's notes.
