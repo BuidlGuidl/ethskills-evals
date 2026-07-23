@@ -96,9 +96,7 @@ runs: 3                          # per variant
 notes: free text                 # optional
 ```
 
-`template:` takes any repo-relative path. Every workspace seed is committed under `templates/`, whether it is a generated scaffold (e.g. `npx create-eth@latest`) or hand-authored ground truth (e.g. a contract carrying planted bugs the task exists to measure). Strip `.git` and `node_modules`; bake `yarn.lock` where it applies so dependency resolution stays stable across runs. Record the seed's provenance in `notes`: the generating command, or the base template plus the edits applied.
-
-A template's own dependencies still are not committed (`lib/`, `node_modules/`). `setup` copies the seed directory as it stands on disk, so whatever a run needs must already be there: record the exact install commands in `notes`, pin their versions, and say what a run should see when it works (e.g. `forge test` → 39 passing). Unpinned installs silently rot the ground truth a benchmark rests on.
+Every workspace seed — generated scaffold or hand-authored ground truth — is committed under `templates/`; `templates/README.md` records what each one is and how to regenerate it. Commit sources only: dependencies (`node_modules/`, `lib/`) stay out, and `setup` copies the seed exactly as it stands on disk, so install them once per machine before the first run — the task notes carry the exact pinned commands and what a working install looks like (e.g. `forge test` → 39 passing). Unpinned installs silently rot the ground truth a benchmark rests on.
 
 ## Variants
 
