@@ -1,0 +1,57 @@
+skill: skills/testing
+input: |
+  Our vault routes deposits into Aave V3. The suite runs against a MockERC20 for the
+  underlying and a MockAavePool for the pool — 39 tests, all green, and they have been
+  green since the first commit.
+
+  We deployed to mainnet with USDT (0xdAC17F958D2ee523a2206206994597C13D831ec7) as the
+  underlying. Every deposit reverts on-chain. The revert carries no reason string. The
+  relevant lines are:
+
+      usdt.safeTransferFrom(msg.sender, address(this), amount);
+      usdt.approve(address(aavePool), amount);
+      aavePool.supply(address(usdt), amount, address(this), 0);
+
+  where `usdt` is declared as an OpenZeppelin `IERC20` and the contract does
+  `using SafeERC20 for IERC20`. Our MockERC20 is a stock OpenZeppelin ERC20 with
+  6 decimals.
+
+  Note the first line uses the token and succeeds; the failure is further down.
+
+  Explain why this reverts against the real deployed USDT but never against the mock,
+  why the SafeERC20 usage did not protect the failing line, and why no amount of extra
+  mock-based tests would have surfaced it. Then give both fixes: the code change, and
+  the change in testing practice that would have caught this before mainnet.
+
+  Write your answer to answer.md in this directory.
+expect:
+  - "answer.md identifies that the real USDT does not return a bool from approve (its ABI returns nothing), while the vault calls it through an IERC20 whose approve is declared to return bool — so the ABI decoder gets empty returndata where it expects 32 bytes and reverts, which is why the revert has no reason string."
+  - "It explains the mock cannot ever surface this: a stock OpenZeppelin ERC20 returns true from approve, so the mock encodes the team's assumption about USDT rather than USDT's actual deployed behaviour — more mock-based tests only re-test the assumption."
+  - "It explains why SafeERC20 did not help on that line: safeTransferFrom tolerates a missing/non-standard return value, but approve here is a raw interface call that bypasses SafeERC20 entirely — the code fix is to route it through SafeERC20 as well (forceApprove, or safeIncreaseAllowance), which also handles USDT's requirement that a non-zero allowance be zeroed before being reset."
+  - "The practice named is fork testing: run the suite against the real deployed USDT and Aave contracts on a mainnet fork, which the skill's own guidance requires for any external-protocol integration and any token with known quirks."
+runs: 3
+notes: |
+  Quiz task for skills/testing per issue
+  https://github.com/BuidlGuidl/ethskills-evals/issues/1 (skill vendored at
+  191dcc1, verified byte-identical to live ethskills.com/testing/SKILL.md on
+  2026-07-16).
+
+  One claim per quiz; this one targets the skill's "You don't fork-test" bullet plus
+  its "Always: any contract that handles tokens with quirks (USDT...)" line. The trap
+  is that every local signal says the code is fine — green suite, SafeERC20 in view on
+  the adjacent line, a compliant mock — and only real deployed state disagrees.
+
+  Derivation is forced by asking for the mechanism, not the label: "fork test it" alone
+  fails expects 1-3. The model has to explain the empty-returndata decode, identify
+  that the mock encodes an assumption, and spot that SafeERC20 covers the line above
+  but not the failing one.
+
+  Verified empirically while drafting rather than reasoned about: a fork detector
+  against real mainnet USDT reverts exactly at the approve, with the trace showing USDT
+  emitting Approval and returning Stop (empty returndata) before the vault's decode
+  reverts. safeTransferFrom on the line above succeeds. The same three lines are the
+  planted fork bug in templates/testing-vault-001/src/UsdtYieldVault.sol.
+
+  Expected to pass both variants — the USDT no-return-value quirk is famous. Load-bearing
+  anyway: mirror pair with testing-goal-001 expect 3, where the model must reach for a
+  fork unprompted. Bare workspace, answer is a file.
