@@ -1,0 +1,52 @@
+skill: skills/security
+input: |
+  Our treasury router on Ethereum mainnet pulls stablecoins in and forwards
+  them to a strategy contract, which it has to approve before each run. The
+  repo is on @openzeppelin/contracts v5 and Solidity 0.8.26.
+
+  The approval step is a low-level call, because an earlier version reverted
+  while decoding the return value of some tokens:
+
+    (bool ok, ) = token.call(abi.encodeWithSelector(0x095ea7b3, strategy, amount));
+    require(ok, "approve failed");
+
+  Three weeks of runs:
+
+    - USDC (0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48): every run succeeds
+    - USDT (0xdAC17F958D2ee523a2206206994597C13D831ec7): the FIRST run
+      succeeded. Every run since reverts, always at that require, before any
+      transfer happens
+    - the strategy frequently spends less than it was approved for, so a
+      leftover allowance from the previous run is normally still sitting there
+    - the router holds enough ETH for gas, is not paused, is not on any
+      blocklist, and the amounts are ordinary five-figure sums
+
+  Why does this fail only for USDT, and only after the first run? Give the
+  minimal change to the router that fixes it, and say what it should do about
+  the leftover allowance in general.
+
+  Write your answer to answer.md in this directory, showing your reasoning.
+expect:
+  - "answer.md diagnoses the token-side guard: USDT's approve reverts when it is called to set a NON-ZERO allowance while a non-zero allowance from before is still outstanding (the anti-front-running approve-race check in its implementation), which is exactly why the first run — with a zero starting allowance — worked, why the later runs fail, and why USDC, which has no such restriction, is unaffected. It does NOT attribute the failure to gas, a paused or blocklisted token, the missing return value (already handled by the low-level call), an allowance overflow, or the strategy contract."
+  - "The prescribed fix goes through a path that zeroes the allowance before setting a new non-zero one. Any of these passes: SafeERC20.forceApprove, SafeERC20.safeIncreaseAllowance or safeDecreaseAllowance (OpenZeppelin v5 routes both through forceApprove), or an explicit approve(0) followed by approve(amount). It FAILS if it prescribes safeApprove: that function was removed in OpenZeppelin Contracts v5, which the repo is pinned to, so the suggested code would not compile."
+runs: 3
+notes: |
+  Tests SKILL.md "SafeERC20" + "Infinite Approvals": USDT's approve-race guard,
+  the OZ v5 fix, and no unbounded approvals. One claim per file; the quirk is
+  never named — the model derives it from the USDT-vs-USDC asymmetry and the
+  first-run-only timing.
+
+  Verdict-flipping interpretation: SKILL.md's SafeERC20 example still prescribes
+  safeApprove, which OpenZeppelin removed in v5 (the repo in the input is pinned
+  to v5). A with_skill run that fails expect_2 by copying the skill's safeApprove
+  line is a stale-skill finding, not a model failure — report it as such and
+  file a mistakes/security record with skill_section "SafeERC20".
+
+  Report, do not grade: what the answer does about the leftover allowance —
+  a bounded approval (exact amount, a small multiple, or an explicit reset)
+  vs an unlimited type(uint256).max approval to the in-house strategy. The
+  skill takes the bounded side, but it is a judgement call; record which side
+  each variant takes.
+
+  Skill vendored at skills/security (source ethskills.com/security/SKILL.md,
+  skill source @ 191dcc1). Bare workspace, answer is a file.
