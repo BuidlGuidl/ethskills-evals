@@ -28,10 +28,4 @@ Scaffold-ETH 2 payouts app seeded with QA-checklist violations. Used by qa-goal-
 
 ## testing-vault-001
 
-Hand-authored USDT yield vault (foundry) with three planted bugs under a green 39-test suite. Used by testing-goal-001. The source is the ground truth — no regen command. Dependencies install once per machine, pinned (rationale in testing-goal-001's notes):
-
-```bash
-cd templates/testing-vault-001
-forge install foundry-rs/forge-std@v1.16.2 --no-git
-forge install OpenZeppelin/openzeppelin-contracts@v5.6.1 --no-git
-```
+Hand-authored USDT yield vault (foundry) with three planted bugs under a green 39-test suite. Used by testing-goal-001. The source is the ground truth — no regen command; the pinned install commands live in testing-goal-001's notes.
