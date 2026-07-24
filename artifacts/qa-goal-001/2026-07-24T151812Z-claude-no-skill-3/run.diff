@@ -1,0 +1,234 @@
+diff --git a/REVIEW.md b/REVIEW.md
+new file mode 100644
+index 0000000..e8f2a00
+--- /dev/null
++++ b/REVIEW.md
+@@ -0,0 +1,225 @@
++# Pre-ship Review — USDC Payouts dApp (Base)
++
++Scope: frontend (`packages/nextjs`) + its configuration. Contract is deployed
++and out of scope except where the frontend interacts with it. Report only — no
++code changed.
++
++Legend: **ship-blocking** = must fix before real users touch it; **should-fix** =
++fix this week, degrades UX/robustness but not a hard blocker.
++
++---
++
++## 1. Event feed scans from block 0 — the "Latest payouts" list will never load
++**Severity: ship-blocking**
++**File:** `packages/nextjs/app/payouts/page.tsx:32`
++
++```ts
++const { data: payouts } = useScaffoldEventHistory({
++  contractName: "Payouts",
++  eventName: "Paid",
++  fromBlock: 0n,   // <-- problem
++  watch: true,
++});
++```
++
++`useScaffoldEventHistory` backfills in **500-block batches, one sequential
++`getLogs` call at a time** (see `hooks/scaffold-eth/useScaffoldEventHistory.ts:183`
+++ the `fetchNextPage` effect at `:257`). Base is past block ~33.7M, so starting at
++block 0 means **~67,000 sequential RPC round-trips** before the loop even reaches
++the contract's first block. Consequences:
++
++- The feed shows "No payouts yet." for effectively forever.
++- `watch: true` polling only starts *after* backfill finishes
++  (`shouldStartPolling` requires `!hasNextPage`, `:212`), so live updates never
++  kick in either.
++- 67k calls hammer the shared Alchemy key (see issue #7) → rate-limited → the
++  backfill stalls with errors.
++
++The hook already defaults `fromBlock` to the contract's `deployedOnBlock`
++(`33712450`, present in `deployedContracts.ts:48`). Passing `0n` explicitly
++overrides that sensible default.
++
++**Fix:** remove the `fromBlock: 0n` line entirely (defaults to `deployedOnBlock`),
++or set `fromBlock: 33712450n`. Note the hook itself is `@deprecated` for L2
++production use; for a shipping product the durable fix is an indexer (Ponder /
++subgraph), but removing `fromBlock: 0n` unblocks the ship.
++
++---
++
++## 2. No target-network guard — approve/pay can be sent on the wrong chain
++**Severity: ship-blocking**
++**File:** `packages/nextjs/app/payouts/page.tsx:21,36-62`
++
++The page uses raw wagmi `useWriteContract` and calls it with hardcoded Base
++addresses, without checking the wallet's connected chain:
++
++```ts
++const { writeContractAsync, isPending } = useWriteContract();
++// ...
++await writeContractAsync({ address: USDC.address, abi: USDC.abi, functionName: "approve", ... });
++```
++
++`writeContractAsync` submits to whatever chain the wallet is currently on. If a
++user is connected to Ethereum mainnet (or any non-Base chain), the app will send
++an `approve`/`pay` to the Base contract addresses **on the wrong network** — the
++Base USDC address `0x8335…2913` is a different contract on mainnet, and the
++Payouts address may not exist there at all. For a money-moving app this can burn
++gas on a bogus approval or worse.
++
++`useScaffoldWriteContract` handles this for free (enforces/switches to the target
++network and integrates notifications + the transactor).
++
++**Fix:** switch both writes to `useScaffoldWriteContract` (per AGENTS.md, "Always
++use hooks from `hooks/scaffold-eth`"), OR add an explicit chain guard: read
++`useTargetNetwork()` + `useAccount().chainId`, and if they differ, block the
++buttons and prompt a network switch (`useSwitchChain`).
++
++---
++
++## 3. All errors are swallowed — a failed payout gives the user zero feedback
++**Severity: ship-blocking**
++**File:** `packages/nextjs/app/payouts/page.tsx:44-46,59-61`
++
++```ts
++} catch (e) {
++  console.error(e);   // only feedback is a console log
++}
++```
++
++Both `handleApprove` and `handlePay` swallow every failure into `console.error`.
++Users see nothing — not on a reverted tx, not on rejected signature, not on a bad
++amount/address. In a payouts app this is dangerous: a user who doesn't realize the
++pay failed may retry and double-send, or assume a payment went through that
++didn't. There is also **no success feedback** — `handlePay` clears the form on
++success (`:57-58`) which looks identical to a silent failure.
++
++AGENTS.md explicitly requires `notification` from `~~/utils/scaffold-eth` for
++success/error and `getParsedError` for readable messages.
++
++**Fix:** in each `catch`, `notification.error(getParsedError(e))`; on success,
++`notification.success("Payout sent")`. (Adopting `useScaffoldWriteContract` per
++issue #2 wires the transactor's tx-status notifications automatically.)
++
++---
++
++## 4. Recipient address is never validated
++**Severity: should-fix**
++**File:** `packages/nextjs/app/payouts/page.tsx:78-84,55`
++
++The recipient is a plain `<input type="text">` and is cast with a lie to the type
++system before being passed to the contract:
++
++```ts
++args: [recipient as `0x${string}`, parseUnits(amount || "0", 6), memo],
++```
++
++A typo'd or non-address string reaches viem, which throws — and per issue #3 that
++throw is swallowed silently. No length/checksum validation, no ENS support.
++
++**Fix:** use `AddressInput` from `@scaffold-ui/components` (AGENTS.md: "Always use
++`@scaffold-ui/components`"), or at minimum gate the Send button with
++`isAddress(recipient)` from viem and show inline validation.
++
++---
++
++## 5. Amount input accepts values that silently fail; no validation/guardrails
++**Severity: should-fix**
++**File:** `packages/nextjs/app/payouts/page.tsx:85-91,42,55`
++
++`parseUnits(amount || "0", 6)` throws on more than 6 decimals (e.g. a pasted
++`1.2345678`), on scientific notation, etc. — again swallowed silently (#3). There
++is also no check that `amount > 0`, no check against the displayed USDC balance,
++and the Send button stays enabled with an empty/zero amount (contract will revert
++`"Payouts: zero amount"` with no user-facing reason).
++
++**Fix:** use `IntegerInput`/`EtherInput`-style validated input or clamp to 6
++decimals; disable Approve/Send when `amount` is empty/≤0 or exceeds balance; show
++a clear message instead of relying on a contract revert.
++
++---
++
++## 6. Single shared `isPending` couples the two buttons
++**Severity: should-fix**
++**File:** `packages/nextjs/app/payouts/page.tsx:21,100-113`
++
++`isPending` from one `useWriteContract` instance drives both buttons, so while an
++Approve is in flight the Send button also shows a spinner and is disabled, and
++vice-versa — the UI can't tell the user which action is actually running. There is
++also no allowance read, so the two-step Approve → Send flow is entirely manual
++with no indication of whether an approval is even needed.
++
++**Fix:** track pending state per action (or use two `useScaffoldWriteContract`
++instances). Optionally read `allowance(owner, Payouts)` and hide/disable Approve
++when the current allowance already covers the amount.
++
++---
++
++## 7. Production relies on the shared default Alchemy key & WalletConnect ID
++**Severity: should-fix**
++**File:** `packages/nextjs/scaffold.config.ts:16,29,40`
++
++```ts
++export const DEFAULT_ALCHEMY_API_KEY = "IZYEU2cWBgnFmgiTAgpWD";
++// ...
++walletConnectProjectId: process.env.NEXT_PUBLIC_WALLET_CONNECT_PROJECT_ID || '3a8170812b534d0ff9d794f19a901d64',
++```
++
++These are the shared Scaffold-ETH default keys. Shipping to real users on Base
++means every session shares one heavily-rate-limited Alchemy key — combined with
++issue #1's request storm, RPC throttling is likely, causing reads/feed to fail
++intermittently. The WalletConnect default project ID is similarly not yours
++(analytics/allowlist not under your control).
++
++**Fix:** provision your own Alchemy app + WalletConnect project, set
++`NEXT_PUBLIC_ALCHEMY_API_KEY` and `NEXT_PUBLIC_WALLET_CONNECT_PROJECT_ID` in the
++Vercel/system env (`.env.example` already lists both). Verify they're populated in
++the production environment before shipping.
++
++---
++
++## 8. Polling interval is high for an L2 payouts feed
++**Severity: should-fix**
++**File:** `packages/nextjs/scaffold.config.ts:22`
++
++`pollingInterval: 30000` (30s). AGENTS.md: "Remember to decrease the polling
++interval for L2 chains." Base has ~2s blocks; a 30s interval means balance updates
++and new payouts in the feed lag up to 30 seconds, which feels broken for a
++real-time payout confirmation flow.
++
++**Fix:** lower to a few seconds (e.g. `pollingInterval: 5000`), balancing
++freshness against RPC quota (tie to the dedicated key from #7).
++
++---
++
++## 9. List rendered with array-index keys
++**Severity: should-fix (minor)**
++**File:** `packages/nextjs/app/payouts/page.tsx:120-121`
++
++```tsx
++{(payouts ?? []).map((payout, i) => (
++  <div key={i} ...>
++```
++
++Live events are **prepended** to the array as they arrive (`liveEvents` +
++polling), so index keys don't correspond to stable rows — React may mis-reconcile
++list items as new payouts land.
++
++**Fix:** key on a stable identifier, e.g.
++``key={`${payout.transactionHash}-${payout.logIndex}`}``.
++
++---
++
++## Notes / nits (no action required to ship)
++- `scaffold.config.ts:26,36` comments: "This is ours Alchemy's default API key" /
++  "This is ours WalletConnect's default project ID" — grammar ("ours" → "our").
++- `page.tsx` uses raw Tailwind + hand-rolled inputs instead of DaisyUI/`@scaffold-ui`
++  components as AGENTS.md prefers; covered functionally by #2/#4/#5 above.
++
++---
++
++## Suggested pre-ship order
++1. #1 (feed `fromBlock`) — one-line change, unblocks the core feature.
++2. #2 + #3 (network guard + error/success feedback) — adopt
++   `useScaffoldWriteContract`, which addresses both together.
++3. #7 (own RPC/WC keys in prod env) — do before real traffic.
++4. #4, #5, #6, #8, #9 — robustness/UX polish.
+
+# Untracked files and status
+ A REVIEW.md

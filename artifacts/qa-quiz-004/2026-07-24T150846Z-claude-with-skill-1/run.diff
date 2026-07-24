@@ -1,0 +1,144 @@
+diff --git a/answer.md b/answer.md
+new file mode 100644
+index 0000000..f8b6a40
+--- /dev/null
++++ b/answer.md
+@@ -0,0 +1,135 @@
++# Mobile WalletConnect deep-linking on "Stake"
++
++## TL;DR
++
++Two independent things happen when you sign on mobile WC: (a) the request is
++**published to the relay** so it queues inside the wallet, and (b) the browser
++tries to **foreground the wallet app**. (a) always works — that's why the
++request is "waiting" in Rainbow. (b) is what's broken. The fix is to publish
++first, then deep-link a beat later — never the reverse.
++
++---
++
++## (1) Why nothing auto-opened before the patch
++
++When your dApp is connected to Rainbow over **WalletConnect v2**, Rainbow is a
++separate app. `writeContractAsync` does not talk to Rainbow directly; it hands
++an `eth_sendTransaction` request to the WalletConnect provider, which:
++
++1. serializes + encrypts the request and **publishes it to the WC relay
++   server** (a network round-trip). The wallet, subscribed to that topic,
++   receives it and shows the signing prompt. This is why, when the user
++   manually switches to Rainbow, the request is already sitting there — the
++   relay leg works fine.
++2. tries to **redirect the user to the wallet** so they actually see the
++   prompt. RainbowKit / WC does this using the wallet's redirect info stored on
++   the session (`session.peer.metadata.redirect.native` /
++   `.universal`), i.e. it opens the wallet's deep link.
++
++Step 2 is the flaky part, and it fails for a mobile-browser reason:
++
++- **Opening another app requires a live user activation (the tap).** iOS Safari
++  (and mobile Chrome) only let a page navigate to an external app scheme while a
++  "transient user activation" from the tap is still valid.
++- `writeContractAsync` is **async** — encrypt + publish to the relay is a
++  network round-trip. By the time WC is ready to redirect, the `await` has
++  already unwound the call stack and the tap's activation has been consumed /
++  expired. The browser then **silently refuses** to open the app.
++- (Secondary cause: if the connected wallet didn't populate `redirect` on its
++  session metadata, RainbowKit has no target to open and does nothing.)
++
++Net: request lands in the wallet, but the browser never brings the wallet
++forward, so the page "just sits there."
++
++---
++
++## (2) Why the patch made it worse
++
++```js
++window.location.href = "rainbow://";   // line 1
++await writeContractAsync(...);          // line 2
++```
++
++This opens Rainbow **before the request exists**:
++
++- `window.location.href = "rainbow://"` fires immediately, before
++  `writeContractAsync` has built, encrypted, or published anything. Rainbow
++  comes forward with **nothing queued** → "nothing to sign."
++- Worse, navigating away **backgrounds the web page**. Mobile browsers throttle
++  or suspend JS in a backgrounded tab, so the subsequent `writeContractAsync` —
++  the thing that publishes the request — may never run to completion. The relay
++  publish is paused/dropped, so the tx **never lands onchain**.
++
++So the patch traded "wallet doesn't open" for "wallet opens empty and the tx is
++never sent" — strictly worse.
++
++---
++
++## (3) The correct pattern
++
++**Order: publish first, deep-link second, with a short delay in between.**
++
++```js
++async function onStake() {
++  // 1. Kick off the write — this triggers the WC relay publish.
++  const txPromise = writeContractAsync({ /* ... */ });
++
++  // 2. Give WC time to encrypt + publish to the relay, THEN foreground wallet.
++  if (shouldDeepLink()) {
++    setTimeout(() => {
++      window.location.href = getWalletRedirect(); // from session metadata
++    }, 200); // ~150–300ms
++  }
++
++  await txPromise;
++}
++```
++
++### The ordering and the delay
++
++- Start the write **first** so the request is actually created and pushed to the
++  relay. Do **not** `await` it before redirecting — you'd never open the wallet
++  in time. Fire the redirect on a short timer while the promise runs.
++- The delay exists to cover the **relay publish round-trip**: long enough that
++  by the time the wallet is foregrounded the request is already queued (too
++  short = empty wallet, same bug as the patch), but short enough to stay inside
++  the browser's transient-activation window (~5s on iOS) and feel instant. A
++  few hundred ms (~150–300ms) covers typical relay latency with margin.
++- Better than a fixed timer: redirect off the WC provider's own "request sent"
++  signal if you can hook it. The timer is the pragmatic version.
++- Best of all: prefer RainbowKit's **built-in** redirect handling (it already
++  knows the connected wallet and its links) over hand-rolling this. The manual
++  deep link is a fallback for when the automatic one doesn't fire.
++
++### Which scheme to open — do NOT hardcode `rainbow://`
++
++`connector.id === "walletConnect"` tells you only that the transport is
++WalletConnect, **not which wallet** the user picked. Hardcoding `rainbow://`
++breaks MetaMask, Trust, etc. Read the target from the **active session's peer
++metadata**:
++
++- `session.peer.metadata.redirect.universal` → prefer this (an https universal
++  link): it opens the app if installed and falls back to the App Store /
++  browser if not, and doesn't throw a scary "open in app?" prompt.
++- `session.peer.metadata.redirect.native` → the custom scheme
++  (`rainbow://`, `metamask://`, …), use as fallback.
++- `session.peer.metadata.name` identifies the wallet if you need to branch.
++
++If no redirect metadata is present, don't guess a scheme — let RainbowKit handle
++it or leave the user to switch manually.
++
++### When to skip the deep link entirely
++
++- **Not mobile** — desktop browser: nothing to open; a scheme navigation errors
++  or no-ops.
++- **Injected / extension connector** (`connector.id !== "walletConnect"`, e.g.
++  injected MetaMask, Coinbase) — the wallet lives in-page; no app to foreground.
++- **Inside a wallet's in-app dApp browser** (already running in Rainbow /
++  MetaMask browser) — an injected provider is present; deep-linking would bounce
++  you out or loop.
++- **Desktop WC via QR** — the approval happens on the user's phone; the desktop
++  page has no app to open.
++- **No active WC session / no redirect metadata** — no valid target to open.
++
++Guard the redirect on: mobile device **and** `connector.id === "walletConnect"`
++**and** no injected provider in-page **and** a redirect target exists.
+
+# Untracked files and status
+ A answer.md
