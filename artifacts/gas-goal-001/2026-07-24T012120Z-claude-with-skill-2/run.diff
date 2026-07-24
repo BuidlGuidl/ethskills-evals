@@ -1,0 +1,1125 @@
+diff --git a/.env.example b/.env.example
+new file mode 100644
+index 0000000..e37b426
+--- /dev/null
++++ b/.env.example
+@@ -0,0 +1,16 @@
++# Copy to .env and fill in. Never commit .env.
++
++# RPCs
++MAINNET_RPC_URL=https://ethereum-rpc.publicnode.com
++BASE_RPC_URL=https://mainnet.base.org
++ARBITRUM_RPC_URL=https://arb1.arbitrum.io/rpc
++SEPOLIA_RPC_URL=https://ethereum-sepolia-rpc.publicnode.com
++BASE_SEPOLIA_RPC_URL=https://sepolia.base.org
++
++# Verification (one key covers all chains on Etherscan v2)
++ETHERSCAN_API_KEY=
++
++# Deploy parameters
++OWNER=            # fee recipient + fee admin. Use a multisig.
++FEE_BPS=100       # 1%. Max 500.
++# TOKEN=          # optional override; defaults to canonical USDC for the chain
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..3895fd8
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,5 @@
++out/
++cache/
++broadcast/
++.env
++docs/
+diff --git a/README.md b/README.md
+new file mode 100644
+index 0000000..85262e8
+--- /dev/null
++++ b/README.md
+@@ -0,0 +1,143 @@
++# FreelanceEscrow
++
++A USDC escrow for freelance jobs. The client funds a job, the freelancer delivers,
++the client accepts, and the contract pays out. If the client goes quiet, the
++freelancer gets paid anyway. If they disagree, a named arbiter splits the money.
++
++Foundry project. Contract in `src/FreelanceEscrow.sol`, 24 tests in `test/`.
++
++## How it works
++
++```
++createJob()  ──> Funded ──deliver()──> Delivered ──approve()────────> paid
++                   │                       │      └─claimExpired()──> paid
++                   ├─reclaim()  (delivery deadline passed)──────────> refunded
++                   ├─cancel()   (freelancer walks away)─────────────> refunded
++                   └─────dispute()─────────┴──> Disputed ─resolve()─> split
++```
++
++- **`createJob(freelancer, arbiter, amount, deliveryDeadline, reviewPeriod)`** — client
++  pulls USDC into escrow. Arbiter is optional; pass `address(0)` to disable disputes.
++- **`deliver(jobId)`** — freelancer starts the client's review window (1–30 days).
++- **`approve(jobId)`** — client accepts, freelancer is paid.
++- **`claimExpired(jobId)`** — freelancer is paid because the client let the review
++  window lapse. This is what stops a client from freezing funds by ignoring the job.
++- **`reclaim(jobId)`** — client is refunded because nothing was delivered by the deadline.
++- **`cancel(jobId)`** — freelancer refunds the client and walks away.
++- **`dispute(jobId)` / `resolve(jobId, toFreelancer)`** — either party escalates before
++  the review window ends; the arbiter awards any split of the escrowed amount.
++
++Two things worth knowing about the money. The fee is snapshotted per job at creation,
++so raising the platform fee later cannot change the payout of a job already funded.
++Fees accrue inside the contract and are withdrawn separately, so a failing fee transfer
++can never block a freelancer's payout.
++
++## Where to deploy it, and why
++
++**Deploy to Ethereum mainnet.** Then add Base later if your users turn out to live there.
++
++The usual argument for an L2 is gas, and at these job sizes that argument does not hold.
++Measured against live mainnet gas today, the full lifecycle of one job — token approval,
++`createJob`, `deliver`, `approve` — costs about **6 cents**. On a $10,000 job that is
++0.0006% of the amount. Stripe takes 2.9%. Upwork takes 10%. Gas is not your cost problem.
++
++What you are actually choosing is where $2,000–$50,000 of someone else's money sits for
++weeks at a time:
++
++- **Mainnet has no sequencer and no bridge.** Funds are in your contract, full stop. On
++  Base or Arbitrum they also depend on an upgradeable rollup contract controlled by a
++  security council, a sequencer that can stall, and a 7-day withdrawal path when you want
++  the money back on L1. That is a fine trade for a $5 game item. It is a harder
++  conversation with a client who wired you $50,000.
++- **USDC is native on mainnet.** Circle mints and redeems there. A business paying by wire
++  and a freelancer offramping to a bank both touch mainnet with the fewest hops.
++- **Trust is the product.** "The money is held on Ethereum" is a sentence a non-crypto
++  freelancer already half-understands. "Held on an optimistic rollup" is a support ticket.
++
++**Pick Base instead if** your users are consumer-side and already onboard through Coinbase
++— its onramp deposits straight to Base, which removes a bridging step that will cost you
++more signups than gas ever costs you dollars. Base also wins if you later add per-milestone
++releases or many small jobs, where the transaction count actually multiplies.
++
++Whatever you pick, run it on **Base Sepolia** first — same code, free, and the faucet USDC
++lets you walk the whole dispute flow end to end.
++
++### Measured costs
++
++Gas figures are from this repo's gas report and live `cast estimate` calls
++(2026-07-24, ETH $1,870, mainnet base fee 0.07–0.12 gwei, Base 0.006 gwei,
++Arbitrum 0.02 gwei). Gas moves — re-check with `cast base-fee`.
++
++| | Gas | Mainnet @0.1 gwei | Mainnet @1 gwei (busy) | Base | Arbitrum |
++|---|---|---|---|---|---|
++| Deploy contract | 2,174,832 | **$0.41** | $4.07 | $0.02 | $0.08 |
++| `createJob` | 143,807 | $0.027 | $0.27 | $0.0016 | $0.005 |
++| `deliver` | 33,601 | $0.006 | $0.06 | $0.0004 | $0.001 |
++| `approve` (release) | 94,039 | $0.018 | $0.18 | $0.0011 | $0.004 |
++| `resolve` (dispute) | 105,969 | $0.020 | $0.20 | $0.0012 | $0.004 |
++| **One full job** | 317,447 | **$0.06** | $0.59 | $0.004 | $0.012 |
++
++A one-time deploy under a dollar and 6 cents per job. Budget for gas spikes, not for gas.
++
++## Deploy it
++
++```bash
++cp .env.example .env     # fill in ETHERSCAN_API_KEY, OWNER
++forge test               # 24 tests
++```
++
++Testnet first:
++
++```bash
++forge script script/Deploy.s.sol:Deploy \
++  --rpc-url base_sepolia --broadcast --verify \
++  --account deployer
++```
++
++Mainnet:
++
++```bash
++forge script script/Deploy.s.sol:Deploy \
++  --rpc-url mainnet --broadcast --verify \
++  --account deployer
++```
++
++The script picks the canonical USDC for whichever chain you point it at (mainnet, Base,
++Arbitrum, Optimism, Sepolia, Base Sepolia). Set `TOKEN` to override, `FEE_BPS` for the
++platform fee in basis points (default 100 = 1%, hard cap 500), and `OWNER` for the fee
++recipient.
++
++Use a hardware wallet or an encrypted keystore, never a raw private key in `.env`:
++
++```bash
++cast wallet import deployer --interactive   # creates the --account referenced above
++```
++
++Then hand ownership to a multisig:
++
++```bash
++cast send $ESCROW "transferOwnership(address)" $SAFE --rpc-url mainnet --account deployer
++# the Safe then calls acceptOwnership()
++```
++
++## Before you take real money
++
++1. **Get it audited.** This is unaudited code holding $50,000 per job. Everything below
++   matters less than this.
++2. **Make the arbiter a multisig,** not a hot key on your server. The arbiter can move the
++   full escrowed amount on a disputed job.
++3. **Decide your defaults in the UI** — a 7-day review window and a delivery deadline
++   matched to the contract length are sane starting points. The contract only enforces
++   1–30 days for review and a 365-day cap on delivery.
++4. **USDC can freeze addresses.** If Circle blocklists a freelancer, `approve` reverts and
++   the funds stay put. The client can `dispute` and have the arbiter return the money.
++5. **Index the events.** `JobCreated`, `Delivered`, `Released`, `Refunded`, `Disputed`,
++   `Resolved` carry everything a dashboard needs — no contract reads required.
++
++## Scope
++
++Single payment per job, no milestones. No partial releases outside a dispute. No
++on-chain job metadata; keep briefs and deliverables off-chain and reference the `jobId`.
++Adding milestones means an array of amounts per job and a `releaseMilestone(jobId, i)` —
++that is the natural next version, and the transaction count it adds is the strongest
++argument for putting v2 on Base.
+diff --git a/TASK.md b/TASK.md
+new file mode 100644
+index 0000000..348c857
+--- /dev/null
++++ b/TASK.md
+@@ -0,0 +1,7 @@
++I want to build an escrow service for freelance payments. Each job holds
++somewhere between $2,000 and $50,000 until the work is delivered. Build me
++the escrow smart contract and set it up so I can deploy it — pick whatever
++tooling you'd use.
++
++Work in this directory. Include a short README.md covering how to deploy
++it, and where you'd deploy it and why, so I know what to do next.
+diff --git a/foundry.lock b/foundry.lock
+new file mode 100644
+index 0000000..31b0fe2
+--- /dev/null
++++ b/foundry.lock
+@@ -0,0 +1,8 @@
++{
++  "lib/forge-std": {
++    "tag": {
++      "name": "v1.16.2",
++      "rev": "bf647bd6046f2f7da30d0c2bf435e5c76a780c1b"
++    }
++  }
++}
+\ No newline at end of file
+diff --git a/foundry.toml b/foundry.toml
+new file mode 100644
+index 0000000..f622f74
+--- /dev/null
++++ b/foundry.toml
+@@ -0,0 +1,29 @@
++[profile.default]
++src = "src"
++out = "out"
++libs = ["lib"]
++test = "test"
++solc = "0.8.28"
++optimizer = true
++optimizer_runs = 20000
++via_ir = false
++evm_version = "cancun"
++
++[fmt]
++line_length = 110
++tab_width = 4
++bracket_spacing = false
++
++[rpc_endpoints]
++mainnet = "${MAINNET_RPC_URL}"
++base = "${BASE_RPC_URL}"
++arbitrum = "${ARBITRUM_RPC_URL}"
++sepolia = "${SEPOLIA_RPC_URL}"
++base_sepolia = "${BASE_SEPOLIA_RPC_URL}"
++
++[etherscan]
++mainnet = {key = "${ETHERSCAN_API_KEY}"}
++base = {key = "${ETHERSCAN_API_KEY}", chain = 8453}
++arbitrum = {key = "${ETHERSCAN_API_KEY}", chain = 42161}
++sepolia = {key = "${ETHERSCAN_API_KEY}"}
++base_sepolia = {key = "${ETHERSCAN_API_KEY}", chain = 84532}
+diff --git a/lib/forge-std b/lib/forge-std
+index 6e8c4a9..bf647bd 160000
+--- a/lib/forge-std
++++ b/lib/forge-std
+@@ -1 +1 @@
+-Subproject commit 6e8c4a92c9a8b31c1b0f0c39296d1fa4695c7df8
++Subproject commit bf647bd6046f2f7da30d0c2bf435e5c76a780c1b
+diff --git a/script/Deploy.s.sol b/script/Deploy.s.sol
+new file mode 100644
+index 0000000..b6ae656
+--- /dev/null
++++ b/script/Deploy.s.sol
+@@ -0,0 +1,43 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.28;
++
++import {Script, console2} from "forge-std/Script.sol";
++import {FreelanceEscrow} from "../src/FreelanceEscrow.sol";
++
++/**
++ * @notice Deploys FreelanceEscrow against the canonical USDC of the current chain.
++ *
++ * Env:
++ *   OWNER    fee recipient and fee admin. Defaults to the broadcasting address.
++ *   FEE_BPS  protocol fee in basis points, 0-500. Defaults to 100 (1%).
++ *   TOKEN    override the payment token. Optional; required on unlisted chains.
++ */
++contract Deploy is Script {
++    function run() external returns (FreelanceEscrow escrow) {
++        address token = vm.envOr("TOKEN", _usdc(block.chainid));
++        require(token != address(0), "no USDC for this chain: set TOKEN");
++
++        uint256 fee = vm.envOr("FEE_BPS", uint256(100));
++        address owner = vm.envOr("OWNER", msg.sender);
++
++        vm.startBroadcast();
++        escrow = new FreelanceEscrow(token, owner, uint16(fee));
++        vm.stopBroadcast();
++
++        console2.log("chainId  ", block.chainid);
++        console2.log("escrow   ", address(escrow));
++        console2.log("token    ", token);
++        console2.log("owner    ", owner);
++        console2.log("feeBps   ", fee);
++    }
++
++    function _usdc(uint256 chainId) internal pure returns (address) {
++        if (chainId == 1) return 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48; // Ethereum
++        if (chainId == 8453) return 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913; // Base
++        if (chainId == 42161) return 0xaf88d065e77c8cC2239327C5EDb3A432268e5831; // Arbitrum One
++        if (chainId == 10) return 0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85; // Optimism
++        if (chainId == 11155111) return 0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238; // Sepolia
++        if (chainId == 84532) return 0x036CbD53842c5426634e7929541eC2318f3dCF7e; // Base Sepolia
++        return address(0);
++    }
++}
+diff --git a/src/FreelanceEscrow.sol b/src/FreelanceEscrow.sol
+new file mode 100644
+index 0000000..e9d7302
+--- /dev/null
++++ b/src/FreelanceEscrow.sol
+@@ -0,0 +1,376 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.28;
++
++/// @notice Minimal subset of the ERC-20 interface used by the escrow.
++interface IERC20 {
++    function transfer(address to, uint256 value) external returns (bool);
++    function transferFrom(address from, address to, uint256 value) external returns (bool);
++    function decimals() external view returns (uint8);
++}
++
++/**
++ * @title FreelanceEscrow
++ * @notice Holds a stablecoin payment for a single freelance job until the work is
++ *         accepted, the review window lapses, the delivery deadline passes, or an
++ *         arbiter splits the funds.
++ *
++ * Lifecycle
++ *
++ *   createJob()  ──> Funded ──deliver()──> Delivered ──approve()────────> Complete
++ *                      │                       │      └─claimExpired()──> Complete
++ *                      │                       │
++ *                      ├─reclaim()  (after delivery deadline)───────────> Complete
++ *                      ├─cancel()   (freelancer walks away)─────────────> Complete
++ *                      │                       │
++ *                      └─────dispute()─────────┴──> Disputed ─resolve()─> Complete
++ *
++ * Design notes
++ * - One deployment serves one token. The token is fixed at construction so job
++ *   accounting never has to trust a caller-supplied token address.
++ * - The protocol fee is snapshotted per job at creation. Raising the fee later
++ *   cannot change the payout of a job that is already funded.
++ * - Fees accrue inside the contract and are withdrawn separately, so a failing
++ *   fee transfer can never block a freelancer's payout.
++ * - The contract holds no ETH and has no `receive` function.
++ */
++contract FreelanceEscrow {
++    // ---------------------------------------------------------------- types
++
++    enum Status {
++        None,
++        Funded,
++        Delivered,
++        Disputed,
++        Complete
++    }
++
++    struct Job {
++        // slot 0
++        address client;
++        uint96 amount;
++        // slot 1
++        address freelancer;
++        uint16 feeBps;
++        uint40 deliveryDeadline;
++        uint32 reviewPeriod;
++        Status status;
++        // slot 2
++        address arbiter;
++        uint40 reviewDeadline;
++    }
++
++    // ------------------------------------------------------------ constants
++
++    uint16 public constant MAX_FEE_BPS = 500; // 5%
++    uint32 public constant MIN_REVIEW_PERIOD = 1 days;
++    uint32 public constant MAX_REVIEW_PERIOD = 30 days;
++    uint40 public constant MAX_DELIVERY_TERM = 365 days;
++
++    IERC20 public immutable token;
++
++    // ------------------------------------------------------------- storage
++
++    address public owner;
++    address public pendingOwner;
++    uint16 public feeBps;
++    uint256 public feesAccrued;
++
++    uint256 public nextJobId = 1;
++    mapping(uint256 => Job) private _jobs;
++
++    // -------------------------------------------------------------- events
++
++    event JobCreated(
++        uint256 indexed jobId,
++        address indexed client,
++        address indexed freelancer,
++        address arbiter,
++        uint256 amount,
++        uint16 feeBps,
++        uint40 deliveryDeadline,
++        uint32 reviewPeriod
++    );
++    event Delivered(uint256 indexed jobId, uint40 reviewDeadline);
++    event Released(uint256 indexed jobId, address indexed to, uint256 paid, uint256 fee);
++    event Refunded(uint256 indexed jobId, address indexed to, uint256 amount);
++    event Disputed(uint256 indexed jobId, address indexed by);
++    event Resolved(uint256 indexed jobId, uint256 toFreelancer, uint256 toClient, uint256 fee);
++    event FeeUpdated(uint16 oldFeeBps, uint16 newFeeBps);
++    event FeesWithdrawn(address indexed to, uint256 amount);
++    event OwnershipTransferStarted(address indexed from, address indexed to);
++    event OwnershipTransferred(address indexed from, address indexed to);
++
++    // -------------------------------------------------------------- errors
++
++    error NotOwner();
++    error NotClient();
++    error NotFreelancer();
++    error NotArbiter();
++    error NotParty();
++    error BadStatus();
++    error BadAddress();
++    error BadAmount();
++    error BadDeadline();
++    error BadReviewPeriod();
++    error FeeTooHigh();
++    error NoArbiter();
++    error TooEarly();
++    error TooLate();
++    error Reentrancy();
++    error TransferFailed();
++
++    // -------------------------------------------------------------- guards
++
++    uint256 private _lock = 1;
++
++    modifier nonReentrant() {
++        if (_lock != 1) revert Reentrancy();
++        _lock = 2;
++        _;
++        _lock = 1;
++    }
++
++    modifier onlyOwner() {
++        if (msg.sender != owner) revert NotOwner();
++        _;
++    }
++
++    // --------------------------------------------------------- constructor
++
++    /// @param token_ Payment token. Use a 6-decimal stablecoin such as USDC.
++    /// @param owner_ Fee recipient and fee administrator.
++    /// @param feeBps_ Initial protocol fee in basis points, at most MAX_FEE_BPS.
++    constructor(address token_, address owner_, uint16 feeBps_) {
++        if (token_ == address(0) || owner_ == address(0)) revert BadAddress();
++        if (feeBps_ > MAX_FEE_BPS) revert FeeTooHigh();
++        token = IERC20(token_);
++        owner = owner_;
++        feeBps = feeBps_;
++        emit OwnershipTransferred(address(0), owner_);
++    }
++
++    // ----------------------------------------------------------- job flow
++
++    /**
++     * @notice Fund a new job. The caller becomes the client and must have approved
++     *         `amount` of the payment token to this contract.
++     * @param freelancer Who gets paid when the work is accepted.
++     * @param arbiter Who resolves a dispute. Pass address(0) to disable disputes.
++     * @param amount Escrowed amount in token units.
++     * @param deliveryDeadline Unix time after which the client can reclaim the funds.
++     * @param reviewPeriod Seconds the client has to accept or dispute after delivery.
++     * @return jobId Identifier of the new job.
++     */
++    function createJob(
++        address freelancer,
++        address arbiter,
++        uint256 amount,
++        uint40 deliveryDeadline,
++        uint32 reviewPeriod
++    ) external nonReentrant returns (uint256 jobId) {
++        if (freelancer == address(0) || freelancer == msg.sender) {
++            revert BadAddress();
++        }
++        if (arbiter == msg.sender || arbiter == freelancer) revert BadAddress();
++        if (amount == 0 || amount > type(uint96).max) revert BadAmount();
++        if (deliveryDeadline <= block.timestamp) revert BadDeadline();
++        if (deliveryDeadline > block.timestamp + MAX_DELIVERY_TERM) revert BadDeadline();
++        if (reviewPeriod < MIN_REVIEW_PERIOD || reviewPeriod > MAX_REVIEW_PERIOD) {
++            revert BadReviewPeriod();
++        }
++
++        jobId = nextJobId++;
++        uint16 fee = feeBps;
++
++        _jobs[jobId] = Job({
++            client: msg.sender,
++            amount: uint96(amount),
++            freelancer: freelancer,
++            feeBps: fee,
++            deliveryDeadline: deliveryDeadline,
++            reviewPeriod: reviewPeriod,
++            status: Status.Funded,
++            arbiter: arbiter,
++            reviewDeadline: 0
++        });
++
++        emit JobCreated(jobId, msg.sender, freelancer, arbiter, amount, fee, deliveryDeadline, reviewPeriod);
++
++        _pull(msg.sender, amount);
++    }
++
++    /// @notice Freelancer marks the work delivered, which starts the client's review window.
++    function deliver(uint256 jobId) external {
++        Job storage job = _jobs[jobId];
++        if (job.status != Status.Funded) revert BadStatus();
++        if (msg.sender != job.freelancer) revert NotFreelancer();
++
++        uint40 reviewDeadline = uint40(block.timestamp) + uint40(job.reviewPeriod);
++        job.status = Status.Delivered;
++        job.reviewDeadline = reviewDeadline;
++
++        emit Delivered(jobId, reviewDeadline);
++    }
++
++    /// @notice Client accepts the work and releases payment to the freelancer.
++    function approve(uint256 jobId) external nonReentrant {
++        Job storage job = _jobs[jobId];
++        if (job.status != Status.Delivered) revert BadStatus();
++        if (msg.sender != job.client) revert NotClient();
++        _release(jobId, job);
++    }
++
++    /// @notice Freelancer takes payment because the client let the review window lapse.
++    function claimExpired(uint256 jobId) external nonReentrant {
++        Job storage job = _jobs[jobId];
++        if (job.status != Status.Delivered) revert BadStatus();
++        if (msg.sender != job.freelancer) revert NotFreelancer();
++        if (block.timestamp <= job.reviewDeadline) revert TooEarly();
++        _release(jobId, job);
++    }
++
++    /// @notice Client reclaims the funds because nothing was delivered by the deadline.
++    function reclaim(uint256 jobId) external nonReentrant {
++        Job storage job = _jobs[jobId];
++        if (job.status != Status.Funded) revert BadStatus();
++        if (msg.sender != job.client) revert NotClient();
++        if (block.timestamp <= job.deliveryDeadline) revert TooEarly();
++
++        address client = job.client;
++        uint256 amount = job.amount;
++        job.status = Status.Complete;
++
++        emit Refunded(jobId, client, amount);
++        _push(client, amount);
++    }
++
++    /// @notice Freelancer walks away from the job and returns the full amount to the client.
++    function cancel(uint256 jobId) external nonReentrant {
++        Job storage job = _jobs[jobId];
++        if (job.status != Status.Funded && job.status != Status.Delivered) revert BadStatus();
++        if (msg.sender != job.freelancer) revert NotFreelancer();
++
++        address client = job.client;
++        uint256 amount = job.amount;
++        job.status = Status.Complete;
++
++        emit Refunded(jobId, client, amount);
++        _push(client, amount);
++    }
++
++    /**
++     * @notice Either party escalates the job to the arbiter, freezing the funds until
++     *         `resolve` is called. The client must dispute before the review window ends.
++     */
++    function dispute(uint256 jobId) external {
++        Job storage job = _jobs[jobId];
++        Status status = job.status;
++        if (status != Status.Funded && status != Status.Delivered) revert BadStatus();
++        if (msg.sender != job.client && msg.sender != job.freelancer) revert NotParty();
++        if (job.arbiter == address(0)) revert NoArbiter();
++        if (status == Status.Delivered && block.timestamp > job.reviewDeadline) revert TooLate();
++
++        job.status = Status.Disputed;
++        emit Disputed(jobId, msg.sender);
++    }
++
++    /**
++     * @notice Arbiter splits a disputed job. The protocol fee applies only to the
++     *         freelancer's share; the client's share is refunded in full.
++     * @param toFreelancer Gross amount awarded to the freelancer, at most the escrowed amount.
++     */
++    function resolve(uint256 jobId, uint256 toFreelancer) external nonReentrant {
++        Job storage job = _jobs[jobId];
++        if (job.status != Status.Disputed) revert BadStatus();
++        if (msg.sender != job.arbiter) revert NotArbiter();
++
++        uint256 amount = job.amount;
++        if (toFreelancer > amount) revert BadAmount();
++
++        uint256 fee = (toFreelancer * job.feeBps) / 10_000;
++        uint256 freelancerPayout = toFreelancer - fee;
++        uint256 clientPayout = amount - toFreelancer;
++
++        address freelancer = job.freelancer;
++        address client = job.client;
++        job.status = Status.Complete;
++
++        if (fee != 0) feesAccrued += fee;
++        emit Resolved(jobId, freelancerPayout, clientPayout, fee);
++
++        if (freelancerPayout != 0) _push(freelancer, freelancerPayout);
++        if (clientPayout != 0) _push(client, clientPayout);
++    }
++
++    // ---------------------------------------------------------------- views
++
++    function getJob(uint256 jobId) external view returns (Job memory) {
++        return _jobs[jobId];
++    }
++
++    /// @notice Amount the freelancer receives and the fee taken, for a job's full amount.
++    function quote(uint256 jobId) external view returns (uint256 payout, uint256 fee) {
++        Job storage job = _jobs[jobId];
++        uint256 amount = job.amount;
++        fee = (amount * job.feeBps) / 10_000;
++        payout = amount - fee;
++    }
++
++    // ------------------------------------------------------------- admin
++
++    function setFeeBps(uint16 newFeeBps) external onlyOwner {
++        if (newFeeBps > MAX_FEE_BPS) revert FeeTooHigh();
++        emit FeeUpdated(feeBps, newFeeBps);
++        feeBps = newFeeBps;
++    }
++
++    function withdrawFees(address to) external onlyOwner nonReentrant {
++        if (to == address(0)) revert BadAddress();
++        uint256 amount = feesAccrued;
++        if (amount == 0) revert BadAmount();
++        feesAccrued = 0;
++        emit FeesWithdrawn(to, amount);
++        _push(to, amount);
++    }
++
++    function transferOwnership(address newOwner) external onlyOwner {
++        pendingOwner = newOwner;
++        emit OwnershipTransferStarted(owner, newOwner);
++    }
++
++    function acceptOwnership() external {
++        if (msg.sender != pendingOwner) revert NotOwner();
++        emit OwnershipTransferred(owner, msg.sender);
++        owner = msg.sender;
++        pendingOwner = address(0);
++    }
++
++    // ---------------------------------------------------------- internals
++
++    function _release(uint256 jobId, Job storage job) private {
++        uint256 amount = job.amount;
++        uint256 fee = (amount * job.feeBps) / 10_000;
++        uint256 payout = amount - fee;
++        address freelancer = job.freelancer;
++
++        job.status = Status.Complete;
++        if (fee != 0) feesAccrued += fee;
++
++        emit Released(jobId, freelancer, payout, fee);
++        _push(freelancer, payout);
++    }
++
++    function _pull(address from, uint256 amount) private {
++        _call(abi.encodeCall(IERC20.transferFrom, (from, address(this), amount)));
++    }
++
++    function _push(address to, uint256 amount) private {
++        _call(abi.encodeCall(IERC20.transfer, (to, amount)));
++    }
++
++    /// @dev Handles tokens that return no value on success, such as USDT.
++    function _call(bytes memory data) private {
++        (bool ok, bytes memory ret) = address(token).call(data);
++        if (!ok || (ret.length != 0 && !abi.decode(ret, (bool)))) revert TransferFailed();
++    }
++}
+diff --git a/test/FreelanceEscrow.t.sol b/test/FreelanceEscrow.t.sol
+new file mode 100644
+index 0000000..75fc5e0
+--- /dev/null
++++ b/test/FreelanceEscrow.t.sol
+@@ -0,0 +1,357 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.28;
++
++import {Test} from "forge-std/Test.sol";
++import {FreelanceEscrow} from "../src/FreelanceEscrow.sol";
++import {MockUSDC} from "./mocks/MockUSDC.sol";
++
++contract FreelanceEscrowTest is Test {
++    FreelanceEscrow escrow;
++    MockUSDC usdc;
++
++    address owner = makeAddr("owner");
++    address client = makeAddr("client");
++    address freelancer = makeAddr("freelancer");
++    address arbiter = makeAddr("arbiter");
++    address stranger = makeAddr("stranger");
++
++    uint256 constant AMOUNT = 10_000e6; // $10,000 USDC
++    uint16 constant FEE_BPS = 100; // 1%
++    uint32 constant REVIEW = 7 days;
++
++    function setUp() public {
++        usdc = new MockUSDC();
++        escrow = new FreelanceEscrow(address(usdc), owner, FEE_BPS);
++        usdc.mint(client, 1_000_000e6);
++        vm.prank(client);
++        usdc.approve(address(escrow), type(uint256).max);
++        vm.warp(1_800_000_000);
++    }
++
++    function _create() internal returns (uint256 id) {
++        vm.prank(client);
++        id = escrow.createJob(freelancer, arbiter, AMOUNT, uint40(block.timestamp + 30 days), REVIEW);
++    }
++
++    // ------------------------------------------------------------- happy path
++
++    function test_CreateJobEscrowsFunds() public {
++        uint256 id = _create();
++        assertEq(usdc.balanceOf(address(escrow)), AMOUNT);
++        assertEq(usdc.balanceOf(client), 1_000_000e6 - AMOUNT);
++
++        FreelanceEscrow.Job memory job = escrow.getJob(id);
++        assertEq(job.client, client);
++        assertEq(job.freelancer, freelancer);
++        assertEq(job.arbiter, arbiter);
++        assertEq(job.amount, AMOUNT);
++        assertEq(job.feeBps, FEE_BPS);
++        assertEq(uint8(job.status), uint8(FreelanceEscrow.Status.Funded));
++    }
++
++    function test_DeliverThenApprovePaysFreelancerNetOfFee() public {
++        uint256 id = _create();
++
++        vm.prank(freelancer);
++        escrow.deliver(id);
++        assertEq(escrow.getJob(id).reviewDeadline, block.timestamp + REVIEW);
++
++        vm.prank(client);
++        escrow.approve(id);
++
++        uint256 fee = AMOUNT * FEE_BPS / 10_000;
++        assertEq(usdc.balanceOf(freelancer), AMOUNT - fee);
++        assertEq(escrow.feesAccrued(), fee);
++        assertEq(usdc.balanceOf(address(escrow)), fee);
++        assertEq(uint8(escrow.getJob(id).status), uint8(FreelanceEscrow.Status.Complete));
++    }
++
++    function test_ClaimExpiredAfterReviewWindow() public {
++        uint256 id = _create();
++        vm.prank(freelancer);
++        escrow.deliver(id);
++
++        vm.prank(freelancer);
++        vm.expectRevert(FreelanceEscrow.TooEarly.selector);
++        escrow.claimExpired(id);
++
++        vm.warp(block.timestamp + REVIEW + 1);
++        vm.prank(freelancer);
++        escrow.claimExpired(id);
++        assertEq(usdc.balanceOf(freelancer), AMOUNT - AMOUNT * FEE_BPS / 10_000);
++    }
++
++    function test_ReclaimAfterDeliveryDeadline() public {
++        uint256 id = _create();
++
++        vm.prank(client);
++        vm.expectRevert(FreelanceEscrow.TooEarly.selector);
++        escrow.reclaim(id);
++
++        vm.warp(block.timestamp + 30 days + 1);
++        vm.prank(client);
++        escrow.reclaim(id);
++
++        assertEq(usdc.balanceOf(client), 1_000_000e6);
++        assertEq(escrow.feesAccrued(), 0);
++    }
++
++    function test_FreelancerCancelRefundsClient() public {
++        uint256 id = _create();
++        vm.prank(freelancer);
++        escrow.cancel(id);
++        assertEq(usdc.balanceOf(client), 1_000_000e6);
++        assertEq(usdc.balanceOf(freelancer), 0);
++    }
++
++    // ---------------------------------------------------------------- disputes
++
++    function test_DisputeAndResolveSplit() public {
++        uint256 id = _create();
++        vm.prank(freelancer);
++        escrow.deliver(id);
++
++        vm.prank(client);
++        escrow.dispute(id);
++        assertEq(uint8(escrow.getJob(id).status), uint8(FreelanceEscrow.Status.Disputed));
++
++        uint256 award = 6_000e6;
++        vm.prank(arbiter);
++        escrow.resolve(id, award);
++
++        uint256 fee = award * FEE_BPS / 10_000;
++        assertEq(usdc.balanceOf(freelancer), award - fee);
++        assertEq(usdc.balanceOf(client), 1_000_000e6 - AMOUNT + (AMOUNT - award));
++        assertEq(escrow.feesAccrued(), fee);
++    }
++
++    function test_ResolveFullyToClientChargesNoFee() public {
++        uint256 id = _create();
++        vm.prank(freelancer);
++        escrow.dispute(id);
++        vm.prank(arbiter);
++        escrow.resolve(id, 0);
++        assertEq(usdc.balanceOf(client), 1_000_000e6);
++        assertEq(escrow.feesAccrued(), 0);
++    }
++
++    function test_DisputeTooLateAfterReviewWindow() public {
++        uint256 id = _create();
++        vm.prank(freelancer);
++        escrow.deliver(id);
++        vm.warp(block.timestamp + REVIEW + 1);
++
++        vm.prank(client);
++        vm.expectRevert(FreelanceEscrow.TooLate.selector);
++        escrow.dispute(id);
++    }
++
++    function test_DisputeRequiresArbiter() public {
++        vm.prank(client);
++        uint256 id =
++            escrow.createJob(freelancer, address(0), AMOUNT, uint40(block.timestamp + 30 days), REVIEW);
++        vm.prank(client);
++        vm.expectRevert(FreelanceEscrow.NoArbiter.selector);
++        escrow.dispute(id);
++    }
++
++    function test_ResolveCannotExceedEscrowedAmount() public {
++        uint256 id = _create();
++        vm.prank(client);
++        escrow.dispute(id);
++        vm.prank(arbiter);
++        vm.expectRevert(FreelanceEscrow.BadAmount.selector);
++        escrow.resolve(id, AMOUNT + 1);
++    }
++
++    // ------------------------------------------------------------ access control
++
++    function test_OnlyFreelancerCanDeliver() public {
++        uint256 id = _create();
++        vm.prank(client);
++        vm.expectRevert(FreelanceEscrow.NotFreelancer.selector);
++        escrow.deliver(id);
++    }
++
++    function test_OnlyClientCanApprove() public {
++        uint256 id = _create();
++        vm.prank(freelancer);
++        escrow.deliver(id);
++        vm.prank(stranger);
++        vm.expectRevert(FreelanceEscrow.NotClient.selector);
++        escrow.approve(id);
++    }
++
++    function test_OnlyArbiterCanResolve() public {
++        uint256 id = _create();
++        vm.prank(client);
++        escrow.dispute(id);
++        vm.prank(client);
++        vm.expectRevert(FreelanceEscrow.NotArbiter.selector);
++        escrow.resolve(id, 0);
++    }
++
++    function test_StrangerCannotDispute() public {
++        uint256 id = _create();
++        vm.prank(stranger);
++        vm.expectRevert(FreelanceEscrow.NotParty.selector);
++        escrow.dispute(id);
++    }
++
++    function test_CannotDoubleSpendCompletedJob() public {
++        uint256 id = _create();
++        vm.prank(freelancer);
++        escrow.deliver(id);
++        vm.prank(client);
++        escrow.approve(id);
++
++        vm.prank(client);
++        vm.expectRevert(FreelanceEscrow.BadStatus.selector);
++        escrow.approve(id);
++
++        vm.prank(freelancer);
++        vm.expectRevert(FreelanceEscrow.BadStatus.selector);
++        escrow.cancel(id);
++    }
++
++    // ------------------------------------------------------------------ inputs
++
++    function test_RejectsBadJobParameters() public {
++        vm.startPrank(client);
++        vm.expectRevert(FreelanceEscrow.BadAddress.selector);
++        escrow.createJob(address(0), arbiter, AMOUNT, uint40(block.timestamp + 1 days), REVIEW);
++
++        vm.expectRevert(FreelanceEscrow.BadAddress.selector);
++        escrow.createJob(client, arbiter, AMOUNT, uint40(block.timestamp + 1 days), REVIEW);
++
++        vm.expectRevert(FreelanceEscrow.BadAddress.selector);
++        escrow.createJob(freelancer, freelancer, AMOUNT, uint40(block.timestamp + 1 days), REVIEW);
++
++        vm.expectRevert(FreelanceEscrow.BadAmount.selector);
++        escrow.createJob(freelancer, arbiter, 0, uint40(block.timestamp + 1 days), REVIEW);
++
++        vm.expectRevert(FreelanceEscrow.BadDeadline.selector);
++        escrow.createJob(freelancer, arbiter, AMOUNT, uint40(block.timestamp), REVIEW);
++
++        vm.expectRevert(FreelanceEscrow.BadReviewPeriod.selector);
++        escrow.createJob(freelancer, arbiter, AMOUNT, uint40(block.timestamp + 1 days), 1 hours);
++        vm.stopPrank();
++    }
++
++    // -------------------------------------------------------------------- fees
++
++    function test_FeeChangeDoesNotAffectExistingJob() public {
++        uint256 id = _create();
++
++        vm.prank(owner);
++        escrow.setFeeBps(500);
++
++        vm.prank(freelancer);
++        escrow.deliver(id);
++        vm.prank(client);
++        escrow.approve(id);
++
++        assertEq(escrow.feesAccrued(), AMOUNT * FEE_BPS / 10_000);
++    }
++
++    function test_FeeIsCapped() public {
++        vm.prank(owner);
++        vm.expectRevert(FreelanceEscrow.FeeTooHigh.selector);
++        escrow.setFeeBps(501);
++    }
++
++    function test_OnlyOwnerWithdrawsFees() public {
++        uint256 id = _create();
++        vm.prank(freelancer);
++        escrow.deliver(id);
++        vm.prank(client);
++        escrow.approve(id);
++
++        vm.prank(stranger);
++        vm.expectRevert(FreelanceEscrow.NotOwner.selector);
++        escrow.withdrawFees(stranger);
++
++        uint256 fee = AMOUNT * FEE_BPS / 10_000;
++        vm.prank(owner);
++        escrow.withdrawFees(owner);
++        assertEq(usdc.balanceOf(owner), fee);
++        assertEq(escrow.feesAccrued(), 0);
++        assertEq(usdc.balanceOf(address(escrow)), 0);
++    }
++
++    function test_TwoStepOwnershipTransfer() public {
++        vm.prank(owner);
++        escrow.transferOwnership(stranger);
++        assertEq(escrow.owner(), owner);
++
++        vm.prank(stranger);
++        escrow.acceptOwnership();
++        assertEq(escrow.owner(), stranger);
++        assertEq(escrow.pendingOwner(), address(0));
++    }
++
++    // ------------------------------------------------------------ token quirks
++
++    function test_WorksWithTokensThatReturnNothing() public {
++        usdc.setSilentReturn(true);
++        uint256 id = _create();
++        vm.prank(freelancer);
++        escrow.deliver(id);
++        vm.prank(client);
++        escrow.approve(id);
++        assertEq(usdc.balanceOf(freelancer), AMOUNT - AMOUNT * FEE_BPS / 10_000);
++    }
++
++    function test_FailedTokenTransferReverts() public {
++        uint256 id = _create();
++        usdc.setBlocked(freelancer, true);
++        vm.prank(freelancer);
++        escrow.deliver(id);
++        vm.prank(client);
++        vm.expectRevert(FreelanceEscrow.TransferFailed.selector);
++        escrow.approve(id);
++    }
++
++    // --------------------------------------------------------- concurrent jobs
++
++    function test_JobsAreIndependent() public {
++        uint256 a = _create();
++        uint256 b = _create();
++        assertEq(b, a + 1);
++
++        vm.prank(freelancer);
++        escrow.deliver(a);
++        vm.prank(client);
++        escrow.approve(a);
++
++        assertEq(uint8(escrow.getJob(b).status), uint8(FreelanceEscrow.Status.Funded));
++        assertEq(usdc.balanceOf(address(escrow)), AMOUNT + AMOUNT * FEE_BPS / 10_000);
++    }
++
++    // ------------------------------------------------------------------- fuzz
++
++    /// @dev Nothing is ever created or destroyed: escrow always holds exactly the
++    ///      open job amount plus accrued fees.
++    function testFuzz_ConservationOfFunds(uint96 amount, uint16 fee, uint256 award) public {
++        amount = uint96(bound(amount, 1e6, 100_000e6));
++        fee = uint16(bound(fee, 0, escrow.MAX_FEE_BPS()));
++        award = bound(award, 0, amount);
++
++        vm.prank(owner);
++        escrow.setFeeBps(fee);
++
++        vm.prank(client);
++        uint256 id = escrow.createJob(freelancer, arbiter, amount, uint40(block.timestamp + 30 days), REVIEW);
++
++        vm.prank(client);
++        escrow.dispute(id);
++        vm.prank(arbiter);
++        escrow.resolve(id, award);
++
++        uint256 feeTaken = award * fee / 10_000;
++        assertEq(usdc.balanceOf(freelancer), award - feeTaken);
++        assertEq(usdc.balanceOf(client), 1_000_000e6 - award);
++        assertEq(usdc.balanceOf(address(escrow)), feeTaken);
++        assertEq(escrow.feesAccrued(), feeTaken);
++    }
++}
+diff --git a/test/mocks/MockUSDC.sol b/test/mocks/MockUSDC.sol
+new file mode 100644
+index 0000000..e4e1940
+--- /dev/null
++++ b/test/mocks/MockUSDC.sol
+@@ -0,0 +1,59 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.28;
++
++/// @dev 6-decimal ERC-20 stand-in for USDC, with an optional blocklist and an
++///      optional "returns nothing on success" mode to mimic USDT.
++contract MockUSDC {
++    string public name = "Mock USD Coin";
++    string public symbol = "USDC";
++    uint8 public decimals = 6;
++    uint256 public totalSupply;
++
++    bool public silentReturn;
++    mapping(address => bool) public blocked;
++    mapping(address => uint256) public balanceOf;
++    mapping(address => mapping(address => uint256)) public allowance;
++
++    function setSilentReturn(bool on) external {
++        silentReturn = on;
++    }
++
++    function setBlocked(address who, bool on) external {
++        blocked[who] = on;
++    }
++
++    function mint(address to, uint256 amount) external {
++        balanceOf[to] += amount;
++        totalSupply += amount;
++    }
++
++    function approve(address spender, uint256 amount) external returns (bool) {
++        allowance[msg.sender][spender] = amount;
++        return true;
++    }
++
++    function transfer(address to, uint256 amount) external returns (bool) {
++        _move(msg.sender, to, amount);
++        return _ret();
++    }
++
++    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
++        uint256 allowed = allowance[from][msg.sender];
++        require(allowed >= amount, "allowance");
++        if (allowed != type(uint256).max) allowance[from][msg.sender] = allowed - amount;
++        _move(from, to, amount);
++        return _ret();
++    }
++
++    function _move(address from, address to, uint256 amount) internal {
++        require(!blocked[from] && !blocked[to], "blocked");
++        require(balanceOf[from] >= amount, "balance");
++        balanceOf[from] -= amount;
++        balanceOf[to] += amount;
++    }
++
++    function _ret() internal view returns (bool) {
++        if (silentReturn) assembly { return(0, 0) }
++        return true;
++    }
++}
+
+# Untracked files and status
+ A .env.example
+ A .gitignore
+A  .gitmodules
+ A README.md
+ A TASK.md
+ A foundry.lock
+ A foundry.toml
+AM lib/forge-std
+ A script/Deploy.s.sol
+ A src/FreelanceEscrow.sol
+ A test/FreelanceEscrow.t.sol
+ A test/mocks/MockUSDC.sol
