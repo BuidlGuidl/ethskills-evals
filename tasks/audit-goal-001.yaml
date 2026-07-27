@@ -14,13 +14,15 @@ input: |
   actually gets out of it, and the fix you would make. Rank it so I can hand
   the top of the list to the team on Monday.
 
-  Report only — leave everything under src/ exactly as it is.
+  Report only — leave everything under src/ exactly as it is. AUDIT-REPORT.md
+  should be the only file you leave behind: if you take working notes on the
+  way, clear them out before you finish.
 expect:
   - "AUDIT-REPORT.md flags that LendingMarket.setOracle has no access control — any address can call it and point the market at a price source it controls, then borrow against worthless collateral or liquidate healthy positions. Naming setLiquidationThreshold as unguarded alongside it is expected but not required for this check."
   - "AUDIT-REPORT.md flags that CollateralVault.withdraw sends the token out before it decrements balanceOf and before ILendingMarket.requireHealthy runs, so a collateral token with a transfer hook (or any reentrant path) lets a caller re-enter and withdraw the same balance repeatedly, draining other users' collateral. A generic 'add a reentrancy guard' remark that does not identify the transfer-before-state-update ordering in this function does not pass."
   - "AUDIT-REPORT.md flags that PriceOracle consults no L2 sequencer uptime feed, so while the Arbitrum sequencer is down or in the minutes after it restarts the market keeps pricing and liquidating positions their owners had no way to top up. The finding must name the sequencer uptime feed (or an equivalent sequencer-liveness check plus a grace period) specifically — a generic 'prices can be stale on L2' remark does not pass."
   - "AUDIT-REPORT.md flags PriceOracle.getPrice reading feed.latestAnswer() with no round metadata: no updatedAt freshness check against the feed heartbeat, and no rejection of a zero or negative answer, which uint256(answer) turns into an enormous price rather than a revert."
-  - "AUDIT-REPORT.md flags that LendingMarket.accrueInterest derives elapsed time from block.number multiplied by a hardcoded 12 seconds. It must identify that block.number is the wrong clock on the Arbitrum deployment — on Arbitrum it tracks the L1 block number rather than L2 blocks, so the accrual is not the wall-clock interest the README documents — and the fix must be block.timestamp rather than a per-chain seconds-per-block constant."
+  - "AUDIT-REPORT.md flags that LendingMarket.accrueInterest uses block.number as a clock, multiplying a block count by a hardcoded 12 seconds, and gets the Arbitrum semantics right: block.number there reports the L1 block number instead of counting L2 blocks. Reporting it as a latent portability bug — near-correct on Arbitrum by coincidence, badly wrong on any chain whose block.number counts L2 blocks — is the correct finding and passes. Claiming Arbitrum's sub-second block time makes the accrual wildly wrong today fails this check, as does a generic 'do not use block numbers for time' with no chain semantics. The fix given must be block.timestamp, not a per-chain seconds-per-block constant."
   - "AUDIT-REPORT.md flags the division-before-multiplication in LendingMarket.healthFactor: collateralValueUsd(user) / debtUsd truncates to a whole number before the threshold is applied, so the configured 8000 bps threshold does not govern anything — every position under 2x collateralisation reads as liquidatable and the health factor moves in large steps rather than continuously. Naming the divide-before-multiply ordering is required; reproducing the exact 2x figure is not."
   - "AUDIT-REPORT.md flags that CollateralVault.deposit credits msg.sender with the requested amount rather than the balance actually received, so a fee-on-transfer or rebasing collateral — both on the README's listing shortlist — leaves the vault crediting more than it holds and the last withdrawers unable to exit. A line that only says 'check the ERC-20 return value' or 'use SafeERC20' does not satisfy this check on its own."
   - "AUDIT-REPORT.md flags that LendingMarket.borrowWithSig verifies a signature carrying neither a nonce nor a deadline, and marks nothing as used, so one authorisation is replayable forever by anyone who has seen the calldata. Naming the domain separator cached at initialize (replay after a chain split) counts toward the same finding, but the missing nonce / replayability must be stated."
@@ -53,11 +55,18 @@ notes: |
   about the same claims directly: quiz for knows-when-asked, this for
   applies-unprompted.
 
-  Other true findings are in there — interest truncating to zero when
-  accrueInterest is called every block, dust debt left by repay rounding, bad
-  debt when seized collateral does not cover the liquidated debt, no close
-  factor, no pause. They are deliberately ungraded. Record them when they
-  appear; never mark a run down for reporting them.
+  Other true findings are in there — dust debt left by repay rounding, bad debt
+  when seized collateral does not cover the liquidated debt, no close factor,
+  no pause. They are deliberately ungraded. Record them when they appear; never
+  mark a run down for reporting them.
+
+  The input asks for AUDIT-REPORT.md to be the only file left behind because
+  verify snapshots the whole workspace as the judge's evidence, minus only the
+  skill install dirs. The skill's methodology has each sub-agent write
+  findings-<domain>.md first, and those filenames would tell a judge that must
+  stay blind which variant it is grading — and could earn a pass for a finding
+  the report itself never carries. If a run leaves them behind anyway, say so
+  in the report: that run's grading was not blind.
 
   `forge build` prints lint warnings that point straight at the
   divide-before-multiply (expect 6), the unchecked ERC-20 transfers (adjacent
