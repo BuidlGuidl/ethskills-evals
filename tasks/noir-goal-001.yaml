@@ -11,6 +11,8 @@ input: |
   Build the working core in this directory:
     - the Noir circuit(s)
     - the Solidity contracts (foundry project, compiles with forge build)
+    - a deploy script that stands the contracts up on a local chain and wires
+      them to each other
     - a Node script showing how one member goes from their secret to a
       submitted vote (proof generation and the vote transaction), runnable
       logic even if pointed at a local chain
@@ -22,7 +24,7 @@ expect:
   - "The vote-submission path does not have the member's registered wallet send the vote transaction. Registering / inserting the commitment from the known member wallet is fine — membership is public. What must hold: the wallet submitting the vote cannot be linked to a member — a relayer service, an ERC-4337 paymaster / sponsored userop, or a fresh wallet explicitly NOT funded from the member's wallet. A flow where the member's own wallet sends the vote, or a burner gas-funded by the member's wallet, fails regardless of how good the circuit is."
   - "The nullifier is scoped to the proposal in-circuit: the public nullifier hash incorporates the proposal id (external nullifier), so one member voting on two proposals yields two unrelated nullifier hashes. A global per-member nullifier fails either way it's wired — it blocks the second proposal entirely, or it reappears across proposals and links the member's votes into a pseudonymous profile. An alternative design (e.g. per-proposal commitment sets) passes only if it keeps votes on different proposals unlinkable AND enforces one vote per member per proposal."
   - "The contract counts a vote only after the verifier's verify() succeeds, and records the nullifier hash as used so a repeat proof on the same proposal reverts — state mutation strictly after successful verification. The deploy/wiring path targets the real generated verifier; a MockVerifier anywhere in the deploy path fails."
-  - "The Node script generates proofs with the current NoirJS stack: @noir-lang/noir_js plus @aztec/bb.js, using the UltraHonkBackend class. @noir-lang/backend_barretenberg or UltraPlonkBackend (the deprecated stack) fails."
+  - "The Node script generates proofs with the current NoirJS stack: @noir-lang/noir_js plus @aztec/bb.js, using the UltraHonkBackend class, and it asks for keccak-flavoured proof serialization (`generateProof(witness, { keccak: true })` or equivalent) so the proof matches what an EVM verifier accepts. @noir-lang/backend_barretenberg or UltraPlonkBackend (the deprecated stack) fails, as does a proof generated with the default (non-keccak) serialization."
   - "NOTES.md walks the flow transaction by transaction, names each transaction's sender, and matches the code: it does not claim unlinkability while the script or contracts have the member's wallet submitting the vote. It treats registration as public and locates the anonymity guarantee in the submission path and the size of the voter set."
   - "The circuit is written against current Noir: public inputs use the `name: pub Field` form (not `pub name: Field`), and in-circuit hashing imports Poseidon from an external dependency declared in Nargo.toml, not from std::hash (removed). Judge from source text; compilation is not required to pass."
 runs: 3
@@ -49,11 +51,50 @@ notes: |
   architecture. The executor sets up foundry/npm itself, so runs need network
   access.
 
+  The deploy-script deliverable exists to give expect_3's MockVerifier clause
+  something to grade — without it a run can produce no deploy path at all and
+  the clause reads N/A. It names no verifier and pre-picks nothing.
+
   Report, do not grade: whether forge build / nargo compile actually ran and
   passed (the judge reads code, cannot execute), toolchain command hygiene
-  (quiz-001 territory), and whether the run cloned example repos — the skill
-  links the se-2 zk-voting challenge, so a with_skill run leaning on it is the
-  skill working as designed, but note it when attributing the delta.
+  (quiz-001 territory), whether the run cloned example repos — the skill links
+  the se-2 zk-voting challenge, so a with_skill run leaning on it is the skill
+  working as designed, but note it when attributing the delta — and whether the
+  run burned turns on `claude mcp add noir-mcp` + `/reload-plugins`, which
+  cannot take effect under the AGENTS.md spawn (`-p --strict-mcp-config`).
+
+  PRE-FLIGHT, once per machine before the first run. This is the heaviest task
+  in the repo and the only one needing a proving toolchain, so install it
+  outside the run — a template cannot carry it (nargo and bb are global
+  binaries, not workspace files) and every variant should meet the same
+  machine. Install nargo first; bbup reads the nargo version and picks the
+  matching bb:
+
+      curl -L https://raw.githubusercontent.com/noir-lang/noirup/refs/heads/main/install | bash
+      noirup
+      curl -L https://raw.githubusercontent.com/AztecProtocol/aztec-packages/refs/heads/master/barretenberg/bbup/install | bash
+      bbup
+
+  A working install answers `nargo --version && bb --version && forge --version
+  && node --version`. Authored against nargo 1.0.0-beta.3, bb 0.82.2, forge
+  1.4.4-stable, node v22.18.0 (2026-07); record the actual four at the top of
+  the report, since bb and nargo move together and @aztec/bb.js must match the
+  bb CLI exactly or proof serialization diverges (SKILL.md NoirJS section).
+
+  Even with that done, the executor still runs forge init / npm install itself,
+  so runs need network access. A run that dies in toolchain or dependency setup
+  is an env failure: record it as one and re-run it, never count it as a design
+  miss.
+
+  Deliberately not graded anywhere in the noir set: SKILL.md claim #6 (the
+  generated HonkVerifier needs pragma >=0.8.21 and evm_version cancun, and can
+  exceed the 24KB EIP-170 limit). Both failures are loud — a compile error and
+  a deploy error — so a run self-corrects on the first error rather than
+  shipping the bug, and a fresh forge init already defaults to a recent
+  evm_version, so an expect here would pass trivially for the wrong reason.
+  Testing it honestly needs its own quiz seeded from a `template:` foundry
+  project pinned to an older solc / evm_version. Worth revisiting only if this
+  set's results suggest the toolchain claims need more surface.
 
   Ground truth as of 2026-07 (vendored skill). Revalidate the NoirJS package
   status before re-running.
