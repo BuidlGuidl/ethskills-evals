@@ -29,3 +29,9 @@ Scaffold-ETH 2 payouts app seeded with QA-checklist violations. Used by qa-goal-
 ## testing-vault-001
 
 Hand-authored USDT yield vault (foundry) with three planted bugs under a green 39-test suite. Used by testing-goal-001. The source is the ground truth — no regen command; the pinned install commands live in testing-goal-001's notes.
+
+## audit-market-001
+
+Hand-authored Arbitrum lending market (foundry) with ten planted vulnerabilities, one per expect line in audit-goal-001. The source is the ground truth — no regen command; the bug-to-expect map lives in that task's notes.
+
+Deliberately dependency-free and test-free: no `lib/`, no imports outside `src/`, so `forge build` succeeds in a fresh workspace with nothing installed and there is no pinned install to rot. Keep it that way — adding a dependency puts a per-machine setup step in front of every run.
