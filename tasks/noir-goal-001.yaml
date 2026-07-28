@@ -26,90 +26,76 @@ input: |
   we treat as generated. If a step of your setup initialises a git repo in this
   directory, list those generated folders in .gitignore before you finish.
 expect:
-  - "The vote-submission path does not have the member's registered wallet send the vote transaction. Registering / inserting the commitment from the known member wallet is fine — membership is public. What must hold: the wallet submitting the vote cannot be linked to a member — a relayer service, an ERC-4337 paymaster / sponsored userop, or a fresh wallet explicitly NOT funded from the member's wallet. A flow where the member's own wallet sends the vote, or a burner gas-funded by the member's wallet, fails regardless of how good the circuit is."
+  - "The vote-submission path does not have the member's registered wallet send the vote transaction. Registering / inserting the commitment from the known member wallet is fine — membership is public. What must hold: the flow names a production gas path for the vote — a relayer service, an ERC-4337 paymaster / sponsored userop, or equivalent — such that the submitting wallet cannot be linked to a member. A local prefunded dev account may stand in for that sender during testing, but only if the flow says so and states what replaces it in production; a prefunded 'fresh wallet' presented as the design itself, with no production story, fails. A flow where the member's own wallet sends the vote, or a burner gas-funded by the member's wallet, fails regardless of how good the circuit is."
   - "The nullifier is scoped to the proposal in-circuit: the public nullifier hash incorporates the proposal id (external nullifier), so one member voting on two proposals yields two unrelated nullifier hashes. A global per-member nullifier fails either way it's wired — it blocks the second proposal entirely, or it reappears across proposals and links the member's votes into a pseudonymous profile. An alternative design (e.g. per-proposal commitment sets) passes only if it keeps votes on different proposals unlinkable AND enforces one vote per member per proposal."
   - "The contract counts a vote only after the verifier's verify() succeeds, and records the nullifier hash as used so a repeat proof on the same proposal reverts — state mutation strictly after successful verification. The deploy/wiring path targets the real generated verifier; a MockVerifier anywhere in the deploy path fails."
-  - "The Node script generates proofs with the current NoirJS stack: @noir-lang/noir_js plus @aztec/bb.js, using the UltraHonkBackend class, and it asks for keccak-flavoured proof serialization (`generateProof(witness, { keccak: true })` or equivalent) so the proof matches what an EVM verifier accepts. @noir-lang/backend_barretenberg or UltraPlonkBackend (the deprecated stack) fails, as does a proof generated with the default (non-keccak) serialization."
+  - "The Node script generates proofs with the current NoirJS stack: @noir-lang/noir_js plus @aztec/bb.js, using the UltraHonkBackend class, and it asks for EVM-targeted proof serialization — `generateProof(witness, { keccak: true })`, the newer `{ verifierTarget: \"evm\" }`, or equivalent — so the proof matches what an EVM verifier accepts. @noir-lang/backend_barretenberg or UltraPlonkBackend (the deprecated stack) fails, as does a proof generated with the default (non-EVM) serialization."
   - "NOTES.md walks the flow transaction by transaction, names each transaction's sender, and matches the code: it does not claim unlinkability while the script or contracts have the member's wallet submitting the vote. It treats registration as public and locates the anonymity guarantee in the submission path and the size of the voter set."
-  - "The circuit is written against current Noir: public inputs use the `name: pub Field` form (not `pub name: Field`), and in-circuit hashing imports Poseidon from an external dependency declared in Nargo.toml, not from std::hash (removed). Judge from source text; compilation is not required to pass."
+  - "Public input ordering matches across layers: the circuit's `pub` parameter order, the order the Node script passes and reads `publicInputs`, and the order the app contract builds the `publicInputs` array it hands to `verify()`. A mismatch in any pair fails; if the contract forwards the script's inputs untouched, the script-against-circuit pair is the one to check."
+  - "The client derives its Merkle path by replaying the contract's insert events into an offchain tree mirror — not from a contract call returning a witness path, and not from a hardcoded path — and the member's note (nullifier, secret, leaf index) is persisted at registration time. The contract emits an insert event carrying the commitment, its leaf index, and the resulting root, so that replay is possible."
 runs: 3
 notes: |
-  Goal for skills/noir. Mirrors noir-quiz-003 (msg.sender linkability — the
-  vote tx sender must be unlinkable to the member's known wallet), never named
-  in the input: "membership is public, votes unattributable" states the
-  product requirement; the fix has to be derived. Second buried decision:
-  "many proposals over time" + "once per proposal" makes external-nullifier
-  scoping load-bearing (expect_2) without naming nullifiers. expect_4 is the
-  only place the NoirJS claim (@noir-lang/noir_js + @aztec/bb.js +
-  UltraHonkBackend, not backend_barretenberg / UltraPlonkBackend) is graded —
-  no quiz covers it. expect_6 re-grades quiz-002 territory (Poseidon dep, pub
-  syntax) as a correctness floor; per-check reporting keeps the linkability
-  delta readable next to it.
+  Goal for skills/noir. Mirrors noir-quiz-003 (msg.sender linkability), never
+  named in the input — the quiz measures knows-when-asked, this measures
+  applies-unprompted. Second buried decision: "many proposals over time" +
+  "once per proposal" makes external-nullifier scoping load-bearing (expect_2)
+  without naming nullifiers. expect_4 is the only place the NoirJS stack is
+  graded; expect_6 and expect_7 grade the serialization boundary and the tree
+  mirror / note persistence — failures SKILL.md predicts by name.
 
-  The NOTES.md clause "which wallet sends it and what a chain observer learns"
-  is the leading-ness dial: it forces the linkability reasoning to surface
-  where the judge can grade it, without naming wallets, relayers, or
-  msg.sender. Softening it leaves silent-linkable runs gradeable only from
-  code.
+  Don't soften: the NOTES.md sender clause ("which wallet sends it and what a
+  chain observer learns") is what makes linkability gradeable without naming
+  wallets or relayers, and the deploy-script deliverable is what gives
+  expect_3's MockVerifier clause something to grade.
 
   Bare workspace, no template on purpose — a scaffold would pre-pick the
-  architecture. The executor sets up foundry/npm itself, so runs need network
-  access.
-
-  The deploy-script deliverable exists to give expect_3's MockVerifier clause
-  something to grade — without it a run can produce no deploy path at all and
-  the clause reads N/A. It names no verifier and pre-picks nothing.
+  architecture. Runs need network access (forge init / npm install). A run
+  that dies in toolchain or dependency setup is an env failure: record it as
+  one and re-run it, never count it as a design miss.
 
   Report, do not grade: whether forge build / nargo compile actually ran and
-  passed (the judge reads code, cannot execute), toolchain command hygiene
-  (quiz-001 territory), whether the run cloned example repos — the skill links
-  the se-2 zk-voting challenge, so a with_skill run leaning on it is the skill
-  working as designed, but note it when attributing the delta — and whether the
-  run burned turns on `claude mcp add noir-mcp` + `/reload-plugins`, which
-  cannot take effect under the AGENTS.md spawn (`-p --strict-mcp-config`).
+  passed (the judge reads code, cannot execute); circuit currency — post-colon
+  pub syntax, Poseidon from the external dependency, not std::hash — which
+  quiz-002 already grades; toolchain command hygiene (quiz-001 territory);
+  whether the run cloned example repos (the skill links the se-2 zk-voting
+  challenge — leaning on it is the skill working; note it when attributing);
+  and turns burned on `claude mcp add noir-mcp` + `/reload-plugins` (neither
+  survives the `-p --strict-mcp-config` spawn).
 
-  PRE-FLIGHT, once per machine before the first run. This is the heaviest task
-  in the repo and the only one needing a proving toolchain, so install it
-  outside the run — a template cannot carry it (nargo and bb are global
-  binaries, not workspace files) and every variant should meet the same
-  machine. Install nargo first; bbup reads the nargo version and picks the
-  matching bb:
+  Known skill rot — read with_skill failures accordingly (skill-edit
+  candidates, not run errors): `u1` was removed in nargo beta.20 but the
+  skill's circuit examples still use it; zk-kit's binary_merkle_root still
+  wants `[u1; N]` indices, so it does not compile against current Noir; and
+  the generated verifier's Solidity floor is >=0.8.27 now, not the >=0.8.21
+  the skill cites.
+
+  PRE-FLIGHT, once per machine before the first run — intentionally long:
+  AGENTS.md wants pinned install commands and what a working install looks
+  like in task notes, and this is the only task in the repo needing a proving
+  toolchain (global binaries, so a template cannot carry it). Install nargo
+  first; bbup reads the nargo version and picks the matching bb:
 
       curl -L https://raw.githubusercontent.com/noir-lang/noirup/refs/heads/main/install | bash
-      noirup
+      noirup -v <version>    # 1.0.0-beta.4 or newer — see floor below
       curl -L https://raw.githubusercontent.com/AztecProtocol/aztec-packages/refs/heads/next/barretenberg/bbup/install | bash
       bbup
 
-  A working install answers `nargo --version && bb --version && forge --version
-  && node --version`. Authored against nargo 1.0.0-beta.3, bb 0.82.2, forge
-  1.4.4-stable, node v22.18.0 (2026-07); record the actual four at the top of
-  the report, since bb and nargo move together and @aztec/bb.js must match the
-  bb CLI exactly or proof serialization diverges (SKILL.md NoirJS section).
+  A working install answers `nargo --version && bb --version && forge
+  --version && node --version`; record all four at the top of the report.
+  Authored against nargo 1.0.0-beta.3 / bb 0.82.2 / forge 1.4.4-stable / node
+  v22.18.0 (2026-07), but the nargo floor for this set is beta.4: stdlib
+  Poseidon still resolves on beta.3, which contradicts quiz-002 expect_1 and
+  the circuit-currency report item above. Re-check the bb pairing when you
+  re-pin; @aztec/bb.js must match the bb CLI exactly or proof serialization
+  diverges. While the toolchain is up, generate one verifier and check its
+  size: verify.ts drops files over 256KB from output/, so if HonkVerifier.sol
+  lands over the cap it silently vanishes from the judge's evidence and
+  expect_3 gets graded from the deploy script alone — record the size here if
+  it is over.
 
-  Nargo floor for this set is beta.4, not the beta.3 recorded above: stdlib
-  Poseidon still exists in beta.3 and was removed in beta.4, so on beta.3 a
-  circuit importing std::hash::poseidon is valid and still fails expect_6 here
-  and expect_1 in noir-quiz-002. Pin beta.4 or newer when you re-pin the
-  toolchain, and re-check the bb pairing at the same time.
+  Deliberately not graded: SKILL.md claim #6 (verifier pragma / evm_version /
+  24KB) — both failure modes are loud, so runs self-correct; rationale in PR
+  #36, alongside the ranked follow-up coverage (pattern-selection quiz, WASM
+  config, chain compat, testing boundaries).
 
-  Even with that done, the executor still runs forge init / npm install itself,
-  so runs need network access. A run that dies in toolchain or dependency setup
-  is an env failure: record it as one and re-run it, never count it as a design
-  miss.
-
-  Deliberately not graded anywhere in the noir set: SKILL.md claim #6 (the
-  generated HonkVerifier needs pragma >=0.8.21 and evm_version cancun, and can
-  exceed the 24KB EIP-170 limit). Both failures are loud — a compile error and
-  a deploy error — so a run self-corrects on the first error rather than
-  shipping the bug, and a fresh forge init already defaults to a recent
-  evm_version, so an expect here would pass trivially for the wrong reason.
-  Testing it honestly needs its own quiz seeded from a `template:` foundry
-  project pinned to an older solc / evm_version. Worth revisiting only if this
-  set's results suggest the toolchain claims need more surface.
-
-  Ground truth as of 2026-07 (vendored skill). Revalidate the NoirJS package
-  status before re-running.
-
-  Pairs with noir-quiz-003: the quiz measures knows-when-asked, this measures
-  applies-unprompted. Skill vendored at skills/noir (source
-  ethskills.com/noir/SKILL.md).
+  Skill vendored at skills/noir (ethskills.com/noir/SKILL.md @ 191dcc1).
