@@ -32,6 +32,6 @@ Hand-authored USDT yield vault (foundry) with three planted bugs under a green 3
 
 ## audit-market-001
 
-Hand-authored Arbitrum lending market (foundry) with ten planted vulnerabilities, one per expect line in audit-goal-001. The source is the ground truth — no regen command; the bug-to-expect map lives in that task's notes.
+Hand-authored Arbitrum lending market (foundry) with eleven planted vulnerabilities, one per expect line in audit-goal-001 — ten in `src/`, plus the collateral feed this README wires to the wrong asset. The source is the ground truth — no regen command; the bug-to-expect map lives in that task's notes.
 
 Deliberately dependency-free and test-free: no `lib/`, no imports outside `src/`, so `forge build` succeeds in a fresh workspace with nothing installed and there is no pinned install to rot. Keep it that way — adding a dependency puts a per-machine setup step in front of every run.

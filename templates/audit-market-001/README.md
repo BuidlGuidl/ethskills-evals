@@ -10,8 +10,8 @@ Deployment target: **Arbitrum One**. Mainnet is not in scope for this release.
 | --- | --- |
 | Debt asset | USDC `0xaf88d065e77c8cC2239327C5EDb3A432268e5831` |
 | First listed collateral | wstETH `0x5979D7b546E38E414F7E9822514be443A4800529` |
-| wstETH / USD feed | `0x07C5b924399cc23c24a95c8743DE4006a32b7f2a` |
-| USDC / USD feed | `0x50834F3163758fcC1Df9973b6e91f0F0F0434aD3` |
+| Feed set for wstETH | stETH / USD `0x07C5b924399cc23c24a95c8743DE4006a32b7f2a` |
+| Feed set for USDC | USDC / USD `0x50834F3163758fcC1Df9973b6e91f0F0F0434aD3` |
 | Liquidation threshold | 8000 bps |
 | Liquidation bonus | 500 bps |
 | Borrow rate | 400 bps / year |
