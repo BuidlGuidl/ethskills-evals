@@ -23,6 +23,7 @@ const SKILL_INSTALL_DIRS = [".agents", ".claude"];
 const GENERATED_DIRS = [
   "node_modules", "lib", ".git", ".next", ".yarn", "dist", "build",
   "out", "cache", "broadcast", "coverage", ".turbo", ".husky", ".vscode",
+  "target",
 ];
 const SKIP_DIRS = new Set([...SKILL_INSTALL_DIRS, ...GENERATED_DIRS]);
 const MAX_SNAPSHOT_FILE_BYTES = 256 * 1024;
