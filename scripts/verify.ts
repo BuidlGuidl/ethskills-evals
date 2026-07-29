@@ -15,12 +15,15 @@ const ROOT = process.cwd();
 // dir here covers both; a dir listed in one path and missed in the other silently corrupts a
 // benchmark, which is how the skill first leaked into run.diff.
 const SKILL_INSTALL_DIRS = [".agents", ".claude"];
-// Generated/vendored dirs a scaffolded repo (e.g. create-eth) leaves behind. The snapshot
-// captures source the run produced, not gigabytes of node_modules or build output. Unlike
-// SKILL_INSTALL_DIRS, missing one of these makes evidence noisy, never wrong.
+// Generated/vendored dirs a scaffolded repo (e.g. create-eth) leaves behind. Evidence
+// captures source the run produced, not gigabytes of node_modules or build output. Missing
+// one of these does not mislead the judge the way a missed SKILL_INSTALL_DIRS entry does,
+// but it is not free either: the diff path has no size cap of its own, so a run that
+// installs dependencies can push the evidence past the judge's input limit and lose the run.
 const GENERATED_DIRS = [
   "node_modules", "lib", ".git", ".next", ".yarn", "dist", "build",
   "out", "cache", "broadcast", "coverage", ".turbo", ".husky", ".vscode",
+  "target",
 ];
 const SKIP_DIRS = new Set([...SKILL_INSTALL_DIRS, ...GENERATED_DIRS]);
 const MAX_SNAPSHOT_FILE_BYTES = 256 * 1024;
@@ -120,13 +123,19 @@ const walkFiles = async (dir: string) => {
   return entries;
 };
 
+// A bare :(exclude)<dir> only matches at the workspace root, while walkFiles skips by
+// directory name at any depth, so each dir needs the glob form too or a nested
+// packages/app/node_modules reaches the judge.
+const excludePathspec = (dir: string) => [`:(exclude)${dir}`, `:(exclude,glob)**/${dir}/**`];
+
 const writeDiff = async (workspacePath: string, diffPath: string) => {
-  const pathspec = [".", ...SKILL_INSTALL_DIRS.map(dir => `:(exclude)${dir}`)];
+  const pathspec = [".", ...[...SKILL_INSTALL_DIRS, ...GENERATED_DIRS].flatMap(excludePathspec)];
 
   // Intent-to-add so new (untracked) files show their content in the diff, not just a
-  // filename in status — the judge needs to see files the run created. Honors .gitignore,
-  // so node_modules and build output stay out. The installed skill is untracked and not
-  // gitignored, so only the pathspec keeps it out of the judge's evidence.
+  // filename in status — the judge needs to see files the run created. Untracked files are
+  // not gitignored by default, and a repo the run created itself carries whatever .gitignore
+  // its scaffolder wrote (foundry's omits node_modules), so the pathspec is what actually
+  // keeps the installed skill and generated trees out of the judge's evidence.
   execFileSync("git", ["-C", workspacePath, "add", "-N", "--", ...pathspec], { encoding: "utf8" });
   const diff = execFileSync("git", ["-C", workspacePath, "diff", "--", ...pathspec], { encoding: "utf8" });
   const status = execFileSync("git", ["-C", workspacePath, "status", "--porcelain", "--", ...pathspec], { encoding: "utf8" });
