@@ -166,7 +166,7 @@ Every report ends with this table. Answer the last row honestly: sometimes the e
 
 ## What gets committed
 
-Committed: task specs, vendored skills under test, workspace templates under `templates/`, `result.yaml`, `run.diff`, `output/`, mistake records, reports. Gitignored: workspaces, transcripts.
+Committed: task specs, vendored skills under test, workspace templates under `templates/`, `result.yaml`, `run.diff`, `transcript.md`, mistake records, reports. Gitignored: workspaces, `output/` snapshots.
 
 ## Code style
 

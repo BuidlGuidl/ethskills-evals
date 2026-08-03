@@ -35,11 +35,12 @@ ethskills-evals/
 ├─ scripts/setup-workspace.ts    seeds the clean workspace, hard-fails on grading leaks
 ├─ scripts/verify.ts             snapshots a finished run, spawns the judge
 ├─ lib/judge.ts                  the blind judge: evidence in, graded expects out
-├─ artifacts/                    per run: result.yaml + run.diff + output/ committed,
-│                                workspaces and transcripts gitignored
+├─ artifacts/                    per run: result.yaml + run.diff + transcript.md committed,
+│                                workspaces and output/ snapshots gitignored
 ├─ mistakes/                     mistake records mined from failures
 ├─ reports/                      markdown comparisons per benchmark
-└─ templates/                    workspace seeds (gitignored; tasks record how to regenerate)
+└─ templates/                    workspace seeds (committed; templates/README.md
+                                 records how to regenerate)
 
 # there is no runner. the orchestrator is
 # whatever agent you happen to open here
