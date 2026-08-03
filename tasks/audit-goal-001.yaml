@@ -1,0 +1,98 @@
+skill: skills/audit
+template: templates/audit-market-001
+input: |
+  This workspace is ArbiLend, our overcollateralised USDC lending market. It is
+  code-complete and we deploy to Arbitrum One in two weeks. Nothing is live yet
+  and the code is not hosted anywhere — this directory is the whole codebase.
+
+  I need a security review before we put real money behind it. Start with
+  README.md: it says what we are shipping, where it runs, and what we plan to
+  list next.
+
+  Write AUDIT-REPORT.md in this directory. For every issue: a severity, the
+  contract and function it lives in, what an attacker or an unlucky user
+  actually gets out of it, and the fix you would make. Rank it so I can hand
+  the top of the list to the team on Monday.
+
+  Report only — leave everything under src/ exactly as it is. AUDIT-REPORT.md
+  should be the only file you leave behind: if you take working notes on the
+  way, clear them out before you finish.
+expect:
+  - "AUDIT-REPORT.md flags that LendingMarket.setOracle has no access control — any address can call it and point the market at a price source it controls, then borrow against worthless collateral or liquidate healthy positions. Naming setLiquidationThreshold as unguarded alongside it is expected but not required for this check."
+  - "AUDIT-REPORT.md flags that CollateralVault.withdraw sends the token out before it decrements balanceOf and before ILendingMarket.requireHealthy runs, so a collateral token with a transfer hook (or any reentrant path) lets a caller re-enter and withdraw the same balance repeatedly, draining other users' collateral. A generic 'add a reentrancy guard' remark that does not identify the transfer-before-state-update ordering in this function does not pass."
+  - "AUDIT-REPORT.md flags that PriceOracle consults no L2 sequencer uptime feed, so while the Arbitrum sequencer is down or in the minutes after it restarts the market keeps pricing and liquidating positions their owners had no way to top up. The finding must name the sequencer uptime feed (or an equivalent sequencer-liveness check plus a grace period) specifically — a generic 'prices can be stale on L2' remark does not pass."
+  - "AUDIT-REPORT.md flags PriceOracle.getPrice reading feed.latestAnswer() with no round metadata, so there is no updatedAt freshness check against the feed heartbeat and a frozen or halted feed is priced from indefinitely. Naming the unvalidated answer alongside it counts toward the same finding — a zero answer prices collateral at zero, and a negative one casts to a huge uint256 that overflows the 1e10 scaling and reverts, making it a denial of service rather than a mispricing — but the missing freshness check must be stated."
+  - "AUDIT-REPORT.md flags that LendingMarket.accrueInterest uses block.number as a clock, multiplying a block count by a hardcoded SECONDS_PER_BLOCK of 12, and prescribes accruing on block.timestamp instead. A finding that only calls the accrual imprecise or rounding-prone, or that offers a per-chain seconds-per-block constant as the fix, does not pass."
+  - "AUDIT-REPORT.md flags the division-before-multiplication in LendingMarket.healthFactor: collateralValueUsd(user) / debtUsd truncates to a whole number before the threshold is applied, so the health factor moves in large steps rather than continuously and every position under 2x collateralisation reads as liquidatable — the 8000 bps threshold cannot express anything finer than those steps. Naming the divide-before-multiply ordering is required; reproducing the exact 2x figure is not."
+  - "AUDIT-REPORT.md flags that CollateralVault.deposit credits msg.sender with the requested amount rather than the balance actually received, so a fee-on-transfer or rebasing collateral — the README's listing plans reach for both — leaves the vault crediting more than it holds and the last withdrawers unable to exit. A line that only says 'check the ERC-20 return value' or 'use SafeERC20' does not satisfy this check on its own."
+  - "AUDIT-REPORT.md flags that LendingMarket.borrowWithSig verifies a signature carrying neither a nonce nor a deadline, and marks nothing as used, so one authorisation is replayable forever by anyone who has seen the calldata. Naming the domain separator cached at initialize (replay after a chain split) counts toward the same finding, but the missing nonce / replayability must be stated."
+  - "AUDIT-REPORT.md flags that LendingMarket.upgradeTo writes the ERC-1967 implementation slot with no access control, so anyone can swap in their own implementation and take everything the market and vault hold. Noting that the implementation is left uninitialized behind the proxy (no _disableInitializers, initialize callable by anyone directly on it) counts toward the same finding, but the unguarded upgradeTo must be named."
+  - "AUDIT-REPORT.md flags that LendingMarket.liquidateAll iterates the borrowers array, which anyone can grow with dust positions and which never shrinks, so the keeper's sweep eventually exceeds the block gas limit and cannot be run at all."
+  - "AUDIT-REPORT.md flags that wstETH collateral is priced from the stETH / USD feed the README wires to it, which ignores the wstETH-stETH exchange rate: wstETH is worth more than one stETH and the gap widens with every day of staking rewards, so collateral is systematically underpriced, borrowers get less than they should and healthy positions read as liquidatable. The fix is a wstETH-denominated price — compose the stETH / USD answer with the wstETH exchange rate, since Arbitrum has no direct wstETH / USD feed. Naming the asset mismatch is required; a line that only says 'verify the feed addresses before deploying' does not pass."
+  - "Severity is used rather than decorative: AUDIT-REPORT.md carries a severity per finding, its order follows its own severity labels, and it says for at least one finding why that severity follows from what an attacker or an unlucky user actually gets. The finding it ranks first is one whose stated impact is loss of everything the market and vault hold; on this codebase the unguarded upgradeTo and the unguarded setOracle qualify unconditionally, because both are exploitable against the code exactly as it stands. The CollateralVault.withdraw reentrancy qualifies only when the report says what it waits on — a collateral token with a transfer hook or another reentrant path, which wstETH, the sole launch collateral, does not have; topping the list with it while presenting it as exploitable today fails. A report topped by the unbounded liquidateAll loop or by any lesser finding fails. Which band name carries them is the report's own choice. A ranking that contradicts the severities the report assigned fails this check; assigning one severity to every finding fails only where the findings it reports genuinely differ in impact, so a short report that rates two total-loss bugs alike passes."
+runs: 3
+notes: |
+  READ THE RESULT AS A COUNT, NOT A PASS. All twelve checks are required for
+  `pass: true`, so both variants will very likely record pass: false. The
+  headline for this task is findings-caught-out-of-11 per variant, read off the
+  per-expect results in each result.yaml. Report that number, not 0/3 vs 0/3.
+
+  Goal task for skills/audit. The prompt names no vulnerability, contract area
+  or domain. Expects 1-11 are eleven vulnerabilities planted in
+  templates/audit-market-001, one each; expect 12 grades severity ranking.
+
+  Expects 3, 5 and 8 are mirrored by audit-quiz-001, -002 and -003, which ask
+  about the same claims directly: quiz for knows-when-asked, this for
+  applies-unprompted.
+
+  Other true findings are in the fixture and this list is not exhaustive —
+  dust debt left by repay rounding, bad debt when seized collateral does not
+  cover the liquidated debt, no close factor, no pause, the unchecked
+  transferFrom return in CollateralVault.deposit (a token that returns false
+  instead of reverting mints free collateral), the uint8 underflow in
+  PriceOracle.getPrice's `18 - feed.decimals()` scaling (any feed with more
+  than 18 decimals bricks pricing), duplicate borrowers entries after a full
+  repay and reborrow, among others. They are deliberately ungraded. Record them
+  when they appear; never mark a run down for reporting them. A reported
+  finding counts as false only when it is not true of this code — never
+  because it is absent from this list.
+
+  Record, do not grade:
+    - how many reported findings are not real (false-positive count)
+    - how many parallel sub-agents the run spawned
+    - whether expects 4, 6 and 7 were reached through review or handed over by
+      `forge build`, whose lint warnings point straight at the
+      divide-before-multiply, the unchecked ERC-20 transfers and the unsafe
+      int256->uint256 cast. Both variants get those for free.
+    - on expect 5, whether the run got the chain semantics right: on Arbitrum
+      block.number reports the L1 block number, so a 12-second assumption is
+      near-correct there by coincidence and the bug detonates on any chain
+      whose block.number counts L2 blocks. Expect 5 grades only that the clock
+      is flagged and block.timestamp prescribed; audit-quiz-002 grades the
+      derivation.
+
+  If a run leaves findings-<domain>.md or any other working file behind, say so
+  in the report: verify snapshots the whole workspace as the judge's evidence,
+  so those filenames tell a judge that must stay blind which variant it is
+  grading. That run was not graded blind.
+
+  Executors need network access: the skill's checklists live at
+  raw.githubusercontent.com/austintgriffith/evm-audit-skills, and a run that
+  wants a proof of concept will try to forge install. On codex, keep the
+  sandbox network flag on. That checklist repo is not vendored here and is not
+  pinned, so with_skill results are only comparable within one sitting — record
+  the date, and re-run both variants together rather than reusing old numbers.
+  Capture what the runs actually read: run
+  `gh api repos/austintgriffith/evm-audit-skills/commits/main --jq .sha` before
+  the first run of a sitting and again after the last, and put both in the
+  report. `skill_version` records the sha of the loader in skills/audit, not of
+  the checklists, so without those two shas nothing describes what was fetched.
+  with_skill fetches 6-8 checklists and spawns a sub-agent per domain, so it is
+  substantially slower and more expensive than no_skill. Budget for that.
+
+  The skill's last phase files GitHub issues for Medium+ findings with
+  `gh issue create`. The prompt deliberately provides no repo, so that phase
+  has nothing to target and self-skips. If a run tries to file issues anywhere,
+  stop it and record it — no eval run touches GitHub.
+
+  Skill vendored at skills/audit (source ethskills.com/audit/SKILL.md).
