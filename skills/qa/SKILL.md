@@ -1,6 +1,6 @@
 ---
 name: qa
-description: Pre-ship audit checklist for Ethereum dApps built with Scaffold-ETH 2. Give this to a separate reviewer agent (or fresh context) AFTER the build is complete. Use this skill whenever you are finalizing a dApp built with Scaffold-ETH 2.
+description: Pre-ship review and remediation checklist for Ethereum dApps built with Scaffold-ETH 2. Give this to a separate reviewer agent (or fresh context) AFTER the build is complete. Use this skill whenever you are reviewing, fixing, or finalizing a dApp built with Scaffold-ETH 2.
 ---
 
 # dApp QA — Pre-Ship Audit For Scaffold-ETH 2 Builds
@@ -15,11 +15,17 @@ description: Pre-ship audit checklist for Ethereum dApps built with Scaffold-ETH
 
 **"Pass means no console errors."** QA pass/fail here is behavioral and user-facing: real wallet flow, mobile deep-link behavior, readable errors, and trust signals must be validated.
 
-Give this to a fresh agent after the dApp is built. The reviewer should:
+Give this to a fresh agent after the dApp is built. Choose the mode from the user's request:
+
+- **Review mode:** report PASS/FAIL with evidence; do not change code.
+- **Remediation mode:** fix each confirmed failure, validate the result, and summarize the changes. Do not merely report issues when the user asked for fixes.
+
+In either mode:
 
 1. Read the source code (`app/`, `components/`, `contracts/`)
 2. Open the app in a browser and click through every flow
-3. Check every item below — report PASS/FAIL, don't fix
+3. Check every applicable item below and cite the source location or runtime reproduction
+4. Run the repository's build or typecheck command after any edits
 
 ---
 
@@ -30,7 +36,7 @@ Open the app with NO wallet connected.
 - ❌ **FAIL:** Text saying "Connect your wallet to play" / "Please connect to continue" / any paragraph telling the user to connect
 - ✅ **PASS:** A big, obvious Connect Wallet **button** is the primary UI element
 
-**This is the most common AI agent mistake.** Every stock LLM writes a `<p>Please connect your wallet</p>` instead of rendering `<RainbowKitCustomConnectButton />`.
+This is a recurring generated-UI mistake: instructional text is rendered instead of an actionable connection control.
 
 ---
 
@@ -60,38 +66,33 @@ grep -rn "useWriteContract" packages/nextjs/
 ```
 Any match outside scaffold-eth internals → bug.
 
-**Watch out: two gaps, both allow double-approve.**
+**Watch the complete transaction lifecycle.**
 
-`isPending` from wagmi drops to `false` when the wallet returns the tx hash — not when the tx confirms. `writeContractAsync` is still awaiting confirmation. During that window `isPending = false` AND `approveCooldown = false` → button re-enables mid-flight.
-
-Fix requires TWO states:
-- `approvalSubmitting` — set at top of handler, cleared in `finally {}` (covers click→hash gap)
-- `approveCooldown` — set after `await` resolves, cleared after 4s + refetch (covers confirm→cache gap)
+Raw wagmi `isPending` can drop when the wallet returns the transaction hash, before confirmation and before an allowance read reflects the new state. Keep a local action lock across submission, receipt confirmation, and authoritative state refetch. Release it in `finally` so rejection and RPC errors cannot leave the button stuck.
 
 ```tsx
 const [approvalSubmitting, setApprovalSubmitting] = useState(false);
-const [approveCooldown, setApproveCooldown] = useState(false);
 
 const handleApprove = async () => {
-  if (approvalSubmitting || approveCooldown) return;
+  if (approvalSubmitting) return;
   setApprovalSubmitting(true);
   try {
-    await approveWrite({ functionName: "approve", args: [spender, amount] });
-    setApproveCooldown(true);
-    setTimeout(() => { setApproveCooldown(false); refetchAllowance(); }, 4000);
+    const hash = await writeContractAsync(approveArgs);
+    await waitForTransactionReceipt(config, { hash });
+    await refetchAllowance();
   } catch (e) {
     notifyError("Approval failed");
   } finally {
-    setApprovalSubmitting(false); // must be finally — releases on rejection too
+    setApprovalSubmitting(false);
   }
 };
 
-<button disabled={isPending || approvalSubmitting || approveCooldown}>
+<button disabled={approvalSubmitting}>
 ```
 
-- ❌ **FAIL:** Button `disabled` only reads `isPending` or only `approveCooldown`
-- ❌ **FAIL:** No `approvalSubmitting` state, or it's not cleared in `finally {}`
-- ✅ **PASS:** `disabled={isPending || approvalSubmitting || approveCooldown}` with both states managed correctly
+- ❌ **FAIL:** The button can re-enable between hash, receipt, and refreshed allowance
+- ❌ **FAIL:** A fixed sleep is the primary confirmation or cache-consistency mechanism
+- ✅ **PASS:** The action remains locked until receipt + authoritative refetch, and the lock clears in `finally`
 
 ---
 
@@ -108,21 +109,21 @@ AI agents treat the scaffold as sacred and leave all default branding in place.
 
 ## Important: Contract Address Display
 
-- ❌ **FAIL:** The deployed contract address appears nowhere on the page
-- ✅ **PASS:** Contract address displayed using `<Address/>` component (blockie, ENS, copy, explorer link)
+- ❌ **FAIL:** The product promises contract transparency but gives users no way to identify the deployed contract
+- ✅ **PASS:** When the address is useful to users, display it with `<Address/>` (blockie, ENS, copy, explorer link) or link to a dedicated verified-contract/details view
 
-Agents display the connected wallet address but forget to show the contract the user is interacting with.
+Treat this as a product requirement, not a universal rule for every page. Record why displaying the address helps the intended users.
 
 ---
 
-## Important: Address Input — Always `<AddressInput/>`
+## Important: Address Input — Prefer `<AddressInput/>`
 
-**EVERY input that accepts an Ethereum address must use `<AddressInput/>`, not a plain `<input type="text">`.**
+Every user-facing input that accepts an Ethereum address needs validation, paste handling, visible errors, and name resolution where the target chain supports it. Prefer `<AddressInput/>` in SE2 rather than rebuilding those behaviors.
 
 - ❌ **FAIL:** `<input type="text" placeholder="0x..." value={addr} onChange={e => setAddr(e.target.value)} />`
 - ✅ **PASS:** `<AddressInput value={addr} onChange={setAddr} placeholder="0x... or ENS name" />`
 
-`<AddressInput/>` gives you ENS resolution (type "vitalik.eth" → resolves to address), blockie avatar preview, validation, and paste handling. A raw text input is unacceptable for address collection.
+`<AddressInput/>` gives you ENS resolution (type "vitalik.eth" → resolves to address), blockie avatar preview, validation, and paste handling. A raw text input without equivalent behavior is unacceptable for address collection.
 
 **In SE2, it's in `@scaffold-ui/components`:**
 ```typescript
@@ -136,18 +137,18 @@ import { AddressInput } from "~~/components/scaffold-eth"; // if re-exported
 grep -rn 'type="text"' packages/nextjs/app/ | grep -i "addr\|owner\|recip\|0x"
 grep -rn 'placeholder="0x' packages/nextjs/app/
 ```
-Any match → **FAIL**. Replace with `<AddressInput/>`.
+Any match is a review lead, not an automatic failure: inspect whether equivalent validation and resolution behavior exists.
 
-The pair: `<Address/>` for **display**, `<AddressInput/>` for **input**. Always.
+The usual SE2 pair is `<Address/>` for **display** and `<AddressInput/>` for **input**.
 
 ---
 
-## Important: USD Values
+## Important: USD Values at Decision Points
 
-- ❌ **FAIL:** Token amounts shown as "1,000 TOKEN" or "0.5 ETH" with no dollar value
+- ❌ **FAIL:** A volatile token amount affects a user's decision or risk, but no fiat context is available
 - ✅ **PASS:** "0.5 ETH (~$1,250)" with USD conversion
 
-Agents never add USD values unprompted. Check every place a token or ETH amount is displayed, including inputs.
+Check balances, inputs, confirmations, and positions where value matters. Compact technical views do not require a dollar figure on every row. Verify the price source and handle stale or unavailable prices safely.
 
 ---
 
@@ -167,13 +168,13 @@ grep -n "og:image\|images:" packages/nextjs/app/layout.tsx
 
 Open `packages/nextjs/scaffold.config.ts`:
 
-- ❌ **FAIL:** `pollingInterval: 30000` (default — makes the UI feel broken, 30 second update lag)
-- ✅ **PASS:** `pollingInterval: 3000`
+- ❌ **FAIL:** Polling is too slow for the intended interaction and no event-driven/post-confirmation refresh compensates for it
+- ✅ **PASS:** Polling is deliberately tuned for the chain and UX (often around 2–5 seconds for interactive views), or event-driven refresh provides timely updates
 - ❌ **FAIL:** Using default Alchemy API key that ships with SE2
 - ❌ **FAIL:** Code references `process.env.NEXT_PUBLIC_*` but the variable isn't actually set in the deployment environment (Vercel/hosting). Falls back to public RPC like `mainnet.base.org` which is rate-limited
 - ✅ **PASS:** `rpcOverrides` uses `process.env.NEXT_PUBLIC_*` variables AND the env var is confirmed set on the hosting platform
-- ❌ **FAIL:** `services/web3/wagmiConfig.tsx` still includes bare `http()` fallback transport (silently hits public RPCs in parallel, causing rate limits)
-- ✅ **PASS:** Bare `http()` fallback removed; only intended configured transports remain
+- ❌ **FAIL:** `services/web3/wagmiConfig.tsx` includes an accidental public fallback that can route production traffic to a rate-limited endpoint
+- ✅ **PASS:** Every fallback is intentional, ordered, monitored, and appropriate for expected traffic; remove unintentional bare `http()` entries
 
 **Verify the env var is set, not just referenced.** AI agents will change the code to use `process.env`, see the pattern matches PASS, and move on — without ever setting the actual variable on Vercel/hosting. Check:
 ```bash
@@ -203,6 +204,13 @@ export default {
 ```
 
 Never edit `deployedContracts.ts` directly. It is regenerated on deploy.
+
+**Remediation recipe:**
+
+1. Copy the external contract's address and ABI into `externalContracts.ts` under the correct chain ID.
+2. Remove only the manually inserted external entry from `deployedContracts.ts`; preserve generated local deployments.
+3. Confirm the exported value still satisfies `GenericContractsDeclaration` and update imports if required.
+4. Run the frontend typecheck/build and verify the scaffold hook resolves the contract by name.
 
 ---
 
@@ -238,89 +246,32 @@ Any match on a root layout div or page wrapper → **FAIL**.
 
 ## Important: Phantom Wallet in RainbowKit
 
-Phantom is NOT in the SE2 default wallet list. A lot of users have Phantom — if it's missing, they can't connect.
+Explicitly listing Phantom can improve discovery when Phantom users are part of the product's supported audience. It is not a universal ship blocker: injected discovery or WalletConnect may already provide a working path.
 
-- ❌ **FAIL:** Phantom wallet not in the RainbowKit wallet list
-- ✅ **PASS:** `phantomWallet` is in `wagmiConnectors.tsx`
+- ❌ **FAIL:** The product promises Phantom support, but no tested connection path is discoverable
+- ✅ **PASS:** Every wallet promised by the product has a tested connection path; add `phantomWallet` to `wagmiConnectors.tsx` when explicit listing is required
 
 ---
 
 ## Important: Mobile Deep Linking
 
-**RainbowKit v2 / WalletConnect v2 does NOT auto-deep-link to the wallet app.** It relies on push notifications instead, which are slow and unreliable. You must implement deep linking yourself.
+Mobile linking behavior depends on the RainbowKit, WalletConnect, browser, OS, and wallet versions. Do not assume every signing request redirects correctly, and do not assume every integration needs a hand-written redirect.
 
 On mobile, when a user taps a button that needs a signature, it must open their wallet app. Test this: open the app on a phone, connect a wallet via WalletConnect, tap an action button — does the wallet app open with the transaction ready to sign?
 
 - ❌ **FAIL:** Nothing happens, user has to manually switch to their wallet app
-- ❌ **FAIL:** Deep link fires BEFORE the transaction — user arrives at wallet with nothing to sign
-- ❌ **FAIL:** `window.location.href = "rainbow://"` called before `writeContractAsync()` — navigates away and the TX never fires
+- ❌ **FAIL:** A custom deep link fires before the signing request has been created
 - ❌ **FAIL:** It opens the wrong wallet (e.g. opens MetaMask when user connected with Rainbow)
 - ❌ **FAIL:** Deep links inside a wallet's in-app browser (unnecessary — you're already in the wallet)
-- ✅ **PASS:** Every transaction button fires the TX first, then deep links to the correct wallet app after a delay
+- ✅ **PASS:** Signing opens the selected wallet through supported connector/session redirect metadata, or the UI gives a tested manual fallback
 
 ### How to implement it
 
-**Pattern: `writeAndOpen` helper.** Fire the write call first (sends the TX request over WalletConnect), then deep link after a delay to switch the user to their wallet:
-
-```typescript
-const writeAndOpen = useCallback(
-  <T,>(writeFn: () => Promise<T>): Promise<T> => {
-    const promise = writeFn(); // Fire TX — does gas estimation + WC relay
-    setTimeout(openWallet, 2000); // Switch to wallet AFTER request is relayed
-    return promise;
-  },
-  [openWallet],
-);
-
-// Usage — wraps every write call:
-await writeAndOpen(() => gameWrite({ functionName: "click", args: [...] }));
-```
-
-**Why 2 seconds?** `writeContractAsync` must estimate gas, encode calldata, and relay the signing request through WalletConnect's servers. 300ms is too fast — the wallet won't have received the request yet.
-
-**Detecting the wallet:** `connector.id` from wagmi says `"walletConnect"`, NOT `"rainbow"` or `"metamask"`. You must check multiple sources:
-
-```typescript
-const openWallet = useCallback(() => {
-  if (typeof window === "undefined") return;
-  const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-  if (!isMobile || window.ethereum) return; // Skip if desktop or in-app browser
-
-  // Check connector, wagmi storage, AND WalletConnect session data
-  const allIds = [connector?.id, connector?.name,
-    localStorage.getItem("wagmi.recentConnectorId")]
-    .filter(Boolean).join(" ").toLowerCase();
-
-  let wcWallet = "";
-  try {
-    const wcKey = Object.keys(localStorage).find(k => k.startsWith("wc@2:client"));
-    if (wcKey) wcWallet = (localStorage.getItem(wcKey) || "").toLowerCase();
-  } catch {}
-  const search = `${allIds} ${wcWallet}`;
-
-  const schemes: [string[], string][] = [
-    [["rainbow"], "rainbow://"],
-    [["metamask"], "metamask://"],
-    [["coinbase", "cbwallet"], "cbwallet://"],
-    [["trust"], "trust://"],
-    [["phantom"], "phantom://"],
-  ];
-
-  for (const [keywords, scheme] of schemes) {
-    if (keywords.some(k => search.includes(k))) {
-      window.location.href = scheme;
-      return;
-    }
-  }
-}, [connector]);
-```
-
-**Key rules:**
-1. **Fire TX first, deep link second.** Never `window.location.href` before the write call
-2. **Skip deep link if `window.ethereum` exists** — means you're already in the wallet's in-app browser
-3. **Check WalletConnect session data** in localStorage — `connector.id` alone won't tell you which wallet
-4. **Use simple scheme URLs** like `rainbow://` — not `rainbow://dapp/...` which reloads the page
-5. **Wrap EVERY write call** — approve, action, claim, batch — not just the main one
+1. Pin the RainbowKit and WalletConnect versions being reviewed and check their current mobile-linking guidance.
+2. Prefer supported connector or WalletConnect session peer metadata for the selected wallet's redirect. Do not scrape undocumented `wc@2:*` local-storage structures or guess from `connector.id` alone.
+3. Create the signing request before any custom navigation. Do not hardcode a universal timeout; if a workaround requires a delay, measure and document it for the supported wallet/OS matrix.
+4. Detect wallet in-app browsers using tested wallet/browser signals rather than treating any `window.ethereum` value as conclusive.
+5. Test connect, sign, reject, return-to-dapp, and wrong-wallet behavior on supported iOS and Android combinations. Record versions and results.
 
 ---
 
@@ -382,17 +333,17 @@ Any `"loading"` string in a button's className → **FAIL**.
 
 ---
 
-## Important: SE2 Pill-Shaped Inputs (`--radius-field`)
+## Important: DaisyUI Field Radius (`--radius-field`)
 
-SE2 DaisyUI theme defaults to `--radius-field: 9999rem`, which creates pill-shaped textareas/selects and often clips content.
+Inspect `--radius-field` in every DaisyUI theme block. An excessively large value such as `9999rem` creates pill-shaped fields and can clip multiline controls; current template defaults may differ by SE2/DaisyUI version.
 
-- ❌ **FAIL:** `--radius-field: 9999rem` remains in `packages/nextjs/styles/globals.css`
-- ✅ **PASS:** `--radius-field` is changed to `0.5rem` (or similar) in both light and dark theme blocks
+- ❌ **FAIL:** The configured radius produces inappropriate pill-shaped or clipped fields
+- ✅ **PASS:** The radius is a deliberate product value and is consistent across light/dark theme blocks
 
 Fix in theme (not per component):
 ```css
 /* In BOTH @plugin "daisyui/theme" blocks */
---radius-field: 0.5rem;
+--radius-field: 0.5rem; /* example, not a universal required value */
 ```
 
 Do not patch this by sprinkling `rounded-*` utility classes per input; fix it once at theme level.
@@ -409,31 +360,30 @@ Do not patch this by sprinkling `rounded-*` utility classes per input; fix it on
 
 ## Audit Summary
 
-Report each as PASS or FAIL:
+Report each applicable item as PASS or FAIL, with evidence. Mark product-dependent items `N/A` when the product does not promise that behavior.
 
 ### Ship-Blocking
 - [ ] Wallet connection shows a BUTTON, not text
 - [ ] Wrong network shows a Switch button **in the primary CTA slot** (not only in the header dropdown)
 - [ ] One button at a time (Connect → Network → Approve → Action)
-- [ ] Approve button locked through full cycle: `approvalSubmitting` (click→hash), `approveCooldown` (confirm→cache refresh) — both states required, both on the `disabled` prop
+- [ ] Approve button locked through submission, receipt, and authoritative allowance refresh; rejection releases the lock
 - [ ] Contracts verified on block explorer (Etherscan/Basescan/Arbiscan) — source code readable by anyone
 - [ ] SE2 footer branding removed
 - [ ] SE2 tab title removed
 - [ ] SE2 README replaced
 
 ### Should Fix
-- [ ] Contract address displayed with `<Address/>`
-- [ ] Every address input uses `<AddressInput/>` — no raw `<input type="text">` for addresses
-- [ ] USD values next to all token/ETH amounts
+- [ ] Contract identity is available where product transparency requires it
+- [ ] Address inputs use `<AddressInput/>` or provide equivalent validation, resolution, and feedback
+- [ ] Fiat context appears where volatile amounts affect user decisions
 - [ ] OG image is absolute production URL
-- [ ] pollingInterval is 3000
+- [ ] Polling or event-driven refresh is deliberately tuned for responsive updates
 - [ ] RPC overrides set (not default SE2 key) AND env var confirmed set on hosting platform
 - [ ] Favicon updated from SE2 default
-- [ ] `--radius-field` in `globals.css` changed from `9999rem` to `0.5rem` (or similar) — no pill-shaped textareas
+- [ ] `--radius-field` is deliberate and consistent across themes — no inappropriate pill-shaped or clipped fields
 - [ ] Every contract error mapped to a human-readable message — no silent catch blocks, no raw hex selectors
 - [ ] No hardcoded dark backgrounds — page wrapper uses `bg-base-200 text-base-content` (or `data-theme="dark"` forced + `<SwitchTheme/>` removed)
 - [ ] Button loaders use inline `<span className="loading loading-spinner loading-sm" />` — NOT `className="... loading"` on the button itself
-- [ ] Phantom wallet in RainbowKit wallet list
-- [ ] Mobile: ALL transaction buttons deep link to wallet (fire TX first, then `setTimeout(openWallet, 2000)`)
-- [ ] Mobile: wallet detection checks WC session data, not just `connector.id`
-- [ ] Mobile: no deep link when `window.ethereum` exists (in-app browser)
+- [ ] Every wallet promised by the product has a tested connection path
+- [ ] Mobile signing opens the selected wallet through supported metadata or offers a tested fallback
+- [ ] Mobile-link behavior is verified on the supported wallet/browser/OS matrix
