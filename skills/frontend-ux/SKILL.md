@@ -15,6 +15,19 @@ description: Frontend UX rules for Ethereum dApps that prevent the most common A
 
 ---
 
+## Pre-Ship Checklist
+
+Before calling an onchain frontend finished, verify:
+
+- Transaction buttons stay locked through receipt confirmation and authoritative state refresh
+- The configured target chain matches the product brief
+- Critical address inputs resolve names such as ENS and explain invalid input
+- Volatile asset amounts have fiat context at decision points
+- Template titles, favicons, social metadata, and visible branding use the product identity
+- The app builds or typechecks, and the critical transaction states have been exercised
+
+---
+
 ## Rule 1: Every Button Interacting Onchain Needs Its Own Pending State
 
 Any button that triggers an onchain transaction must:
@@ -23,35 +36,32 @@ Any button that triggers an onchain transaction must:
 3. Stay disabled until chain state confirms completion
 4. Show success/error feedback when done
 
-```typescript
-// Separate loading state per action
-const [isApproving, setIsApproving] = useState(false);
-const [isStaking, setIsStaking] = useState(false);
-
-<button
-  disabled={isApproving}
-  onClick={async () => {
-    setIsApproving(true);
-    try {
-      await sendApproveTx();
-    } catch (e) {
-      notifyError("Approval failed");
-    } finally {
-      setIsApproving(false); // always release — even on rejection
-    }
-  }}
->
-  {isApproving ? "Approving..." : "Approve"}
-</button>
-```
-
 Never use one shared `isLoading` state for multiple buttons. It causes wrong labels, wrong disabled states, and duplicate submissions.
 
 **For approval flows: `isPending` alone is not enough.**
 
 `isPending` drops to `false` when the wallet returns the tx hash — before on-chain confirmation. There is a window where `isPending = false` AND the allowance hasn't updated → button re-enables mid-flight and a user can double-submit.
 
-Approval handlers need two states: `approvalSubmitting` (set on click, cleared in `finally {}`) to cover the wallet→confirmation gap, and `approveCooldown` (set after confirm, cleared after 4s + refetch) to cover the confirmation→cache gap. Both go on `disabled`. `finally {}` is required — without it a rejected tx locks the button permanently.
+Keep a local lock across the complete lifecycle: wallet submission → transaction receipt → authoritative allowance refetch. Release it in `finally` so wallet rejection and RPC errors cannot leave the button stuck.
+
+```typescript
+const [approvalSubmitting, setApprovalSubmitting] = useState(false);
+
+const approve = async () => {
+  setApprovalSubmitting(true);
+  try {
+    const hash = await writeContractAsync(approveArgs);
+    await waitForTransactionReceipt(config, { hash });
+    await refetchAllowance();
+  } catch (error) {
+    notifyError(parseContractError(error));
+  } finally {
+    setApprovalSubmitting(false);
+  }
+};
+```
+
+Disable Approve while `approvalSubmitting` is true. Render Stake only after the refreshed allowance read confirms it. Do not substitute a fixed sleep for receipt confirmation and refetch; a short cache hold is only a fallback when the data layer cannot return the updated state immediately.
 
 ---
 
@@ -86,14 +96,16 @@ Every address input should support:
 - Validation
 - Paste normalization
 - ENS/name resolution where available
+- A visible resolved address before submission
+- Inline feedback when validation or resolution fails
 
-If your UI kit includes dedicated address components, use them. Do not use a raw free-text field for critical address entry.
+If your UI kit includes dedicated address components, use them. Otherwise detect names, resolve them with the appropriate chain/client, validate the resolved address, show the mapping to the user, and submit the resolved address. Do not use a raw free-text field guarded only by a hex regex for critical address entry.
 
 ---
 
-## Rule 4: Show USD Context for Token Values
+## Rule 4: Show USD Context Where Value Affects Decisions
 
-Every token/ETH amount shown to users should include USD context:
+Show fiat context for volatile token/ETH amounts at decision points:
 - Balances
 - Inputs (live preview)
 - Confirmation text
@@ -104,12 +116,13 @@ Every token/ETH amount shown to users should include USD context:
 <span>1,000 TOKEN (~$4.20)</span>
 ```
 
-Do not show only token units without value context.
+Use a real price source and label stale or unavailable prices safely. Compact technical views do not need a dollar figure on every row, but users should not have to guess the value or risk of an action.
 
 ---
 
-## Rule 5: RPC Reliability and Polling
+## Rule 5: Target Chain, RPC Reliability, and Polling
 
+- Configure the app for the product's intended chain; do not leave scaffold defaults active
 - Use a dedicated RPC provider for production (not accidental public fallback only)
 - Keep polling interval in a responsive range (typically ~2-5s for interactive apps)
 - Ensure fallback transports are intentional and rate-limit aware
@@ -157,9 +170,9 @@ try {
 ## Rule 8: Pre-Publish Metadata and Product Identity
 
 Before production release:
-- Open Graph image URL is absolute and reachable on live domain (`https://...`)
+- Commit a valid social preview asset and configure it in metadata
+- Once a production domain exists, make the Open Graph image URL absolute and verify it is reachable (`https://...`)
 - OG/Twitter title + description are set correctly
-- Social preview image is valid and not local/relative
 - Template/default branding is removed or replaced with project identity
 - Favicon and tab title reflect the app
 
@@ -183,4 +196,10 @@ Never show raw base units like `1500000000000000000`.
 
 ---
 
-Before you finish: send a one-line note via [feedback/SKILL.md](https://ethskills.com/feedback/SKILL.md) — issue or praise.
+## Verify Before Finishing
+
+- Run the repository's build or typecheck command
+- Exercise wallet rejection, reverted transaction, pending receipt, and delayed read-refetch states
+- Confirm only one primary action is enabled in each connection/network/allowance state
+- Test a hex address, a resolvable name, and an invalid recipient
+- Check metadata and both light and dark themes in the built app
