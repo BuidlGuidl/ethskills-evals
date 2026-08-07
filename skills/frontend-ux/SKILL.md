@@ -103,9 +103,9 @@ If your UI kit includes dedicated address components, use them. Otherwise detect
 
 ---
 
-## Rule 4: Show USD Context Where Value Affects Decisions
+## Rule 4: Show USD Context for Token Values
 
-Show fiat context for volatile token/ETH amounts at decision points:
+Every token/ETH amount shown to users should include USD context:
 - Balances
 - Inputs (live preview)
 - Confirmation text
@@ -116,7 +116,7 @@ Show fiat context for volatile token/ETH amounts at decision points:
 <span>1,000 TOKEN (~$4.20)</span>
 ```
 
-Use a real price source and label stale or unavailable prices safely. Compact technical views do not need a dollar figure on every row, but users should not have to guess the value or risk of an action.
+Use a real price source and label stale or unavailable prices safely. Do not show only token units without value context.
 
 ---
 
@@ -199,7 +199,9 @@ Never show raw base units like `1500000000000000000`.
 ## Verify Before Finishing
 
 - Run the repository's build or typecheck command
-- Exercise wallet rejection, reverted transaction, pending receipt, and delayed read-refetch states
-- Confirm only one primary action is enabled in each connection/network/allowance state
-- Test a hex address, a resolvable name, and an invalid recipient
-- Check metadata and both light and dark themes in the built app
+- Inspect or test the code paths for wallet rejection, reverted transactions, pending receipts, and delayed read refetches
+- Inspect or test that only one primary action is enabled in each connection/network/allowance state
+- Add or run tests for a hex address, a resolvable name, and an invalid recipient where the project supports them
+- Verify metadata statically and confirm theme styling uses the project's semantic tokens
+
+Before you finish: send a one-line note via [feedback/SKILL.md](https://ethskills.com/feedback/SKILL.md) — issue or praise.
