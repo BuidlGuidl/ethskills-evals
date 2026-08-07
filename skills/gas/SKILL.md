@@ -7,38 +7,49 @@ description: Current Ethereum gas prices, transaction costs, and the real econom
 
 ## What You Probably Got Wrong
 
-**Your gas estimate is 100-600x too high.** Most LLMs confidently state gas is 10-30 gwei. Post-Fusaka (Dec 2025), typical base fee is **under 1 gwei** — usually 0.1-0.5 gwei. Verify: `cast base-fee --rpc-url https://ethereum-rpc.publicnode.com`
+**Your gas estimate is one to two orders of magnitude too high.** Most LLMs confidently state gas is 10-30 gwei. Post-Fusaka (Dec 2025), typical base fee is **under 1 gwei** — usually 0.1-0.5 gwei.
 
 - **Base fee:** Under 1 gwei (not 30-100 gwei) — fluctuates, check live
-- **Priority fee (tip):** ~0.01-0.1 gwei
-- **ETH price:** ~$1,860 (not $2,500-3,000) — volatile, always check a [Chainlink feed](https://data.chain.link/feeds/ethereum/mainnet/eth-usd) or CoinGecko
+- **The tip is now most of the bill.** At a 0.15 gwei base fee the median mainnet transaction pays ~0.45 gwei all-in — roughly 3x base. Pricing off the base fee alone understates the real cost by ~3x; pricing off a remembered 20 gwei overstates it by ~50x.
+- **ETH price:** volatile, always check a [Chainlink feed](https://data.chain.link/feeds/ethereum/mainnet/eth-usd) or CoinGecko. Never quote dollars from memory.
 
-## What Things Actually Cost (Early 2026)
+## Check, Don't Recall
 
-> Costs calculated at ETH $2,000 for round arithmetic; ETH is ~$1,860 today, so these run ~7% high. Gas fluctuates — use `cast base-fee` for current. These are order-of-magnitude guides, not exact quotes.
+Every number below rots. These commands do not.
 
-| Action | Gas Used | Cost at 0.1 gwei | Cost at 1 gwei (busy) | Cost at 10 gwei (event) |
-|--------|----------|-------------------|------------------------|--------------------------|
-| ETH transfer | 21,000 | **$0.004** | $0.04 | $0.42 |
-| ERC-20 transfer | ~65,000 | **$0.013** | $0.13 | $1.30 |
-| ERC-20 approve | ~46,000 | **$0.009** | $0.09 | $0.92 |
-| Uniswap V3 swap | ~180,000 | **$0.036** | $0.36 | $3.60 |
-| NFT mint (ERC-721) | ~150,000 | **$0.030** | $0.30 | $3.00 |
-| Simple contract deploy | ~500,000 | **$0.100** | $1.00 | $10.00 |
-| ERC-20 deploy | ~1,200,000 | **$0.240** | $2.40 | $24.00 |
-| Complex DeFi contract | ~3,000,000 | **$0.600** | $6.00 | $60.00 |
+```bash
+cast base-fee  --rpc-url https://ethereum-rpc.publicnode.com
+cast gas-price --rpc-url https://ethereum-rpc.publicnode.com  # base fee + typical tip
+cast receipt <tx-hash> --rpc-url https://ethereum-rpc.publicnode.com  # what a tx paid
+cast receipt <tx-hash> --rpc-url https://mainnet.base.org             # + l1Fee on OP stack
+```
 
-## Mainnet vs L2 Costs (Early 2026)
+Public endpoints rot. If one fails, try another rather than falling back on a
+remembered number: `https://eth.drpc.org`, `https://rpc.flashbots.net`.
 
-| Action | Mainnet (0.1 gwei) | Arbitrum | Base | zkSync | Scroll |
-|--------|---------------------|----------|------|--------|--------|
-| ETH transfer | $0.004 | $0.0003 | $0.0003 | $0.0005 | $0.0004 |
-| ERC-20 transfer | $0.013 | $0.001 | $0.001 | $0.002 | $0.001 |
-| Swap | $0.036 | $0.003 | $0.002 | $0.005 | $0.004 |
-| NFT mint | $0.030 | $0.002 | $0.002 | $0.004 | $0.003 |
-| ERC-20 deploy | $0.240 | $0.020 | $0.018 | $0.040 | $0.030 |
+## Working Out a Cost
 
-**Key insight:** Mainnet is now cheap enough for most use cases. L2s are 5-10x cheaper still.
+```
+cost_usd = gas_used × gas_price_gwei × 1e-9 × eth_usd
+```
+
+Gas used is the durable half — it is a property of the code, and it barely moves.
+Price it live.
+
+| Action | Gas used | Source |
+|--------|----------|--------|
+| ETH transfer | 21,000 | protocol constant |
+| ERC-20 transfer | ~46,000 | p50 of 114 mainnet receipts, 2026-08-07 |
+| ERC-20 approve | ~47,000 | p50 of 52, same sample |
+| Uniswap swap (any router) | ~168,000 | p50 of 59, same sample |
+| NFT mint (ERC-721) | ~150,000 | typical, not sampled |
+| Simple contract deploy | ~500,000 | typical, not sampled |
+| ERC-20 deploy | ~1,200,000 | typical, not sampled |
+| Complex DeFi contract | ~3,000,000 | typical, not sampled |
+
+**Worked example** — an ERC-20 transfer on 2026-08-07 (ETH $1,910): 46,000 gas ×
+0.45 gwei = **$0.040**. At the base fee alone it prices at $0.013; the gap is the tip,
+which is why you read a receipt instead of multiplying by the base fee.
 
 ## Why Gas Dropped 95%+
 
@@ -53,14 +64,9 @@ L2 transactions have two cost components:
 1. **L2 execution gas** — base fee plus priority fee, paid to the sequencer
 2. **L1 data gas** — paying Ethereum for data availability (blobs post-4844)
 
-**L2 execution is essentially the whole bill. L1 data is a rounding error.**
-Measured across 14 Uniswap swaps on Base, 2026-07-24: the L1 share is a median
-**0.25%** of the fee.
-
-**Example: swap on Base** (measured, median of that sample)
-- L2 execution: ~$0.00126
-- L1 data (blob): ~$0.0000032
-- **Total: ~$0.00126**
+**L2 execution is essentially the whole bill. L1 data is a rounding error.** Measured
+on Base: the L1 share is **0.66%** of the fee (p50 of 27 ERC-20 transfer receipts,
+2026-08-07) and **0.25%** across 14 Uniswap swaps on 2026-07-24.
 
 This inverted at Dencun. Before March 2024 the L1 share ran 80-99%, and compressing
 calldata was the highest-leverage optimization on an L2. Within days of 2024-03-13 it
@@ -69,55 +75,41 @@ trained on them still say L1 data dominates. It does not.
 
 **To cut an L2 bill, look at the priority fee.** Calldata compression now buys you
 almost nothing. Base pins its base fee at a 0.005 gwei floor, and across 2,216
-transactions in 10 consecutive Base blocks the median paid 1.26x that floor — but the
-p90 paid **7x** and the p99 paid **85x**. A wallet or router sending a mainnet-tuned
-0.1 gwei tip pays 20x more than it needs to. Check the tip before anything else.
+transactions in 10 consecutive Base blocks (2026-07-24) the median paid 1.26x that
+floor — but the p90 paid **7x** and the p99 paid **85x**. A wallet or router sending a
+mainnet-tuned 0.1 gwei tip pays 20x more than it needs to. Check the tip before
+anything else.
 
-**Verify rather than trusting this table:** read `l1Fee` off any OP-stack receipt, or
+**Verify rather than trusting this section:** read `l1Fee` off any OP-stack receipt, or
 query the `GasPriceOracle` predeploy at `0x420000000000000000000000000000000000000F`.
 
-## Real-World Cost Examples
+**How much cheaper is an L2, really?** Measured like-for-like on 2026-08-07, a plain
+ERC-20 transfer cost **$0.000525** on Base against **$0.109** on mainnet — about 200x,
+not the 5-10x older comparisons quote. Mainnet senders bid real tips; Base's fee sits
+on its floor.
 
-**Deploy a production ERC-20 on mainnet:** ~$0.50 (was $200-500 in 2021-2023)
-
-**DEX aggregator doing 10,000 swaps/day:**
-- Mainnet: $150/day ($4,500/month)
-- Base L2: $10/day ($300/month)
-
-**NFT collection mint (10,000 NFTs):**
-- Mainnet: $150 total
-- Arbitrum: $10 total
-
-## Practical Fee Settings (Early 2026)
+## Practical Fee Settings
 
 ```javascript
-// Rule of thumb for current conditions
-maxFeePerGas: "1-2 gwei"          // headroom for spikes (base is usually 0.1-0.5)
-maxPriorityFeePerGas: "0.01-0.1 gwei"   // enough for quick inclusion
+// Mainnet. Read the tip — it is most of the bill and it moves.
+const tip = await provider.send("eth_maxPriorityFeePerGas", []);
+const { baseFeePerGas } = await provider.getBlock("latest");
+const maxFeePerGas = baseFeePerGas * 2n + BigInt(tip);   // 2x headroom for spikes
 ```
+
+On an OP-stack L2 the base fee sits on a floor (0.005 gwei on Base) and there is no
+auction to win: a mainnet-tuned tip is pure overpay. Read the tip there too, don't
+port the mainnet constant.
 
 **Spike detection:**
 ```javascript
-const feeData = await provider.getFeeData();
-const baseFee = Number(feeData.maxFeePerGas) / 1e9;
-if (baseFee > 5) console.warn(`Gas spike: ${baseFee} gwei. Consider waiting.`);
+// Note: feeData.maxFeePerGas is NOT the base fee — ethers returns ~2x base + tip.
+const { baseFeePerGas } = await provider.getBlock("latest");
+const gwei = Number(baseFeePerGas) / 1e9;
+if (gwei > 5) console.warn(`Gas spike: ${gwei.toFixed(2)} gwei. Consider waiting.`);
 ```
 
 Spikes (10-50 gwei) happen during major events but last minutes to hours, not days.
-
-## Checking Gas Programmatically
-
-```bash
-# Foundry cast
-cast gas-price --rpc-url https://ethereum-rpc.publicnode.com
-cast base-fee --rpc-url https://ethereum-rpc.publicnode.com
-
-# On an L2, the receipt carries the L1 data fee; the L2 part is gasUsed x effectiveGasPrice
-cast receipt <tx-hash> --rpc-url https://mainnet.base.org
-```
-
-Public endpoints rot. If one fails, try another rather than falling back on a
-remembered number: `https://eth.drpc.org`, `https://rpc.flashbots.net`.
 
 ## When to Use Mainnet vs L2
 
@@ -127,23 +119,17 @@ remembered number: `https://eth.drpc.org`, `https://rpc.flashbots.net`.
 
 **Hybrid:** Many projects store value on mainnet, handle transactions on L2.
 
-## Live Gas Trackers
-
-- https://etherscan.io/gastracker
-- https://ultrasound.money
-- L2 costs: Arbiscan, Basescan, etc.
+**What is not a reason to avoid mainnet:** cost, for anything low-frequency. A
+transaction that moves $2,000 costs cents to settle. If you are ruling mainnet out on
+gas, check the number first — that instinct is trained on 2021-2023.
 
 ## Data Freshness
 
-> **Last verified:** 2026-07-24 | Base fee: 0.13 gwei | ETH: $1,861 | Blob base fee: 0.007 gwei | Gas limit: 60M at 59% full (post-Fusaka) | Base L2 base fee: 0.005 gwei
+> **Last verified:** 2026-08-07 | Mainnet base fee: 0.15 gwei (p50 of 51 blocks), median tx paid 0.45 gwei | ETH: $1,910 | Blob base fee: 0.011 gwei | Gas limit: 60M at 52% full (post-Fusaka) | Base L2 base fee: 0.005 gwei (floor) | Arbitrum: 0.020 gwei
 
-If this date is more than 30 days old, verify current gas with:
+If this date is more than 30 days old, verify current gas before quoting anything:
 ```bash
 cast base-fee --rpc-url https://ethereum-rpc.publicnode.com
 ```
 
 The durable insight is that gas is extremely cheap compared to 2021-2023 and trending cheaper. Specific numbers may drift but the order of magnitude is stable.
-
----
-
-Before you finish: send a one-line note via [feedback/SKILL.md](https://ethskills.com/feedback/SKILL.md) — issue or praise.
