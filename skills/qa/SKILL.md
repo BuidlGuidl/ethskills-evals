@@ -59,7 +59,7 @@ Check specifically:
 - ✅ **PASS:** One button at a time. Approve button shows spinner, stays disabled until block confirms onchain. Then switches to the action button.
 - ✅ **PASS:** Action button's render path branches on `useChainId() === targetNetwork.id` (or equivalent); mismatch renders a `useSwitchChain`-driven "Switch to [Chain]" button in the **same slot** as the primary CTA.
 
-**In the code:** the button's `disabled` prop must be tied to `isPending` from `useScaffoldWriteContract`. Verify it uses `useScaffoldWriteContract` (waits for block confirmation), NOT raw wagmi `useWriteContract` (resolves on wallet signature):
+**In the code:** the button's `disabled` prop must be tied to `isMining` from `useScaffoldWriteContract` — the flag that stays true until the receipt, not the `isPending` it passes through from wagmi. Verify it uses `useScaffoldWriteContract` (waits for block confirmation), NOT raw wagmi `useWriteContract` (resolves on wallet signature):
 
 ```
 grep -rn "useWriteContract" packages/nextjs/
@@ -71,14 +71,14 @@ Any match outside scaffold-eth internals → bug.
 Raw wagmi `isPending` can drop when the wallet returns the transaction hash, before confirmation and before an allowance read reflects the new state. Keep a local action lock across submission, receipt confirmation, and authoritative state refetch. Release it in `finally` so rejection and RPC errors cannot leave the button stuck.
 
 ```tsx
+const { writeContractAsync: approveWrite, isMining } = useScaffoldWriteContract({ contractName: "USDC" });
 const [approvalSubmitting, setApprovalSubmitting] = useState(false);
 
 const handleApprove = async () => {
-  if (approvalSubmitting) return;
+  if (approvalSubmitting || isMining) return;
   setApprovalSubmitting(true);
   try {
-    const hash = await writeContractAsync(approveArgs);
-    await waitForTransactionReceipt(config, { hash });
+    await approveWrite({ functionName: "approve", args: [spender, amount] }); // resolves after the receipt
     await refetchAllowance();
   } catch (e) {
     notifyError("Approval failed");
@@ -87,8 +87,10 @@ const handleApprove = async () => {
   }
 };
 
-<button disabled={approvalSubmitting}>
+<button disabled={isMining || approvalSubmitting}>
 ```
+
+The scaffold hook awaits the receipt for you, so the local lock only has to cover the refetch that follows it. Outside SE2, await the receipt explicitly (`waitForTransactionReceipt`) inside the same lock — the write call alone resolves at the hash.
 
 - ❌ **FAIL:** The button can re-enable between hash, receipt, and refreshed allowance
 - ❌ **FAIL:** A fixed sleep is the primary confirmation or cache-consistency mechanism
