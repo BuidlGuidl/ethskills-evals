@@ -1,36 +1,36 @@
 ---
 name: frontend-playbook
-description: The complete build-to-production pipeline for Ethereum dApps. Fork mode setup, IPFS deployment, Vercel config, ENS subdomain setup, and the full production checklist. Built around Scaffold-ETH 2 but applicable to any Ethereum frontend project. Use when deploying any dApp to production.
+description: Build-to-production workflow for Scaffold-ETH 2 dApps, including project scaffolding, fork integration testing, IPFS deployment, Vercel config, ENS subdomain setup, and production verification. Use when starting, integrating, or deploying a Scaffold-ETH 2 project, or when an Ethereum frontend explicitly needs this deployment workflow.
 ---
 
 # Frontend Playbook
 
 ## What You Probably Got Wrong
 
-**"I'll use `yarn chain`."** Wrong. `yarn chain` gives you an empty local chain with no protocols, no tokens, no state. `yarn fork --network base` gives you a copy of real Base with Uniswap, Aave, USDC, real whale balances — everything (verified addresses: `addresses/SKILL.md`). Always fork.
+**"I'll use `yarn chain` for an integration test."** A clean local chain has no protocols, tokens, or mainnet state. Use `yarn fork --network base` when the task depends on real Base contracts or state. Keep the clean chain for isolated contracts and unit tests.
 
 **"I deployed to IPFS and it works."** Did the CID change? If not, you deployed stale output. Did routes work? Without `trailingSlash: true`, every route except `/` returns 404. Did you check the OG image? Without `NEXT_PUBLIC_PRODUCTION_URL`, it points to `localhost:3000`.
 
-**"I'll set up the project manually."** Don't. `npx create-eth@latest` handles everything — Foundry, Next.js, RainbowKit, scaffold hooks. Never run `forge init` or create Next.js projects from scratch.
+**"I'll assemble an SE2 project manually."** Use the Scaffold-ETH 2 generator when the user wants an SE2-compatible project; it wires Foundry, Next.js, RainbowKit, and scaffold hooks together. Respect an explicitly requested stack instead of replacing it with SE2.
 
 ---
 
 ## Fork Mode Setup
 
-### Why Fork, Not Chain
+### Choose Fork or Clean Chain
 
 ```
-yarn chain (WRONG)              yarn fork --network base (CORRECT)
+yarn chain                      yarn fork --network base
 └─ Empty local chain            └─ Fork of real Base mainnet
-└─ No protocols                 └─ Uniswap, Aave, etc. available
-└─ No tokens                    └─ Real USDC, WETH exist
-└─ Testing in isolation         └─ Test against REAL state
+└─ Isolated unit tests          └─ Protocol integration tests
+└─ Locally deployed mocks       └─ Real USDC, WETH, Aave, etc.
+└─ Deterministic fixtures       └─ Test against copied chain state
 ```
 
 ### Setup
 
 ```bash
-npx create-eth@latest          # Select: foundry, target chain, name
+npx create-eth@<version>       # Use and record a tested version; select foundry, chain, name
 cd <project-name>
 yarn install
 yarn fork --network base       # Terminal 1: fork of real Base
@@ -51,14 +51,14 @@ targetNetworks: [chains.foundry],  // ✅ NOT chains.base!
 
 Only switch to `chains.base` when deploying contracts to the REAL network.
 
-### Enable Block Mining
+### Control Block Mining
 
 ```bash
-# In a new terminal — REQUIRED for time-dependent logic
+# Continuous blocks for a live demo of time-dependent logic
 cast rpc anvil_setIntervalMining 1
 ```
 
-Without this, `block.timestamp` stays FROZEN. Any contract logic using timestamps (deadlines, expiry, vesting) will break silently.
+With transaction-triggered mining, the latest block and its timestamp do not advance between transactions. Use interval mining when a live demo must progress continuously. For a one-step debugging action, manual mining or time manipulation such as `evm_mine` / `evm_increaseTime` is also valid.
 
 **Make it permanent** by editing `packages/foundry/package.json` to add `--block-time 1` to the fork script.
 
@@ -85,9 +85,9 @@ yarn bgipfs upload out
 # Save the CID!
 ```
 
-### Node 25+ localStorage Polyfill (REQUIRED)
+### Node 25+ localStorage During Prerender
 
-Node.js 25+ ships a built-in `localStorage` object that's MISSING standard WebStorage API methods (`getItem`, `setItem`). This breaks `next-themes`, RainbowKit, and any library that calls `localStorage.getItem()` during static page generation.
+Node.js 25 enables Web Storage by default. Without `--localstorage-file`, accessing `localStorage` returns an empty object, so libraries that detect the global and call `getItem()` during static generation can crash.
 
 **Error you'll see:**
 ```
@@ -95,7 +95,13 @@ TypeError: localStorage.getItem is not a function
 Error occurred prerendering page "/_not-found"
 ```
 
-**The fix:** Create `polyfill-localstorage.cjs` in `packages/nextjs/`:
+Apply a process-level remedy inherited by Next.js build workers. Choose one:
+
+- Set `NODE_OPTIONS="--localstorage-file=.node-localstorage"` to configure Node's implementation
+- Set `NODE_OPTIONS="--no-experimental-webstorage"` when the build should not expose Web Storage
+- Preload a compatible polyfill with `NODE_OPTIONS="--require ./polyfill-localstorage.cjs"`
+
+For the polyfill option, create `polyfill-localstorage.cjs` in `packages/nextjs/`:
 ```javascript
 if (typeof globalThis.localStorage !== "undefined" &&
     typeof globalThis.localStorage.getItem !== "function") {
@@ -111,7 +117,7 @@ if (typeof globalThis.localStorage !== "undefined" &&
 }
 ```
 
-**Why `--require` and not `instrumentation.ts`?** Next.js spawns a separate build worker process for prerendering. `--require` injects into EVERY Node process (including workers). `next.config.ts` polyfill only runs in the main process. `instrumentation.ts` doesn't run in the build worker. Only `--require` works.
+Do not register the remedy only in `instrumentation.ts` or `next.config.ts`: Next.js prerendering may run in a separate build worker. Process flags and `--require` are inherited by workers.
 
 ### IPFS Routing — Why Routes Break
 
@@ -156,7 +162,7 @@ stat -f '%Sm' out/                   # Build output time
 # Source NEWER than out/ = STALE BUILD. Rebuild first!
 ```
 
-**The CID is proof:** If the IPFS CID didn't change after a deploy, you deployed the same content. A real code change ALWAYS produces a new CID.
+**The CID is proof of uploaded bytes:** An unchanged CID means the uploaded content is byte-identical. A content-affecting change that reaches the uploaded site should produce a new CID. If it does not, verify that the expected change exists in `out/`, confirm the upload command targets that directory, and check whether the build failed or used the wrong configuration before blaming gateway caching.
 
 ### Verify Routes After Deploy
 
