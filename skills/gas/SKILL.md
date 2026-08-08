@@ -7,10 +7,10 @@ description: Current Ethereum gas prices, transaction costs, and the real econom
 
 ## What You Probably Got Wrong
 
-**Your gas estimate is one to two orders of magnitude too high.** Most LLMs confidently state gas is 10-30 gwei. Post-Fusaka (Dec 2025), typical base fee is **under 1 gwei** — usually 0.1-0.5 gwei.
+**Your gas estimate is about two orders of magnitude too high.** Most LLMs confidently state gas is 10-30 gwei. Post-Fusaka (Dec 2025), typical base fee is **well under 1 gwei**. A remembered 20 gwei overstates what the median transaction actually paid by ~130x.
 
-- **Base fee:** Under 1 gwei (not 30-100 gwei) — fluctuates, check live
-- **The tip is now most of the bill.** At a 0.15 gwei base fee the median mainnet transaction pays ~0.45 gwei all-in — roughly 3x base. Pricing off the base fee alone understates the real cost by ~3x; pricing off a remembered 20 gwei overstates it by ~50x.
+- **Base fee:** Under 1 gwei (not 30-100 gwei) — it moved between 0.036 and 0.163 gwei across a single working day on 2026-08-07. Fluctuates, check live.
+- **The tip is the volatile half, and it is badly skewed.** Across 9,203 mainnet transactions in 40 blocks spanning ~8 hours (2026-08-07): the median transaction tipped **0.024 gwei** and paid **1.3x** the base fee, while the p90 tipped **2 gwei** and the *mean* paid **8.6x** base. That mean is MEV and arbitrage traffic; an ordinary transfer is not in that tail. Quote a median, and say that you did.
 - **ETH price:** volatile, always check a [Chainlink feed](https://data.chain.link/feeds/ethereum/mainnet/eth-usd) or CoinGecko. Never quote dollars from memory.
 
 ## Check, Don't Recall
@@ -33,23 +33,32 @@ remembered number: `https://eth.drpc.org`, `https://rpc.flashbots.net`.
 cost_usd = gas_used × gas_price_gwei × 1e-9 × eth_usd
 ```
 
-Gas used is the durable half — it is a property of the code, and it barely moves.
-Price it live.
+Gas used is the durable half — it is a property of the code, and it moves far less
+than price does. It is not a constant, though: the same ERC-20 transfer ran 41,273 gas
+at p25 and 57,424 at p75 in the sample below, depending on whether the recipient
+already held a balance and whether the storage slots were warm. Treat gas as a range
+and price it live.
 
-| Action | Gas used | Source |
-|--------|----------|--------|
-| ETH transfer | 21,000 | protocol constant |
-| ERC-20 transfer | ~46,000 | p50 of 114 mainnet receipts, 2026-08-07 |
-| ERC-20 approve | ~47,000 | p50 of 52, same sample |
-| Uniswap swap (any router) | ~168,000 | p50 of 59, same sample |
-| NFT mint (ERC-721) | ~150,000 | typical, not sampled |
-| Simple contract deploy | ~500,000 | typical, not sampled |
-| ERC-20 deploy | ~1,200,000 | typical, not sampled |
-| Complex DeFi contract | ~3,000,000 | typical, not sampled |
+Every measured row below comes from one sample: 9,203 mainnet receipts across 40
+blocks spanning ~8 hours, 2026-08-07.
 
-**Worked example** — an ERC-20 transfer on 2026-08-07 (ETH $1,910): 46,000 gas ×
-0.45 gwei = **$0.040**. At the base fee alone it prices at $0.013; the gap is the tip,
-which is why you read a receipt instead of multiplying by the base fee.
+| Action | Gas used (p50) | Spread (p25-p75) | Source |
+|--------|----------------|------------------|--------|
+| ETH transfer | 21,000 | — | protocol constant |
+| ERC-20 transfer | 45,148 | 41,273-57,424 | n=2,930 |
+| ERC-20 approve | 48,549 | 46,243-53,606 | n=220 |
+| Swap (V2/V3 router) | 183,377 | 131,958-370,844 | n=473 |
+| NFT mint (ERC-721) | ~150,000 | — | typical, not sampled |
+| Simple contract deploy | ~500,000 | — | typical, not sampled |
+| ERC-20 deploy | ~1,200,000 | — | typical, not sampled |
+| Complex DeFi contract | ~3,000,000 | — | typical, not sampled |
+
+**Worked example** — a plain ERC-20 transfer on mainnet, 2026-08-07, ETH $1,910.
+Median gas × the median price those transfers actually paid: 45,148 × 0.171 gwei =
+**$0.0148**, and the p50 of the per-receipt costs is $0.015, so the shortcut holds.
+The *mean* of that same sample is $0.076 and the p90 is $0.18 — one day, one
+operation, 5-12x apart. Which statistic you quote matters more than which day you
+measured it on. Take the median, and label it as one.
 
 ## Why Gas Dropped 95%+
 
@@ -65,8 +74,10 @@ L2 transactions have two cost components:
 2. **L1 data gas** — paying Ethereum for data availability (blobs post-4844)
 
 **L2 execution is essentially the whole bill. L1 data is a rounding error.** Measured
-on Base: the L1 share is **0.66%** of the fee (p50 of 27 ERC-20 transfer receipts,
-2026-08-07) and **0.25%** across 14 Uniswap swaps on 2026-07-24.
+on Base: the L1 share is **0.18%** of the fee at p50 and 0.29% at p90 (234 ERC-20
+transfer receipts, 2026-08-07), and **0.25%** across 14 Uniswap swaps on 2026-07-24.
+Both samples are OP-stack; zk rollups price data differently, so measure before
+carrying this to zkSync or Scroll.
 
 This inverted at Dencun. Before March 2024 the L1 share ran 80-99%, and compressing
 calldata was the highest-leverage optimization on an L2. Within days of 2024-03-13 it
@@ -83,19 +94,30 @@ anything else.
 **Verify rather than trusting this section:** read `l1Fee` off any OP-stack receipt, or
 query the `GasPriceOracle` predeploy at `0x420000000000000000000000000000000000000F`.
 
-**How much cheaper is an L2, really?** Measured like-for-like on 2026-08-07, a plain
-ERC-20 transfer cost **$0.000525** on Base against **$0.109** on mainnet — about 200x,
-not the 5-10x older comparisons quote. Mainnet senders bid real tips; Base's fee sits
-on its floor.
+**How much cheaper is an L2, really?** Like-for-like on 2026-08-07, median against
+median: a plain ERC-20 transfer cost **$0.00052** on Base against **$0.015** on
+mainnet — about **30x**, not the 5-10x older comparisons quote. Mainnet senders bid
+real tips; Base's fee sits on its 0.005 gwei floor. Compare means instead and the gap
+looks far wider, because mainnet's mean is dragged up by MEV traffic your transfer is
+not competing with — which is exactly why the statistic has to be stated.
 
 ## Practical Fee Settings
 
+Derive both fields; never hardcode either. ethers v6:
+
 ```javascript
-// Mainnet. Read the tip — it is most of the bill and it moves.
-const tip = await provider.send("eth_maxPriorityFeePerGas", []);
-const { baseFeePerGas } = await provider.getBlock("latest");
-const maxFeePerGas = baseFeePerGas * 2n + BigInt(tip);   // 2x headroom for spikes
+const maxPriorityFeePerGas = BigInt(await provider.send("eth_maxPriorityFeePerGas", []));
+const block = await provider.getBlock("latest");
+if (!block?.baseFeePerGas) throw new Error("no base fee — pre-1559 chain?");
+const maxFeePerGas = block.baseFeePerGas * 2n + maxPriorityFeePerGas; // 2x spike headroom
+
+await signer.sendTransaction({ ...tx, maxFeePerGas, maxPriorityFeePerGas });
 ```
+
+The suggested tip can come back near zero — 0.00001 gwei on 2026-08-07 — and that is
+real, not an error: mainnet blocks were ~47% full, so a near-zero tip still gets
+included. Put your headroom in `maxFeePerGas`, which you only pay up to, rather than
+in the tip, which you pay in full.
 
 On an OP-stack L2 the base fee sits on a floor (0.005 gwei on Base) and there is no
 auction to win: a mainnet-tuned tip is pure overpay. Read the tip there too, don't
@@ -125,7 +147,7 @@ gas, check the number first — that instinct is trained on 2021-2023.
 
 ## Data Freshness
 
-> **Last verified:** 2026-08-07 | Mainnet base fee: 0.15 gwei (p50 of 51 blocks), median tx paid 0.45 gwei | ETH: $1,910 | Blob base fee: 0.011 gwei | Gas limit: 60M at 52% full (post-Fusaka) | Base L2 base fee: 0.005 gwei (floor) | Arbitrum: 0.020 gwei
+> **Last verified:** 2026-08-07 | Mainnet base fee: 0.081 gwei (p50 of 40 blocks over ~8h; 0.036-0.163 across the window), median tx paid 0.151 gwei all-in | ETH: $1,910 (Chainlink) | Blob base fee: 0.0023 gwei | Gas limit: 60M at 47% full (post-Fusaka) | Base L2 base fee: 0.005 gwei (floor) | Arbitrum: 0.020 gwei
 
 If this date is more than 30 days old, verify current gas before quoting anything:
 ```bash
