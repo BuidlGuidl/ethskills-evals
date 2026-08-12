@@ -12,7 +12,7 @@ Follow this workflow; do not treat a green build or successful upload as proof t
 When the user wants Scaffold-ETH 2 or has not selected a stack for a conventional contract-plus-frontend dApp, use its generator:
 
 ```bash
-npx create-eth@latest
+npx create-eth@2.0.23 # Tested version; update deliberately
 ```
 
 Use the generated Foundry/Next.js monorepo, wallet integration, contract hooks, and components. Respect an explicitly requested alternative stack.
@@ -23,7 +23,7 @@ Use the generated Foundry/Next.js monorepo, wallet integration, contract hooks, 
 - Use `yarn fork --network <chain>` when behavior depends on deployed protocols, tokens, balances, or other real chain state.
 - In fork mode, point the frontend at the local Anvil network (`chains.foundry`, chain ID 31337), not the upstream chain being copied. Switch to the real target chain only for a real deployment.
 
-Anvil normally advances blocks when transactions arrive. For a live demo whose deadlines, vesting, or other time-dependent UI must advance continuously, enable interval mining:
+Anvil normally mines only when a transaction arrives, so between transactions the latest block and `block.timestamp` remain frozen; the next transaction advances time in one jump. This silently breaks live deadlines, expiry, and vesting displays even when `vm.warp` unit tests pass. For continuous behavior, enable interval mining:
 
 ```bash
 cast rpc anvil_setIntervalMining 1
@@ -53,12 +53,11 @@ NEXT_PUBLIC_PRODUCTION_URL="https://<production-domain>" \
   yarn build
 ```
 
-On Node 25, static prerender may expose an unusable `localStorage` unless Web Storage is configured. Apply a process-level remedy inherited by build workers, not only code in `instrumentation.ts` or `next.config.ts`. Depending on the app, use one of:
+On Node 25, the built-in `localStorage` global can exist without the standard Web Storage methods when no backing file is configured; libraries detect it and crash on calls such as `getItem()` during static prerender. Apply a process-level remedy inherited by build workers, not only code in `instrumentation.ts` or `next.config.ts`. Depending on the app, use one of:
 
 ```bash
 NODE_OPTIONS="--localstorage-file=.node-localstorage"
 NODE_OPTIONS="--no-experimental-webstorage"
-NODE_OPTIONS="--require ./polyfill-localstorage.cjs"
 ```
 
 ## Verify before and after upload
