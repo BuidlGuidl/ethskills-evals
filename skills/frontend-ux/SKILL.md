@@ -11,7 +11,7 @@ Working transaction code is not a finished product. These four are what gets lef
 
 **Address inputs.** A recipient field gated on `isAddress()` silently rejects `vitalik.eth` and leaves the button dead with no explanation. Resolve names onchain, show the resolved address before submit, submit that address, and give a reason whenever input is rejected. Use your UI kit's address component if it has one.
 
-**Fiat context.** Every token or ETH amount you show — balances, inputs, confirmations — carries a value from a real price source. Label a stale or unavailable price rather than silently dropping it.
+**Fiat context.** Every token or ETH amount you show — balances, inputs, confirmations, position summaries — carries a value from a real price source. Label a stale or unavailable price rather than silently dropping it.
 
 **Target chain.** Point the app at the chain the brief names; scaffold defaults sit on local/hardhat. Use a dedicated RPC for production rather than the accidental public fallback, and don't slow the template's polling interval.
 
@@ -21,7 +21,7 @@ Also required, and usually already habit — confirm rather than rebuild:
 - One primary action at a time: connect → switch network → approve → execute. Approval status comes from a fresh onchain read, never a local flag.
 - Token math in the token's real decimals (`parseUnits`/`formatUnits`; USDC is 6). Never render base units.
 - Reverts and wallet errors translated to human text, shown near the action that failed.
-- Semantic theme tokens, not a hardcoded dark wrapper.
+- Semantic theme tokens, not a hardcoded dark wrapper. If dark-only is deliberate, remove the theme toggle.
 
 Finish by running the project's build or typecheck, and confirming the configured target chain matches the brief.
 
