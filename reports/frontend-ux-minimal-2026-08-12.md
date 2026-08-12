@@ -1,5 +1,57 @@
 # frontend-ux (minimal revision) — goal eval
 
+## The brief
+
+The prompt this run was given, verbatim:
+
+```text
+We're evaluating skills/frontend-ux — the minimal revision checked out
+on this branch, cut to ~360 words. The benchmark asks whether the
+shorter skill still moves the goal outcomes; run it standalone, with
+no comparisons to prior runs.
+
+Before anything else, report your setup to the runner: which harness
+you are running on, which model this session runs on, the exact
+executor and judge models the runs will use, the current git branch,
+and the version of the skill under test (git log -1 --format=%h --
+skills/frontend-ux/SKILL.md, plus its word count — expect ~360 words,
+not ~1100). This benchmark should run claude with model claude-opus-5
+as executor and judge, one stack start to finish. If this session is
+on a different model, tell the runner to start a new session, switch
+with the /model command, and paste this prompt again there. If the
+branch is main or the skill is the long version, stop and tell the
+runner to check out the right branch. Wait for their ok before the
+first run.
+
+You are the orchestrator. Read AGENTS.md at the repo root and follow
+"Running a pre-crafted task" and "The loop" exactly. This run is goals
+only — the quizzes are out of scope for this benchmark:
+
+  - tasks/frontend-ux-goal-001.yaml: the rules applied unprompted in a
+    staking build on the SE-2 template
+  - tasks/frontend-ux-goal-002.yaml: the same habits with no scaffold,
+    stack choice included
+
+One reading note: goal-001 runs on the SE-2 template, whose own
+AGENTS.md and bundled guidance can carry a no_skill run; goal-002
+strips the scaffold to isolate that. Read the pair against each other,
+per their notes. The workspace seeds under templates/ are already
+installed; verify them against the notes before the first run.
+Executors may git-commit inside the workspace — capture goal-001
+evidence as the git diff against the pristine template baseline.
+
+Run both goals, both variants, 3 runs each (12 total). Runs are
+append-only; re-run only on infrastructure failures, never because of
+a result, and record every recovery in the report's integrity notes.
+Each task's notes tell you what to mine from the transcripts; treat
+that as part of the job.
+
+When all runs are graded, commit the artifacts and the report
+(reports/frontend-ux-minimal-<date>.md, ending with the required
+table) to this branch, and give the runner the headline table with
+per-expect pass counts for both variants.
+```
+
 **Skill under test:** `skills/frontend-ux` @ `32547c9`, 359 words (the minimal revision; the
 prior vendored version was ~1100 words). Branch `skill/frontend-ux-minimal`.
 
