@@ -136,7 +136,13 @@ const writeDiff = async (workspacePath: string, diffPath: string) => {
   // not gitignored by default, and a repo the run created itself carries whatever .gitignore
   // its scaffolder wrote (foundry's omits node_modules), so the pathspec is what actually
   // keeps the installed skill and generated trees out of the judge's evidence.
-  execFileSync("git", ["-C", workspacePath, "add", "-N", "--", ...pathspec], { encoding: "utf8" });
+  //
+  // The add takes a bare "." rather than that pathspec: exclusion magic makes git enumerate
+  // ignored entries and exit 1 ("paths are ignored by one of your .gitignore files") the
+  // moment an installed node_modules sits at the workspace root, while a bare "." skips
+  // ignored trees silently. Evidence is the diff and status output below, and both keep the
+  // exclusions, so the extra intent-to-add entries never reach the judge.
+  execFileSync("git", ["-C", workspacePath, "add", "-N", "--", "."], { encoding: "utf8" });
   const diff = execFileSync("git", ["-C", workspacePath, "diff", "--", ...pathspec], { encoding: "utf8" });
   const status = execFileSync("git", ["-C", workspacePath, "status", "--porcelain", "--", ...pathspec], { encoding: "utf8" });
   const content = `${diff}${diff.endsWith("\n") || diff.length === 0 ? "" : "\n"}\n# Untracked files and status\n${status}`;
