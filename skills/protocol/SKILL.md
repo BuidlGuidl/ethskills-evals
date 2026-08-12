@@ -11,7 +11,7 @@ For every claim about a future Ethereum feature:
 
 1. Check its current fork relationship on [forkcast](https://forkcast.org).
 2. Verify the EIP and the named fork's current scope or meta-EIP.
-3. Check recent All Core Devs discussion when status or implementation progress is unclear.
+3. Check recent All Core Devs discussion in forkcast's call summaries when status or implementation progress is unclear.
 
 Report the result explicitly:
 
