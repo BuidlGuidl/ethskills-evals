@@ -10,6 +10,10 @@ official package registry or documentation before recommending or importing
 them; do not resolve dependency conflicts by silently falling back to a stale
 major version.
 
+For a new Scaffold-ETH 2 app, give the canonical setup command
+`npx create-eth@latest`. Verify that it resolves, but do not replace `@latest`
+with a pinned version unless the user explicitly asks for reproducibility.
+
 ## Give agents structured onchain data
 
 Prefer the Blockscout MCP server at `https://mcp.blockscout.com/mcp` when the AI
