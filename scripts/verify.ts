@@ -6,25 +6,10 @@ import process from "node:process";
 import yaml from "js-yaml";
 import { judgeExpectations } from "../lib/judge.js";
 import { isRecord, loadTaskSpec, loadYamlFile, parseArgs, requireString } from "../lib/task.js";
-import type { Executor, ExpectStatus, JudgeSpec, ResultRecord, Variant } from "../lib/types.js";
+import type { Executor, ExecutorRecord, ExpectStatus, JudgeSpec, ResultRecord, Variant } from "../lib/types.js";
+import { GENERATED_DIRS, SKILL_INSTALL_DIRS } from "../lib/workspace.js";
 
 const ROOT = process.cwd();
-// Where setup installs the skill. Evidence that reaches the judge must exclude these, or the
-// judge reads the skill itself and learns which variant produced the run. Both evidence paths
-// (snapshot and diff) derive their exclusions from this list, so adding an executor's bridge
-// dir here covers both; a dir listed in one path and missed in the other silently corrupts a
-// benchmark, which is how the skill first leaked into run.diff.
-const SKILL_INSTALL_DIRS = [".agents", ".claude"];
-// Generated/vendored dirs a scaffolded repo (e.g. create-eth) leaves behind. Evidence
-// captures source the run produced, not gigabytes of node_modules or build output. Missing
-// one of these does not mislead the judge the way a missed SKILL_INSTALL_DIRS entry does,
-// but it is not free either: the diff path has no size cap of its own, so a run that
-// installs dependencies can push the evidence past the judge's input limit and lose the run.
-const GENERATED_DIRS = [
-  "node_modules", "lib", ".git", ".next", ".yarn", "dist", "build",
-  "out", "cache", "broadcast", "coverage", ".turbo", ".husky", ".vscode",
-  "target",
-];
 const SKIP_DIRS = new Set([...SKILL_INSTALL_DIRS, ...GENERATED_DIRS]);
 const MAX_SNAPSHOT_FILE_BYTES = 256 * 1024;
 const EXECUTORS = new Set<Executor>(["claude", "codex"]);
@@ -32,11 +17,15 @@ const VARIANTS = new Set<Variant>(["no_skill", "with_skill"]);
 const VERIFY_ARGS = new Set(["run", "judge-agent", "judge-model"]);
 
 // The judge is a fresh, blind process, never the orchestrator's own contaminated
-// context. Point it at the model you want doing the grading: pass --judge-agent
-// and --judge-model to grade with the orchestrator's model. With neither, it falls
-// back to the agent that performed the run, and the record marks that self_judged.
-const resolveJudge = (args: Record<string, string | boolean>, executor: Executor): JudgeSpec => {
-  const agent = args["judge-agent"] === undefined ? executor : parseAgent(requireString(args["judge-agent"], "--judge-agent"));
+// context. --judge-agent is required rather than defaulting to the run's executor:
+// the default was silent, and a batch graded by a forgotten flag looks exactly like a
+// batch graded on purpose. Say who grades, every time.
+const resolveJudge = (args: Record<string, string | boolean>): JudgeSpec => {
+  if (args["judge-agent"] === undefined) {
+    throw new Error("missing --judge-agent: name the agent doing the grading (claude or codex)");
+  }
+
+  const agent = parseAgent(requireString(args["judge-agent"], "--judge-agent"));
   const model = args["judge-model"] === undefined ? null : requireString(args["judge-model"], "--judge-model");
 
   return { agent, model };
@@ -99,6 +88,43 @@ const loadResultRecord = (resultPath: string): ResultRecord => {
   };
 };
 
+// Grading a run whose executor is still working reads a half-written workspace, scores it,
+// and then the workspace gets deleted out from under a live process. run-executor writes
+// this record; no record or no finished timestamp means there is nothing to grade yet.
+const loadExecutorRecord = (runDir: string): ExecutorRecord => {
+  const recordPath = path.join(runDir, "executor.yaml");
+
+  if (!existsSync(recordPath)) {
+    throw new Error(`no executor record at ${recordPath}; run yarn run-executor --run ${runDir} first`);
+  }
+
+  const loaded = loadYamlFile(recordPath);
+
+  if (loaded.finished === null || loaded.finished === undefined) {
+    throw new Error(
+      `executor has not finished (${recordPath}). Wait for it; if it was killed, the run is dead — delete ${runDir} and set up a new one.`,
+    );
+  }
+
+  return {
+    executor: parseExecutor(requireString(loaded.executor, "executor")),
+    model: loaded.model === null || loaded.model === undefined ? null : requireString(loaded.model, "model"),
+    started: requireString(loaded.started, "started"),
+    finished: requireString(loaded.finished, "finished"),
+    exit: typeof loaded.exit === "number" ? loaded.exit : null,
+  };
+};
+
+const readBaselineSha = (runDir: string) => {
+  const baselinePath = path.join(runDir, "baseline.sha");
+
+  if (!existsSync(baselinePath)) {
+    throw new Error(`no baseline.sha in ${runDir}; the workspace was not seeded by yarn setup`);
+  }
+
+  return readFileSync(baselinePath, "utf8").trim();
+};
+
 const walkFiles = async (dir: string) => {
   const entries: string[] = [];
   const pending = [dir];
@@ -128,7 +154,7 @@ const walkFiles = async (dir: string) => {
 // packages/app/node_modules reaches the judge.
 const excludePathspec = (dir: string) => [`:(exclude)${dir}`, `:(exclude,glob)**/${dir}/**`];
 
-const writeDiff = async (workspacePath: string, diffPath: string) => {
+const writeDiff = async (workspacePath: string, diffPath: string, baselineSha: string) => {
   const pathspec = [".", ...[...SKILL_INSTALL_DIRS, ...GENERATED_DIRS].flatMap(excludePathspec)];
 
   // Intent-to-add so new (untracked) files show their content in the diff, not just a
@@ -136,8 +162,16 @@ const writeDiff = async (workspacePath: string, diffPath: string) => {
   // not gitignored by default, and a repo the run created itself carries whatever .gitignore
   // its scaffolder wrote (foundry's omits node_modules), so the pathspec is what actually
   // keeps the installed skill and generated trees out of the judge's evidence.
-  execFileSync("git", ["-C", workspacePath, "add", "-N", "--", ...pathspec], { encoding: "utf8" });
-  const diff = execFileSync("git", ["-C", workspacePath, "diff", "--", ...pathspec], { encoding: "utf8" });
+  //
+  // The add takes a bare "." rather than that pathspec: exclusion magic makes git enumerate
+  // ignored entries and exit 1 ("paths are ignored by one of your .gitignore files") the
+  // moment an installed node_modules sits at the workspace root, while a bare "." skips
+  // ignored trees silently. Evidence is the diff and status output below, and both keep the
+  // exclusions, so the extra intent-to-add entries never reach the judge.
+  execFileSync("git", ["-C", workspacePath, "add", "-N", "--", "."], { encoding: "utf8" });
+  // Against the baseline commit, not the index: an executor that commits its own work
+  // leaves a clean worktree, and a plain `git diff` would call that an empty run.
+  const diff = execFileSync("git", ["-C", workspacePath, "diff", baselineSha, "--", ...pathspec], { encoding: "utf8" });
   const status = execFileSync("git", ["-C", workspacePath, "status", "--porcelain", "--", ...pathspec], { encoding: "utf8" });
   const content = `${diff}${diff.endsWith("\n") || diff.length === 0 ? "" : "\n"}\n# Untracked files and status\n${status}`;
 
@@ -224,16 +258,29 @@ const main = async () => {
     }
 
     const result = loadResultRecord(resultPath);
+    const judgeSpec = resolveJudge(args);
+    const executorRecord = loadExecutorRecord(runDir);
+    if (executorRecord.executor !== result.executor) {
+      throw new Error(`executor.yaml ran ${executorRecord.executor}, result.yaml says ${result.executor}`);
+    }
+
+    if (executorRecord.exit !== 0) {
+      console.warn(`verify: executor exited ${executorRecord.exit ?? "unknown"} — grading what it left behind`);
+    }
+
     const taskSpec = loadTaskSpec(path.join(ROOT, "tasks", `${result.task}.yaml`));
     const workspacePath = path.join(runDir, "workspace");
 
-    if (existsSync(path.join(workspacePath, ".git"))) {
-      await writeDiff(workspacePath, path.join(runDir, "run.diff"));
-    } else {
+    // Evidence shape follows the task shape, not whatever the workspace happens to
+    // contain: repo-shaped runs are graded on what changed since the baseline, question-
+    // shaped runs on the files themselves. Every workspace is a git repo now, so keying
+    // this off `.git` would quietly move every quiz run onto the diff path.
+    if (taskSpec.template === undefined) {
       await snapshotOutput(workspacePath, path.join(runDir, "output"));
+    } else {
+      await writeDiff(workspacePath, path.join(runDir, "run.diff"), readBaselineSha(runDir));
     }
 
-    const judgeSpec = resolveJudge(args, result.executor);
     const verdict = judgeExpectations(taskSpec.input, taskSpec.expect, await buildEvidence(runDir), judgeSpec);
 
     if (!verdict.ok) {
@@ -250,6 +297,8 @@ const main = async () => {
       variant: result.variant,
       skill_version: result.skill_version,
       created: result.created,
+      executor_model: executorRecord.model,
+      executor_exit: executorRecord.exit ?? undefined,
       judge: { ...judgeSpec, self_judged: judgeSpec.agent === result.executor },
       expects: verdict.expects,
       pass,
