@@ -5,13 +5,12 @@ import path from "node:path";
 import process from "node:process";
 import yaml from "js-yaml";
 import { loadYamlFile, parseArgs, requireString } from "../lib/task.js";
+import { buildTranscript } from "../lib/transcript.js";
 import type { Executor, ExecutorRecord } from "../lib/types.js";
 
 const ROOT = process.cwd();
 const EXECUTORS = new Set<Executor>(["claude", "codex"]);
 const RUN_ARGS = new Set(["run", "model"]);
-const MAX_TOOL_INPUT_CHARS = 200;
-const MAX_TOOL_RESULT_CHARS = 400;
 
 const parseExecutor = (value: string): Executor => {
   if (!EXECUTORS.has(value as Executor)) {
@@ -54,108 +53,6 @@ const buildCommand = (executor: Executor, model: string | null) => {
   args.push("-");
 
   return { file: "codex", args };
-};
-
-const truncate = (value: string, limit: number) => {
-  const collapsed = value.trimEnd();
-
-  return collapsed.length > limit ? `${collapsed.slice(0, limit)} … [${collapsed.length - limit} more chars]` : collapsed;
-};
-
-const quoteBlock = (value: string) => value.split("\n").map(line => `  > ${line}`).join("\n");
-
-const toolSummary = (input: unknown) => {
-  if (input && typeof input === "object") {
-    const record = input as Record<string, unknown>;
-
-    for (const key of ["command", "file_path", "pattern", "url", "prompt"]) {
-      if (typeof record[key] === "string") {
-        return truncate(record[key] as string, MAX_TOOL_INPUT_CHARS);
-      }
-    }
-  }
-
-  return truncate(JSON.stringify(input ?? null), MAX_TOOL_INPUT_CHARS);
-};
-
-const resultText = (content: unknown): string => {
-  if (typeof content === "string") {
-    return content;
-  }
-
-  if (Array.isArray(content)) {
-    return content.map(item => (item && typeof item === "object" ? resultText((item as { text?: unknown }).text) : "")).join("\n");
-  }
-
-  return "";
-};
-
-// claude -p --output-format stream-json emits one JSON event per line. The rendered
-// transcript keeps what a reader of the report needs — what the agent said, what it ran,
-// what came back — and drops the rest; the raw jsonl sits beside it for anything else.
-const renderClaudeTranscript = (raw: string) => {
-  const sections: string[] = [];
-
-  for (const line of raw.split("\n")) {
-    if (line.trim().length === 0) {
-      continue;
-    }
-
-    let event: Record<string, unknown>;
-
-    try {
-      event = JSON.parse(line) as Record<string, unknown>;
-    } catch {
-      continue;
-    }
-
-    const message = event.message as { content?: unknown } | undefined;
-    const blocks = Array.isArray(message?.content) ? message.content : [];
-
-    if (event.type === "assistant") {
-      const rendered: string[] = [];
-
-      for (const block of blocks as Record<string, unknown>[]) {
-        if (block.type === "text" && typeof block.text === "string" && block.text.trim().length > 0) {
-          rendered.push(block.text.trim());
-        }
-
-        if (block.type === "tool_use") {
-          rendered.push(`- **${String(block.name)}** \`${toolSummary(block.input)}\``);
-        }
-      }
-
-      if (rendered.length > 0) {
-        sections.push(`## assistant\n${rendered.join("\n\n")}`);
-      }
-    }
-
-    if (event.type === "user") {
-      for (const block of blocks as Record<string, unknown>[]) {
-        if (block.type === "tool_result") {
-          const text = truncate(resultText(block.content), MAX_TOOL_RESULT_CHARS);
-
-          if (text.length > 0) {
-            sections.push(quoteBlock(text));
-          }
-        }
-      }
-    }
-
-    if (event.type === "result") {
-      const usage = (event.usage ?? {}) as Record<string, unknown>;
-
-      sections.push([
-        "## run stats",
-        `- turns: ${String(event.num_turns ?? "?")}`,
-        `- duration: ${Math.round(Number(event.duration_ms ?? 0) / 1000)}s`,
-        `- cost: $${String(event.total_cost_usd ?? "?")}`,
-        `- tokens in/out: ${String(usage.input_tokens ?? "?")}/${String(usage.output_tokens ?? "?")}`,
-      ].join("\n"));
-    }
-  }
-
-  return sections.join("\n\n");
 };
 
 const writeRecord = async (recordPath: string, record: ExecutorRecord) =>
@@ -205,8 +102,11 @@ const main = async () => {
   // and stays ungradeable, which is the point — it is a dead run, not a zero score.
   await writeRecord(recordPath, record);
 
-  const rawPath = path.join(runDir, executor === "claude" ? "transcript.jsonl" : "transcript.log");
-  const rawStream = createWriteStream(rawPath);
+  // Both streams are captured raw and both are kept: which one carries the transcript is
+  // the executor's business (claude puts everything on stdout, codex on stderr), and a run
+  // that dies mid-way still leaves whatever it had written.
+  const outStream = createWriteStream(path.join(runDir, executor === "claude" ? "transcript.jsonl" : "transcript.log"));
+  const errStream = createWriteStream(path.join(runDir, "executor.stderr"));
   const chunks: string[] = [];
   const errors: string[] = [];
 
@@ -218,10 +118,11 @@ const main = async () => {
   child.stderr.setEncoding("utf8");
   child.stdout.on("data", (chunk: string) => {
     chunks.push(chunk);
-    rawStream.write(chunk);
+    outStream.write(chunk);
   });
   child.stderr.on("data", (chunk: string) => {
     errors.push(chunk);
+    errStream.write(chunk);
     process.stderr.write(chunk);
   });
   child.stdin.end(prompt);
@@ -239,23 +140,16 @@ const main = async () => {
     child.on("close", (code, signal) => resolve(code ?? (signal ? 143 : 1)));
   });
 
-  rawStream.end();
+  outStream.end();
+  errStream.end();
 
-  const raw = chunks.join("");
-  const header = [
-    `# Executor transcript — ${requireString(result.run, "run")}`,
-    "",
-    `**executor**: ${executor}  |  **model**: ${model ?? "cli default"}  |  **exit**: ${exit}`,
-    `**workspace**: ${workspacePath}`,
-  ].join("\n");
-  const body = executor === "claude" ? renderClaudeTranscript(raw) : raw.trimEnd();
+  const transcript = buildTranscript(
+    { run: requireString(result.run, "run"), executor, model, exit, workspacePath },
+    chunks.join(""),
+    errors.join(""),
+  );
 
-  await writeFile(path.join(runDir, "transcript.md"), `${header}\n\n${body}\n`);
-
-  if (errors.length > 0) {
-    await writeFile(path.join(runDir, "executor.stderr"), errors.join(""));
-  }
-
+  await writeFile(path.join(runDir, "transcript.md"), transcript);
   await writeRecord(recordPath, { ...record, finished: new Date().toISOString(), exit });
 
   console.log(`executor exited ${exit}; transcript at ${path.join(runDir, "transcript.md")}`);
