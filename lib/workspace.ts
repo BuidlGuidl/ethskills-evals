@@ -1,6 +1,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { appendFileSync, constants, existsSync, mkdirSync } from "node:fs";
+import { appendFileSync, constants, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { access, chmod, cp, mkdir, readdir, rm } from "node:fs/promises";
+import { homedir } from "node:os";
 import path from "node:path";
 
 // Where setup installs the skill. Evidence that reaches the judge must exclude these, or the
@@ -20,6 +21,35 @@ export const GENERATED_DIRS = [
   "out", "cache", "broadcast", "coverage", ".turbo", ".husky", ".vscode",
   "target",
 ];
+
+// Workspaces live outside this repo. The markers below stop the tools that own them, but
+// nothing stops an executor from reading its way up the filesystem: under artifacts/ the
+// run dir's siblings are other runs of the same task, holding their answer.md, run.diff and
+// result.yaml, and tasks/ with every expect line is two directories further up. Somewhere
+// with nothing above it worth finding closes that; ~/.cache is the default, override for a
+// different disk.
+export const workspaceRoot = () =>
+  process.env.EVAL_WORKSPACE_ROOT ?? path.join(homedir(), ".cache", "ethskills-evals");
+
+// The run dir stays in the repo and points at the workspace, so verify and run-executor find
+// it without recomputing the layout, and a machine-local path is still recorded.
+export const WORKSPACE_POINTER = "workspace.path";
+
+export const readWorkspacePath = (runDir: string) => {
+  const pointerPath = path.join(runDir, WORKSPACE_POINTER);
+
+  if (!existsSync(pointerPath)) {
+    throw new Error(`no ${WORKSPACE_POINTER} in ${runDir}; the run was not set up by yarn setup`);
+  }
+
+  const workspacePath = readFileSync(pointerPath, "utf8").trim();
+
+  if (!existsSync(workspacePath)) {
+    throw new Error(`workspace ${workspacePath} is gone (deleted after grading?)`);
+  }
+
+  return workspacePath;
+};
 
 // npm and friends resolve their project root by walking up for a package.json, and a git
 // boundary does not stop that walk: in a bare workspace under artifacts/ the nearest manifest

@@ -7,11 +7,12 @@ import { buildEvidence, snapshotOutput, writeDiff } from "../lib/evidence.js";
 import { judgeExpectations } from "../lib/judge.js";
 import { isRecord, loadTaskSpec, loadYamlFile, parseArgs, requireString } from "../lib/task.js";
 import type { Executor, ExecutorRecord, ExpectStatus, JudgeSpec, ResultRecord, Variant } from "../lib/types.js";
+import { readWorkspacePath } from "../lib/workspace.js";
 
 const ROOT = process.cwd();
 const EXECUTORS = new Set<Executor>(["claude", "codex"]);
 const VARIANTS = new Set<Variant>(["no_skill", "with_skill"]);
-const VERIFY_ARGS = new Set(["run", "judge-agent", "judge-model", "grade-failed-run"]);
+const VERIFY_ARGS = new Set(["run", "judge-agent", "judge-model", "grade-failed-run", "keep-workspace"]);
 
 // The judge is a fresh, blind process, never the orchestrator's own contaminated
 // context. --judge-agent is required rather than defaulting to the run's executor:
@@ -171,7 +172,7 @@ const main = async () => {
     }
 
     const taskSpec = loadTaskSpec(path.join(ROOT, "tasks", `${result.task}.yaml`));
-    const workspacePath = path.join(runDir, "workspace");
+    const workspacePath = readWorkspacePath(runDir);
 
     // Evidence shape follows the task shape, not whatever the workspace happens to
     // contain: repo-shaped runs are graded on what changed since the baseline, question-
@@ -207,6 +208,15 @@ const main = async () => {
     };
 
     await writeFile(resultPath, yaml.dump(gradedResult, { lineWidth: -1 }));
+
+    // Workspaces sit outside the repo now, so nothing cleans them up with the run dir and a
+    // benchmark leaves tens of gigabytes behind. The grade is written and the evidence is
+    // captured, so the workspace is spent — keep it only when you mean to dig through it.
+    if (args["keep-workspace"] === true) {
+      console.log(`workspace kept at ${workspacePath}`);
+    } else {
+      await rm(workspacePath, { recursive: true, force: true });
+    }
 
     summarize(verdict.expects);
     process.exit(pass ? 0 : 2);

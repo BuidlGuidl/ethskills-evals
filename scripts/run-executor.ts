@@ -8,6 +8,7 @@ import yaml from "js-yaml";
 import { loadYamlFile, parseArgs, requireString } from "../lib/task.js";
 import { buildTranscript } from "../lib/transcript.js";
 import type { Executor, ExecutorRecord } from "../lib/types.js";
+import { readWorkspacePath } from "../lib/workspace.js";
 
 const ROOT = process.cwd();
 const EXECUTORS = new Set<Executor>(["claude", "codex"]);
@@ -65,7 +66,6 @@ const main = async () => {
   const model = args.model === undefined ? null : requireString(args.model, "--model");
   const resultPath = path.join(runDir, "result.yaml");
   const recordPath = path.join(runDir, "executor.yaml");
-  const workspacePath = path.join(runDir, "workspace");
 
   if (!existsSync(resultPath)) {
     throw new Error(`missing result.yaml at ${resultPath}; run yarn setup first`);
@@ -82,6 +82,8 @@ const main = async () => {
   if (existsSync(recordPath)) {
     throw new Error(`run already executed (${recordPath}); set up a new run instead`);
   }
+
+  const workspacePath = readWorkspacePath(runDir);
 
   if (!existsSync(path.join(workspacePath, "TASK.md"))) {
     throw new Error(`no TASK.md in ${workspacePath}`);
