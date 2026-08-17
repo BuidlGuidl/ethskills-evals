@@ -6,7 +6,7 @@ import process from "node:process";
 import yaml from "js-yaml";
 import { loadTaskSpec, parseArgs, requireString } from "../lib/task.js";
 import type { Executor, ResultRecord, Variant } from "../lib/types.js";
-import { WORKSPACE_MANIFEST, seedWorkspaceRepo } from "../lib/workspace.js";
+import { WORKSPACE_MANIFEST, copyTree, seedWorkspaceRepo } from "../lib/workspace.js";
 
 const ROOT = process.cwd();
 const EXECUTORS = new Set<Executor>(["claude", "codex"]);
@@ -40,12 +40,6 @@ const parseVariant = (value: string): Variant => {
 
 const utcRunTimestamp = (date: Date) =>
   date.toISOString().replace(/\.\d{3}Z$/, "Z").replaceAll(":", "");
-
-const copyDirContents = async (sourceDir: string, targetDir: string) => {
-  await access(sourceDir, constants.R_OK);
-  await mkdir(targetDir, { recursive: true });
-  await cp(sourceDir, targetDir, { recursive: true, force: true });
-};
 
 const resolveRootPath = (value: string) => path.resolve(ROOT, value);
 
@@ -150,7 +144,7 @@ const main = async () => {
 
     try {
       if (spec.template !== undefined) {
-        await copyDirContents(resolveRootPath(spec.template), workspacePath);
+        await copyTree(resolveRootPath(spec.template), workspacePath);
       } else {
         await mkdir(workspacePath, { recursive: true });
       }

@@ -1,5 +1,6 @@
-import { execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { appendFileSync, constants, existsSync, mkdirSync } from "node:fs";
+import { access, cp, mkdir } from "node:fs/promises";
 import path from "node:path";
 
 // Where setup installs the skill. Evidence that reaches the judge must exclude these, or the
@@ -26,6 +27,30 @@ export const GENERATED_DIRS = [
 // (seen in the standards eval). A manifest of its own stops the walk at the workspace. It
 // lands in the baseline commit, so it never shows up in a run's diff.
 export const WORKSPACE_MANIFEST = `${JSON.stringify({ name: "eval-workspace", private: true }, null, 2)}\n`;
+
+// A template with its dependencies installed runs to gigabytes, and every run gets a copy.
+// The system cp can clone instead: copy-on-write shares the data blocks, so a workspace only
+// pays for what the executor changes. Measured on se-2-foundry with node_modules installed,
+// 1.9 GB across 237k files: 48s and 830 MB per workspace, against 91s and the full 1.9 GB
+// for fs.cp. The clone is not free — every file still needs its own inode and directory
+// entry, and at this file count that metadata is most of the 830 MB. Node's own
+// COPYFILE_FICLONE is no help at all (3.5 GB copied, 3.5 GB of disk gone), hence shelling
+// out; a filesystem that cannot clone fails the cp and lands on the portable path below.
+const cloneArgs = (sourceDir: string, targetDir: string) =>
+  process.platform === "darwin"
+    ? ["-Rc", `${sourceDir}/.`, targetDir]
+    : ["-a", "--reflink=auto", `${sourceDir}/.`, targetDir];
+
+export const copyTree = async (sourceDir: string, targetDir: string) => {
+  await access(sourceDir, constants.R_OK);
+  await mkdir(targetDir, { recursive: true });
+
+  if (spawnSync("cp", cloneArgs(sourceDir, targetDir), { stdio: "ignore" }).status === 0) {
+    return;
+  }
+
+  await cp(sourceDir, targetDir, { recursive: true, force: true });
+};
 
 const git = (workspacePath: string, args: string[]) =>
   execFileSync("git", ["-C", workspacePath, ...args], { encoding: "utf8" }).trim();
