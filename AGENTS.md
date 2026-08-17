@@ -31,7 +31,7 @@ The skills under `skills/` are vendored at a pinned commit, and a task spec may 
 
 ## The loop
 
-1. `yarn setup --task tasks/<id>.yaml --variant <no_skill|with_skill> --run <n> --executor <claude|codex>` — builds the workspace, seeds it as its own git repo, records the baseline sha.
+1. `yarn setup --task tasks/<id>.yaml --variant <no_skill|with_skill> --run <n> --executor <claude|codex>` — builds the workspace outside this repo, seeds it as its own git repo, records the baseline sha and the workspace path.
 2. `yarn run-executor --run artifacts/<id>/<run-id> --model <model>` — spawns the executor in that workspace on `TASK.md`, saves the transcript, records when it finished. Long runs: start it detached (`nohup yarn run-executor … &`) and wait for `finished:` in `executor.yaml`, because a harness that kills the foreground process kills the run.
 3. `yarn verify --run artifacts/<id>/<run-id> --judge-agent <claude|codex> --judge-model <model>` — assembles evidence, runs the judge, fills `result.yaml`. Use the same judge for every run in the benchmark.
 4. Repeat for every variant and run.
@@ -49,7 +49,7 @@ Runs are append-only. A re-run after a patch is a new run id, never an overwrite
 3. **Always use the scripts** — setup, execution, grading. All three. Improvisation at any of them quietly corrupts records, and spawning executors by hand is what once left runs graded before they finished and workspaces deleted under live processes.
 4. **Grade after execution, independently.** Never let an executor self-report success. `verify` requires `--judge-agent`, so the grading agent is always a stated choice; add `--judge-model` to grade on the orchestrator's model. When judge and executor are the same agent the record says `self_judged: true` — expected on a single-stack benchmark, and the report has to say so.
 5. **One executor per workspace, one run at a time per workspace.** `run-executor` refuses a second pass over a workspace that already ran. Runs in different workspaces are independent — each has its own git repo — but never point two processes at one run dir.
-6. **Delete workspaces only after `verify` has graded them.** `verify` assembles evidence into `<run-dir>/run.diff` or `<run-dir>/output/` first, so nothing is lost. It refuses to grade until `executor.yaml` says the executor finished, which is also what keeps you from deleting a workspace an executor is still writing to.
+6. **Delete workspaces only after `verify` has graded them.** Evidence is captured into `<run-dir>/run.diff` or `<run-dir>/output/` first and both are committed, so nothing is lost. Grading cannot start until `executor.yaml` says the executor finished, which is what keeps a live run from being graded and deleted under itself.
 
 ## The three roles
 
@@ -77,14 +77,13 @@ Omit `--judge-model` to let that agent's CLI pick its own default. Keep one judg
 
 ## Isolation
 
-Each workspace is its own git repo, seeded by `setup` with a baseline commit whose sha lands in `<run-dir>/baseline.sha`. This is not a convenience:
+Tooling resolves context by walking *up* the filesystem, and every such walk used to end in this repo. Two things stop it.
 
-- Executors run git — they are finishing a feature, so they commit. Without a repo of its own the workspace is a gitignored directory inside *this* repo, so git walks up and finds ours: `git add -A` from the workspace stages the orchestrator's files, `git commit -am` lands them on the checked-out branch, and `git add .` exits 1 with a `-f` hint the executor will happily take. Runs in flight then fight over one index.lock.
-- `verify` diffs the workspace against that baseline, so an executor that commits its own work still produces evidence instead of an empty `run.diff`.
+**The workspace is its own git repo**, seeded by `setup` with a baseline commit whose sha lands in `<run-dir>/baseline.sha`. Executors run git — they are finishing a feature, so they commit. Without a repo of its own, `git add -A` from the workspace staged the orchestrator's files, `git commit -am` landed them on the checked-out branch, `git add .` exited 1 with a `-f` hint the executor would happily take, and runs in flight fought over one index.lock. `verify` diffs against that baseline, so an executor that commits its own work still produces evidence instead of an empty `run.diff`. Installed dependencies stay out through the workspace's `.git/info/exclude`, not a `.gitignore` the executor would read and the judge would see in the diff.
 
-Installed dependencies are excluded through the workspace's `.git/info/exclude`, not a `.gitignore` the executor would read and the judge would see in the diff.
+**A minimal `package.json`** is dropped into any workspace that has none. npm resolves its project root by walking up for the nearest manifest, and a git boundary does not stop it: in a bare workspace the nearest one was this repo's, so `npm install` inside a run rewrote the framework's own manifest. The stub is part of the baseline commit, so it never appears in a diff, and `verify` skips it in the snapshot by content match.
 
-The boundary is accidental-access only. Nothing stops an executor from walking up out of its workspace on purpose, and the eval repo above it holds `tasks/` with every expect line. Full isolation would mean a container or a workspace outside this tree.
+Both stop the tool that owns the marker, and nothing else. An executor can still read its way up the filesystem — `tasks/` with every expect line is three directories above the workspace, and sibling runs of the same task are two. Closing that means moving workspaces out of the tree, or a sandbox.
 
 ## Task spec
 
@@ -175,7 +174,9 @@ Every report ends with this table. Answer the last row honestly: sometimes the e
 
 ## What gets committed
 
-Committed: task specs, vendored skills under test, workspace templates under `templates/`, `result.yaml`, `baseline.sha`, `executor.yaml`, `run.diff`, `transcript.md`, mistake records, reports. Gitignored: workspaces, `output/`, the raw executor capture beside `transcript.md`.
+Committed: task specs, vendored skills under test, workspace templates under `templates/`, and per run `result.yaml`, `baseline.sha`, `executor.yaml`, `transcript.md`, plus the evidence the judge graded — `run.diff` for repo-shaped tasks, `output/` for question-shaped ones. Mistake records and reports too. Gitignored: workspaces, and the raw executor capture beside `transcript.md`.
+
+Evidence is committed because it is the audit trail of the verdict: a reader of the eval PR has to be able to re-check the judge on the same material the judge saw. For question-shaped tasks that material is one `answer.md` of a few KB per run — the old rule that kept `output/` out of git was written when repo-shaped runs snapshotted a whole scaffold there, which can no longer happen.
 
 ## Code style
 

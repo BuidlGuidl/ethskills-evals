@@ -20,6 +20,13 @@ export const GENERATED_DIRS = [
   "target",
 ];
 
+// npm and friends resolve their project root by walking up for a package.json, and a git
+// boundary does not stop that walk: in a bare workspace under artifacts/ the nearest manifest
+// is this repo's own, so `npm install` inside a run rewrites the framework's package.json
+// (seen in the standards eval). A manifest of its own stops the walk at the workspace. It
+// lands in the baseline commit, so it never shows up in a run's diff.
+export const WORKSPACE_MANIFEST = `${JSON.stringify({ name: "eval-workspace", private: true }, null, 2)}\n`;
+
 const git = (workspacePath: string, args: string[]) =>
   execFileSync("git", ["-C", workspacePath, ...args], { encoding: "utf8" }).trim();
 

@@ -6,7 +6,7 @@ import process from "node:process";
 import yaml from "js-yaml";
 import { loadTaskSpec, parseArgs, requireString } from "../lib/task.js";
 import type { Executor, ResultRecord, Variant } from "../lib/types.js";
-import { seedWorkspaceRepo } from "../lib/workspace.js";
+import { WORKSPACE_MANIFEST, seedWorkspaceRepo } from "../lib/workspace.js";
 
 const ROOT = process.cwd();
 const EXECUTORS = new Set<Executor>(["claude", "codex"]);
@@ -164,12 +164,16 @@ const main = async () => {
         await installSkill(skillSource, path.basename(skillSource), executor, workspacePath);
       }
 
+      if (!existsSync(path.join(workspacePath, "package.json"))) {
+        await writeFile(path.join(workspacePath, "package.json"), WORKSPACE_MANIFEST);
+      }
+
       // Before the repo is seeded: the leak walk reads every file it finds, and a .git
       // dir would have it hashing loose objects for nothing.
       await guardAgainstLeaks(workspacePath, taskPath, runDir);
 
-      // The baseline sha lives in the run dir, not just as a ref inside the workspace:
-      // the workspace is deleted after grading, the record is not.
+      // The baseline sha lives in the run dir, not just as a ref inside the workspace: the
+      // workspace is deleted after grading, the record is not.
       await writeFile(path.join(runDir, "baseline.sha"), `${seedWorkspaceRepo(workspacePath)}\n`);
 
       const result: ResultRecord = {

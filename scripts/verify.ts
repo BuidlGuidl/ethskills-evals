@@ -7,7 +7,7 @@ import yaml from "js-yaml";
 import { judgeExpectations } from "../lib/judge.js";
 import { isRecord, loadTaskSpec, loadYamlFile, parseArgs, requireString } from "../lib/task.js";
 import type { Executor, ExecutorRecord, ExpectStatus, JudgeSpec, ResultRecord, Variant } from "../lib/types.js";
-import { GENERATED_DIRS, SKILL_INSTALL_DIRS } from "../lib/workspace.js";
+import { GENERATED_DIRS, SKILL_INSTALL_DIRS, WORKSPACE_MANIFEST } from "../lib/workspace.js";
 
 const ROOT = process.cwd();
 const SKIP_DIRS = new Set([...SKILL_INSTALL_DIRS, ...GENERATED_DIRS]);
@@ -189,6 +189,12 @@ const snapshotOutput = async (workspacePath: string, outputPath: string) => {
       continue;
     }
 
+    // The manifest setup drops in to anchor the tooling walk is not something the run
+    // produced. Matched by content so a package.json the run wrote still reaches the judge.
+    if (relativePath === "package.json" && readFileSync(file, "utf8") === WORKSPACE_MANIFEST) {
+      continue;
+    }
+
     // Backstop: a scaffold leaves big generated source too (lockfiles, bundled releases).
     // Grading reads answer/source files; anything this large is not that.
     if ((await stat(file)).size > MAX_SNAPSHOT_FILE_BYTES) {
@@ -260,6 +266,7 @@ const main = async () => {
     const result = loadResultRecord(resultPath);
     const judgeSpec = resolveJudge(args);
     const executorRecord = loadExecutorRecord(runDir);
+
     if (executorRecord.executor !== result.executor) {
       throw new Error(`executor.yaml ran ${executorRecord.executor}, result.yaml says ${result.executor}`);
     }
@@ -305,6 +312,7 @@ const main = async () => {
     };
 
     await writeFile(resultPath, yaml.dump(gradedResult, { lineWidth: -1 }));
+
     summarize(verdict.expects);
     process.exit(pass ? 0 : 2);
   } catch (error) {
