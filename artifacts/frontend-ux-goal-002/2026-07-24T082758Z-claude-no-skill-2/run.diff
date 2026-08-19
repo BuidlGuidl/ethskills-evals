@@ -1,0 +1,1399 @@
+diff --git a/.env.example b/.env.example
+new file mode 100644
+index 0000000..f9d7dee
+--- /dev/null
++++ b/.env.example
+@@ -0,0 +1,7 @@
++# WalletConnect Cloud project id — required by RainbowKit for wallet connections.
++# Get one (free) at https://cloud.reown.com (formerly WalletConnect Cloud).
++NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID=
++
++# Optional: a mainnet RPC URL (Alchemy/Infura/etc). If unset, a public RPC is used.
++# A dedicated RPC is strongly recommended for production reliability & rate limits.
++NEXT_PUBLIC_MAINNET_RPC_URL=
+diff --git a/.eslintrc.json b/.eslintrc.json
+new file mode 100644
+index 0000000..bffb357
+--- /dev/null
++++ b/.eslintrc.json
+@@ -0,0 +1,3 @@
++{
++  "extends": "next/core-web-vitals"
++}
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..f34fce2
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,28 @@
++# dependencies
++/node_modules
++/.pnp
++.pnp.js
++
++# next.js
++/.next/
++/out/
++
++# production
++/build
++
++# misc
++.DS_Store
++*.pem
++
++# debug
++npm-debug.log*
++yarn-debug.log*
++yarn-error.log*
++
++# local env files
++.env
++.env*.local
++
++# typescript
++*.tsbuildinfo
++next-env.d.ts
+diff --git a/README.md b/README.md
+new file mode 100644
+index 0000000..6b7cf55
+--- /dev/null
++++ b/README.md
+@@ -0,0 +1,77 @@
++# USDC Pay
++
++A small dApp for sending **USDC on Ethereum mainnet**. Connect a wallet, see
++your USDC and ETH balances, enter a recipient and amount, and send.
++
++The token is the real Circle USDC contract on mainnet:
++`0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48` (6 decimals).
++
++## Stack
++
++Production-standard Ethereum frontend stack:
++
++- **Next.js 14** (App Router) + **TypeScript**
++- **wagmi v2** + **viem v2** — typed contract reads/writes
++- **RainbowKit** — wallet connection UI (MetaMask, Coinbase, WalletConnect, …)
++- **TanStack Query** — caching / background refresh (wired in by wagmi)
++
++## Getting started
++
++```bash
++npm install
++cp .env.example .env.local   # then fill in the values
++npm run dev                  # http://localhost:3000  → redirects to /pay
++```
++
++### Environment
++
++| Variable | Required | Purpose |
++| --- | --- | --- |
++| `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` | recommended | Enables WalletConnect (mobile / QR wallets). Get one free at [cloud.reown.com](https://cloud.reown.com). Injected wallets like MetaMask work without it. |
++| `NEXT_PUBLIC_MAINNET_RPC_URL` | recommended | A dedicated mainnet RPC (Alchemy/Infura/…). Falls back to a public RPC if unset — fine for local dev, not for production traffic. |
++
++## Scripts
++
++- `npm run dev` — dev server
++- `npm run build` — production build
++- `npm run start` — serve the production build
++- `npm run typecheck` — `tsc --noEmit`
++- `npm run lint` — ESLint (Next core-web-vitals)
++
++## How it works
++
++- **`/pay`** (`src/app/pay/page.tsx`) is the only surface; `/` redirects to it.
++- **Balances** (`src/components/BalancePanel.tsx`)
++  - USDC via `balanceOf` (`src/hooks/useUsdcBalance.ts`)
++  - ETH via wagmi's native `useBalance`
++  - Both refresh every ~15s; a warning shows when ETH is 0 (no gas).
++- **Sending** (`src/components/PayForm.tsx`)
++  - Calls the ERC-20 `transfer(recipient, amount)` via `useWriteContract`.
++  - Waits for the receipt with `useWaitForTransactionReceipt` and shows
++    signing → sending → confirmed states with an Etherscan link.
++
++### Correctness notes (why USDC is handled "faithfully")
++
++- **6 decimals, not 18.** Amounts are parsed with `parseUnits(amount, 6)` and
++  the on-chain `decimals()` is also read as a cross-check. The input rejects
++  more than 6 fractional digits. (See `src/lib/usdc.ts`, `src/lib/format.ts`.)
++- **Checksummed address.** The contract address is normalized with viem's
++  `getAddress`.
++- **Mainnet-only.** USDC at this address is only the real token on mainnet, so
++  the app is configured for chain id 1 and blocks/offers-to-switch on any other
++  network (`src/components/NetworkGuard.tsx`).
++- **Input guards.** Recipient must be a valid, non-zero address; amount must be
++  > 0 and within the current USDC balance before the button enables.
++- **Human-readable failures.** Common wallet/RPC errors (user rejection,
++  insufficient gas, insufficient balance) are mapped to plain-language messages.
++
++## Notes & trade-offs
++
++- No approvals are needed: a direct `transfer` moves the sender's own USDC.
++  (Approve/`transferFrom` would only matter for a contract spending on the
++  user's behalf, which this app doesn't do.)
++- The build aliases some optional `@x402/*` payment packages to `false` in
++  `next.config.mjs`. They are lazy, unused optional deps of the Coinbase/Base
++  connector that RainbowKit bundles; they are not installed and not needed here.
++- Mainnet-only by design — there's no testnet mode, since the task is about the
++  real token.
+diff --git a/next.config.mjs b/next.config.mjs
+new file mode 100644
+index 0000000..6d5e3fd
+--- /dev/null
++++ b/next.config.mjs
+@@ -0,0 +1,25 @@
++/** @type {import('next').NextConfig} */
++const nextConfig = {
++  reactStrictMode: true,
++  webpack: (config) => {
++    // Silence optional-dependency warnings from WalletConnect / MetaMask SDK.
++    config.externals.push("pino-pretty", "lokijs", "encoding");
++
++    // The Coinbase/Base account connector (pulled in by RainbowKit's default
++    // wallet list) lazily imports optional "x402" payment packages that we
++    // never use. They are not installed, so resolve them to `false` instead
++    // of failing the build.
++    config.resolve.alias = {
++      ...config.resolve.alias,
++      "@x402/evm": false,
++      "@x402/evm/exact/client": false,
++      "@x402/evm/upto/client": false,
++      "@x402/svm/exact/client": false,
++      "@x402/core/client": false,
++    };
++
++    return config;
++  },
++};
++
++export default nextConfig;
+diff --git a/package.json b/package.json
+new file mode 100644
+index 0000000..0a449c1
+--- /dev/null
++++ b/package.json
+@@ -0,0 +1,30 @@
++{
++  "name": "usdc-pay",
++  "version": "0.1.0",
++  "private": true,
++  "description": "A minimal dApp for sending USDC on Ethereum mainnet.",
++  "scripts": {
++    "dev": "next dev",
++    "build": "next build",
++    "start": "next start",
++    "lint": "next lint",
++    "typecheck": "tsc --noEmit"
++  },
++  "dependencies": {
++    "@rainbow-me/rainbowkit": "^2.2.1",
++    "@tanstack/react-query": "^5.59.0",
++    "next": "^14.2.15",
++    "react": "^18.3.1",
++    "react-dom": "^18.3.1",
++    "viem": "^2.21.19",
++    "wagmi": "^2.12.17"
++  },
++  "devDependencies": {
++    "@types/node": "^20.16.11",
++    "@types/react": "^18.3.11",
++    "@types/react-dom": "^18.3.0",
++    "eslint": "^8.57.1",
++    "eslint-config-next": "^14.2.15",
++    "typescript": "^5.6.3"
++  }
++}
+diff --git a/src/app/globals.css b/src/app/globals.css
+new file mode 100644
+index 0000000..faca708
+--- /dev/null
++++ b/src/app/globals.css
+@@ -0,0 +1,384 @@
++:root {
++  --bg: #f4f6fb;
++  --surface: #ffffff;
++  --border: #e3e8f0;
++  --text: #0e1726;
++  --text-muted: #64748b;
++  --accent: #2775ca; /* USDC blue */
++  --accent-hover: #1f63ad;
++  --danger: #d64545;
++  --danger-bg: #fdecec;
++  --success: #1a7f4b;
++  --success-bg: #e7f6ee;
++  --warn: #9a6700;
++  --warn-bg: #fff6e0;
++  --radius: 14px;
++  --shadow: 0 1px 3px rgba(16, 23, 38, 0.06), 0 6px 24px rgba(16, 23, 38, 0.06);
++}
++
++* {
++  box-sizing: border-box;
++}
++
++html,
++body {
++  margin: 0;
++  padding: 0;
++}
++
++body {
++  background: var(--bg);
++  color: var(--text);
++  font-family:
++    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica,
++    Arial, sans-serif;
++  -webkit-font-smoothing: antialiased;
++  line-height: 1.5;
++}
++
++.page {
++  min-height: 100dvh;
++  display: flex;
++  flex-direction: column;
++  align-items: center;
++  padding: 32px 20px 64px;
++}
++
++.topbar {
++  width: 100%;
++  max-width: 480px;
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  margin-bottom: 24px;
++}
++
++.brand {
++  display: flex;
++  align-items: center;
++  gap: 10px;
++  font-weight: 700;
++  font-size: 18px;
++}
++
++.brand-mark {
++  width: 28px;
++  height: 28px;
++  border-radius: 50%;
++  background: var(--accent);
++  color: #fff;
++  display: grid;
++  place-items: center;
++  font-size: 14px;
++  font-weight: 800;
++}
++
++.card {
++  width: 100%;
++  max-width: 480px;
++  background: var(--surface);
++  border: 1px solid var(--border);
++  border-radius: var(--radius);
++  box-shadow: var(--shadow);
++  padding: 24px;
++}
++
++.card + .card {
++  margin-top: 16px;
++}
++
++.card-title {
++  margin: 0 0 4px;
++  font-size: 16px;
++  font-weight: 700;
++}
++
++.card-subtitle {
++  margin: 0 0 20px;
++  font-size: 13px;
++  color: var(--text-muted);
++}
++
++.balances {
++  display: grid;
++  grid-template-columns: 1fr 1fr;
++  gap: 12px;
++}
++
++.balance-tile {
++  border: 1px solid var(--border);
++  border-radius: 10px;
++  padding: 14px;
++  background: #fbfcfe;
++}
++
++.balance-label {
++  font-size: 12px;
++  color: var(--text-muted);
++  display: flex;
++  align-items: center;
++  gap: 6px;
++  margin-bottom: 6px;
++}
++
++.balance-value {
++  font-size: 22px;
++  font-weight: 700;
++  font-variant-numeric: tabular-nums;
++  letter-spacing: -0.01em;
++}
++
++.balance-unit {
++  font-size: 13px;
++  color: var(--text-muted);
++  font-weight: 600;
++  margin-left: 4px;
++}
++
++.field {
++  margin-bottom: 16px;
++}
++
++.field-label {
++  display: flex;
++  justify-content: space-between;
++  align-items: baseline;
++  font-size: 13px;
++  font-weight: 600;
++  margin-bottom: 6px;
++}
++
++.field-hint {
++  font-weight: 500;
++  color: var(--text-muted);
++}
++
++.input-wrap {
++  position: relative;
++  display: flex;
++  align-items: center;
++}
++
++.input {
++  width: 100%;
++  border: 1px solid var(--border);
++  border-radius: 10px;
++  padding: 12px 14px;
++  font-size: 15px;
++  font-family: inherit;
++  color: var(--text);
++  background: #fff;
++  outline: none;
++  transition:
++    border-color 0.15s ease,
++    box-shadow 0.15s ease;
++}
++
++.input::placeholder {
++  color: #aab4c4;
++}
++
++.input:focus {
++  border-color: var(--accent);
++  box-shadow: 0 0 0 3px rgba(39, 117, 202, 0.15);
++}
++
++.input.has-error {
++  border-color: var(--danger);
++}
++
++.input.has-error:focus {
++  box-shadow: 0 0 0 3px rgba(214, 69, 69, 0.15);
++}
++
++.input-suffix {
++  position: absolute;
++  right: 12px;
++  font-size: 13px;
++  font-weight: 700;
++  color: var(--text-muted);
++}
++
++.input-amount {
++  font-variant-numeric: tabular-nums;
++  padding-right: 96px;
++}
++
++.max-btn {
++  position: absolute;
++  right: 56px;
++  border: 1px solid var(--border);
++  background: #fff;
++  color: var(--accent);
++  font-weight: 700;
++  font-size: 11px;
++  padding: 4px 8px;
++  border-radius: 6px;
++  cursor: pointer;
++}
++
++.max-btn:hover {
++  background: #f2f7fd;
++}
++
++.error-text {
++  color: var(--danger);
++  font-size: 12.5px;
++  margin-top: 6px;
++}
++
++.btn {
++  width: 100%;
++  border: none;
++  border-radius: 10px;
++  padding: 14px 16px;
++  font-size: 15px;
++  font-weight: 700;
++  font-family: inherit;
++  cursor: pointer;
++  transition:
++    background 0.15s ease,
++    opacity 0.15s ease;
++}
++
++.btn-primary {
++  background: var(--accent);
++  color: #fff;
++}
++
++.btn-primary:hover:not(:disabled) {
++  background: var(--accent-hover);
++}
++
++.btn:disabled {
++  opacity: 0.5;
++  cursor: not-allowed;
++}
++
++.alert {
++  border-radius: 10px;
++  padding: 12px 14px;
++  font-size: 13px;
++  margin-bottom: 16px;
++  display: flex;
++  gap: 10px;
++  align-items: flex-start;
++}
++
++.alert-danger {
++  background: var(--danger-bg);
++  color: var(--danger);
++}
++
++.alert-success {
++  background: var(--success-bg);
++  color: var(--success);
++}
++
++.alert-warn {
++  background: var(--warn-bg);
++  color: var(--warn);
++}
++
++.alert a {
++  color: inherit;
++  font-weight: 700;
++  text-decoration: underline;
++}
++
++.alert-title {
++  font-weight: 700;
++  margin-bottom: 2px;
++}
++
++.muted {
++  color: var(--text-muted);
++  font-size: 13px;
++}
++
++.center {
++  text-align: center;
++}
++
++.connect-prompt {
++  display: flex;
++  flex-direction: column;
++  align-items: center;
++  gap: 16px;
++  padding: 20px 0 8px;
++}
++
++.spinner {
++  display: inline-block;
++  width: 15px;
++  height: 15px;
++  border: 2px solid rgba(255, 255, 255, 0.4);
++  border-top-color: #fff;
++  border-radius: 50%;
++  animation: spin 0.7s linear infinite;
++  vertical-align: -2px;
++  margin-right: 8px;
++}
++
++.skeleton {
++  display: inline-block;
++  height: 22px;
++  width: 72px;
++  border-radius: 6px;
++  background: linear-gradient(90deg, #eef1f6 25%, #e3e8f0 37%, #eef1f6 63%);
++  background-size: 400% 100%;
++  animation: shimmer 1.4s ease infinite;
++}
++
++.footnote {
++  max-width: 480px;
++  margin-top: 20px;
++  font-size: 12px;
++  color: var(--text-muted);
++  text-align: center;
++}
++
++.footnote code {
++  background: #eef1f6;
++  padding: 1px 5px;
++  border-radius: 4px;
++  font-size: 11px;
++}
++
++.review-row {
++  display: flex;
++  justify-content: space-between;
++  font-size: 13px;
++  padding: 6px 0;
++}
++
++.review-row + .review-row {
++  border-top: 1px dashed var(--border);
++}
++
++.review-row .label {
++  color: var(--text-muted);
++}
++
++.review-row .value {
++  font-weight: 600;
++  font-variant-numeric: tabular-nums;
++  word-break: break-all;
++  text-align: right;
++  margin-left: 12px;
++}
++
++@keyframes spin {
++  to {
++    transform: rotate(360deg);
++  }
++}
++
++@keyframes shimmer {
++  0% {
++    background-position: 100% 0;
++  }
++  100% {
++    background-position: -100% 0;
++  }
++}
+diff --git a/src/app/layout.tsx b/src/app/layout.tsx
+new file mode 100644
+index 0000000..1c9233c
+--- /dev/null
++++ b/src/app/layout.tsx
+@@ -0,0 +1,19 @@
++import type { Metadata } from "next";
++import { ReactNode } from "react";
++import { Providers } from "./providers";
++import "./globals.css";
++
++export const metadata: Metadata = {
++  title: "USDC Pay",
++  description: "Send USDC on Ethereum mainnet.",
++};
++
++export default function RootLayout({ children }: { children: ReactNode }) {
++  return (
++    <html lang="en">
++      <body>
++        <Providers>{children}</Providers>
++      </body>
++    </html>
++  );
++}
+diff --git a/src/app/page.tsx b/src/app/page.tsx
+new file mode 100644
+index 0000000..1daf99d
+--- /dev/null
++++ b/src/app/page.tsx
+@@ -0,0 +1,6 @@
++import { redirect } from "next/navigation";
++
++export default function Home() {
++  // The app's single surface is the /pay page.
++  redirect("/pay");
++}
+diff --git a/src/app/pay/page.tsx b/src/app/pay/page.tsx
+new file mode 100644
+index 0000000..58968db
+--- /dev/null
++++ b/src/app/pay/page.tsx
+@@ -0,0 +1,55 @@
++"use client";
++
++import { ConnectButton } from "@rainbow-me/rainbowkit";
++import { useAccount } from "wagmi";
++import { BalancePanel } from "@/components/BalancePanel";
++import { PayForm } from "@/components/PayForm";
++import { NetworkGuard } from "@/components/NetworkGuard";
++import { USDC_ADDRESS } from "@/lib/usdc";
++
++export default function PayPage() {
++  const { isConnected } = useAccount();
++
++  return (
++    <main className="page">
++      <header className="topbar">
++        <div className="brand">
++          <span className="brand-mark">$</span>
++          USDC Pay
++        </div>
++        <ConnectButton
++          showBalance={false}
++          accountStatus="avatar"
++          chainStatus="icon"
++        />
++      </header>
++
++      {isConnected ? (
++        <>
++          <BalancePanel />
++          <NetworkGuard />
++          <PayForm />
++        </>
++      ) : (
++        <div className="card">
++          <div className="connect-prompt">
++            <h1 className="card-title" style={{ fontSize: 20 }}>
++              Send USDC on Ethereum
++            </h1>
++            <p className="muted center" style={{ maxWidth: 320, margin: 0 }}>
++              Connect your wallet to see your balances and send USDC to any
++              address.
++            </p>
++            <ConnectButton showBalance={false} />
++          </div>
++        </div>
++      )}
++
++      <p className="footnote">
++        Payments use the real USDC token on Ethereum mainnet
++        <br />
++        <code>{USDC_ADDRESS}</code>
++      </p>
++    </main>
++  );
++}
+diff --git a/src/app/providers.tsx b/src/app/providers.tsx
+new file mode 100644
+index 0000000..e5abb8a
+--- /dev/null
++++ b/src/app/providers.tsx
+@@ -0,0 +1,31 @@
++"use client";
++
++import { ReactNode, useState } from "react";
++import { WagmiProvider } from "wagmi";
++import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
++import { RainbowKitProvider, lightTheme } from "@rainbow-me/rainbowkit";
++import { config } from "@/lib/wagmi";
++
++import "@rainbow-me/rainbowkit/styles.css";
++
++export function Providers({ children }: { children: ReactNode }) {
++  // One QueryClient per app instance; created lazily so it survives HMR and
++  // isn't shared across requests during SSR.
++  const [queryClient] = useState(() => new QueryClient());
++
++  return (
++    <WagmiProvider config={config}>
++      <QueryClientProvider client={queryClient}>
++        <RainbowKitProvider
++          theme={lightTheme({
++            accentColor: "#2775ca", // USDC blue
++            accentColorForeground: "white",
++            borderRadius: "medium",
++          })}
++        >
++          {children}
++        </RainbowKitProvider>
++      </QueryClientProvider>
++    </WagmiProvider>
++  );
++}
+diff --git a/src/components/BalancePanel.tsx b/src/components/BalancePanel.tsx
+new file mode 100644
+index 0000000..61baf54
+--- /dev/null
++++ b/src/components/BalancePanel.tsx
+@@ -0,0 +1,91 @@
++"use client";
++
++import { useAccount, useBalance } from "wagmi";
++import { formatTokenAmount } from "@/lib/format";
++import { USDC_SYMBOL } from "@/lib/usdc";
++import { useUsdcBalance } from "@/hooks/useUsdcBalance";
++
++/**
++ * Shows the connected account's USDC balance (what they can send) and their
++ * native ETH balance (which they need to pay gas).
++ */
++export function BalancePanel() {
++  const { address } = useAccount();
++
++  const usdc = useUsdcBalance(address);
++  const eth = useBalance({
++    address,
++    query: { enabled: Boolean(address), refetchInterval: 15_000 },
++  });
++
++  const lowOnGas =
++    eth.data !== undefined && eth.data.value === 0n && address !== undefined;
++
++  return (
++    <div className="card">
++      <h2 className="card-title">Your balances</h2>
++      <p className="card-subtitle">On Ethereum mainnet</p>
++
++      <div className="balances">
++        <div className="balance-tile">
++          <div className="balance-label">
++            <TokenDot color="#2775ca" />
++            {USDC_SYMBOL}
++          </div>
++          <div className="balance-value">
++            {usdc.isLoading || usdc.value === undefined ? (
++              <span className="skeleton" aria-hidden />
++            ) : usdc.isError ? (
++              <span className="muted">—</span>
++            ) : (
++              formatTokenAmount(usdc.value, usdc.decimals, 2)
++            )}
++          </div>
++        </div>
++
++        <div className="balance-tile">
++          <div className="balance-label">
++            <TokenDot color="#627eea" />
++            ETH
++            <span className="field-hint">· for gas</span>
++          </div>
++          <div className="balance-value">
++            {eth.isLoading || eth.data === undefined ? (
++              <span className="skeleton" aria-hidden />
++            ) : eth.isError ? (
++              <span className="muted">—</span>
++            ) : (
++              formatTokenAmount(eth.data.value, eth.data.decimals, 4)
++            )}
++          </div>
++        </div>
++      </div>
++
++      {lowOnGas && (
++        <div className="alert alert-warn" style={{ marginTop: 16, marginBottom: 0 }}>
++          <span>⚠️</span>
++          <div>
++            <div className="alert-title">No ETH for gas</div>
++            You have 0 ETH. You need a small amount of ETH to pay the network
++            fee before you can send USDC.
++          </div>
++        </div>
++      )}
++    </div>
++  );
++}
++
++function TokenDot({ color }: { color: string }) {
++  return (
++    <span
++      aria-hidden
++      style={{
++        width: 10,
++        height: 10,
++        borderRadius: "50%",
++        background: color,
++        display: "inline-block",
++      }}
++    />
++  );
++}
+diff --git a/src/components/NetworkGuard.tsx b/src/components/NetworkGuard.tsx
+new file mode 100644
+index 0000000..966d657
+--- /dev/null
++++ b/src/components/NetworkGuard.tsx
+@@ -0,0 +1,39 @@
++"use client";
++
++import { useAccount, useSwitchChain } from "wagmi";
++import { USDC_CHAIN } from "@/lib/usdc";
++
++/**
++ * When connected to the wrong network, USDC here would not be the real token,
++ * so we block the flow and offer a one-click switch to mainnet.
++ */
++export function NetworkGuard() {
++  const { chainId, isConnected } = useAccount();
++  const { switchChain, isPending } = useSwitchChain();
++
++  if (!isConnected || chainId === undefined || chainId === USDC_CHAIN.id) {
++    return null;
++  }
++
++  return (
++    <div className="card">
++      <div className="alert alert-warn" style={{ marginBottom: 0 }}>
++        <span>⚠️</span>
++        <div style={{ width: "100%" }}>
++          <div className="alert-title">Wrong network</div>
++          <p style={{ margin: "2px 0 12px" }}>
++            You&apos;re connected to a different network. This app sends the real
++            USDC token on {USDC_CHAIN.name}.
++          </p>
++          <button
++            className="btn btn-primary"
++            onClick={() => switchChain({ chainId: USDC_CHAIN.id })}
++            disabled={isPending}
++          >
++            {isPending ? "Switching…" : `Switch to ${USDC_CHAIN.name}`}
++          </button>
++        </div>
++      </div>
++    </div>
++  );
++}
+diff --git a/src/components/PayForm.tsx b/src/components/PayForm.tsx
+new file mode 100644
+index 0000000..dd1dab1
+--- /dev/null
++++ b/src/components/PayForm.tsx
+@@ -0,0 +1,282 @@
++"use client";
++
++import { FormEvent, useMemo, useState } from "react";
++import {
++  useAccount,
++  useWaitForTransactionReceipt,
++  useWriteContract,
++} from "wagmi";
++import {
++  formatUnits,
++  getAddress,
++  isAddress,
++  parseUnits,
++  type Address,
++} from "viem";
++import {
++  USDC_ADDRESS,
++  USDC_CHAIN,
++  USDC_SYMBOL,
++  usdcAbi,
++} from "@/lib/usdc";
++import {
++  formatTokenAmount,
++  shortenAddress,
++  validateAmountInput,
++} from "@/lib/format";
++import { useUsdcBalance } from "@/hooks/useUsdcBalance";
++
++const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
++
++export function PayForm() {
++  const { address, chainId } = useAccount();
++  const usdc = useUsdcBalance(address);
++
++  const [recipient, setRecipient] = useState("");
++  const [amount, setAmount] = useState("");
++  const [submitted, setSubmitted] = useState(false);
++
++  const {
++    data: hash,
++    writeContract,
++    isPending: isSigning,
++    error: writeError,
++    reset: resetWrite,
++  } = useWriteContract();
++
++  const {
++    isLoading: isConfirming,
++    isSuccess: isConfirmed,
++    error: receiptError,
++  } = useWaitForTransactionReceipt({ hash });
++
++  // ---- Validation -------------------------------------------------------
++
++  const recipientError = useMemo(() => {
++    const value = recipient.trim();
++    if (value === "") return null; // don't nag before they type
++    if (!isAddress(value)) return "Not a valid Ethereum address.";
++    if (getAddress(value) === ZERO_ADDRESS)
++      return "Cannot send to the zero address.";
++    return null;
++  }, [recipient]);
++
++  const parsedAmount = useMemo(() => {
++    const check = validateAmountInput(amount, usdc.decimals);
++    if (!check.ok) return null;
++    try {
++      return parseUnits(amount.trim(), usdc.decimals);
++    } catch {
++      return null;
++    }
++  }, [amount, usdc.decimals]);
++
++  const amountError = useMemo(() => {
++    if (amount.trim() === "") return null;
++    const check = validateAmountInput(amount, usdc.decimals);
++    if (!check.ok) return check.reason;
++    if (parsedAmount !== null && usdc.value !== undefined) {
++      if (parsedAmount > usdc.value) return "Amount exceeds your USDC balance.";
++    }
++    return null;
++  }, [amount, usdc.decimals, parsedAmount, usdc.value]);
++
++  const onWrongNetwork = chainId !== undefined && chainId !== USDC_CHAIN.id;
++
++  const canSubmit =
++    Boolean(address) &&
++    !onWrongNetwork &&
++    recipient.trim() !== "" &&
++    recipientError === null &&
++    amount.trim() !== "" &&
++    amountError === null &&
++    parsedAmount !== null &&
++    parsedAmount > 0n &&
++    !isSigning &&
++    !isConfirming;
++
++  // ---- Actions ----------------------------------------------------------
++
++  function handleMax() {
++    if (usdc.value === undefined) return;
++    // formatUnits gives the exact full-precision string; safe to reparse.
++    setAmount(formatUnits(usdc.value, usdc.decimals));
++  }
++
++  function handleSubmit(e: FormEvent) {
++    e.preventDefault();
++    setSubmitted(true);
++    if (!canSubmit || parsedAmount === null) return;
++
++    writeContract({
++      address: USDC_ADDRESS,
++      abi: usdcAbi,
++      functionName: "transfer",
++      args: [getAddress(recipient.trim()) as Address, parsedAmount],
++    });
++  }
++
++  function handleReset() {
++    setRecipient("");
++    setAmount("");
++    setSubmitted(false);
++    resetWrite();
++  }
++
++  // ---- Derived UI state -------------------------------------------------
++
++  const submitError = writeError ?? receiptError;
++  const explorerBase = USDC_CHAIN.blockExplorers?.default.url;
++  const showRecipientError = (submitted || recipient.trim() !== "") && recipientError;
++  const showAmountError = (submitted || amount.trim() !== "") && amountError;
++
++  if (isConfirmed && hash) {
++    return (
++      <div className="card">
++        <div className="alert alert-success" style={{ marginBottom: 20 }}>
++          <span>✅</span>
++          <div>
++            <div className="alert-title">Payment sent</div>
++            You sent {formatTokenAmount(parsedAmount ?? 0n, usdc.decimals, 6)}{" "}
++            {USDC_SYMBOL} to {shortenAddress(getAddress(recipient.trim()))}.
++          </div>
++        </div>
++        {explorerBase && (
++          <p className="muted center" style={{ marginTop: 0 }}>
++            <a
++              href={`${explorerBase}/tx/${hash}`}
++              target="_blank"
++              rel="noreferrer"
++            >
++              View transaction on Etherscan ↗
++            </a>
++          </p>
++        )}
++        <button className="btn btn-primary" onClick={handleReset}>
++          Send another payment
++        </button>
++      </div>
++    );
++  }
++
++  return (
++    <div className="card">
++      <h2 className="card-title">Send USDC</h2>
++      <p className="card-subtitle">Transfer USDC to any Ethereum address.</p>
++
++      <form onSubmit={handleSubmit} noValidate>
++        <div className="field">
++          <div className="field-label">
++            <label htmlFor="recipient">Recipient address</label>
++          </div>
++          <div className="input-wrap">
++            <input
++              id="recipient"
++              className={`input ${showRecipientError ? "has-error" : ""}`}
++              placeholder="0x…"
++              autoComplete="off"
++              spellCheck={false}
++              value={recipient}
++              onChange={(e) => setRecipient(e.target.value)}
++            />
++          </div>
++          {showRecipientError && (
++            <div className="error-text">{recipientError}</div>
++          )}
++        </div>
++
++        <div className="field">
++          <div className="field-label">
++            <label htmlFor="amount">Amount</label>
++            {usdc.value !== undefined && (
++              <span className="field-hint">
++                Balance: {formatTokenAmount(usdc.value, usdc.decimals, 2)}{" "}
++                {USDC_SYMBOL}
++              </span>
++            )}
++          </div>
++          <div className="input-wrap">
++            <input
++              id="amount"
++              className={`input input-amount ${showAmountError ? "has-error" : ""}`}
++              placeholder="0.00"
++              inputMode="decimal"
++              autoComplete="off"
++              value={amount}
++              onChange={(e) => setAmount(e.target.value)}
++            />
++            {usdc.value !== undefined && usdc.value > 0n && (
++              <button type="button" className="max-btn" onClick={handleMax}>
++                MAX
++              </button>
++            )}
++            <span className="input-suffix">{USDC_SYMBOL}</span>
++          </div>
++          {showAmountError && <div className="error-text">{amountError}</div>}
++        </div>
++
++        {onWrongNetwork && (
++          <div className="alert alert-warn">
++            <span>⚠️</span>
++            <div>Switch your wallet to Ethereum mainnet to send USDC.</div>
++          </div>
++        )}
++
++        {submitError && (
++          <div className="alert alert-danger">
++            <span>⚠️</span>
++            <div>
++              <div className="alert-title">Transaction failed</div>
++              {friendlyError(submitError)}
++            </div>
++          </div>
++        )}
++
++        {(isSigning || isConfirming) && hash && explorerBase && (
++          <div className="alert alert-success">
++            <span className="spinner" style={{ borderTopColor: "#1a7f4b" }} />
++            <div>
++              Waiting for confirmation…{" "}
++              <a href={`${explorerBase}/tx/${hash}`} target="_blank" rel="noreferrer">
++                view on Etherscan ↗
++              </a>
++            </div>
++          </div>
++        )}
++
++        <button type="submit" className="btn btn-primary" disabled={!canSubmit}>
++          {isSigning ? (
++            <>
++              <span className="spinner" />
++              Confirm in your wallet…
++            </>
++          ) : isConfirming ? (
++            <>
++              <span className="spinner" />
++              Sending…
++            </>
++          ) : (
++            "Send payment"
++          )}
++        </button>
++      </form>
++    </div>
++  );
++}
++
++/** Turn common wallet/RPC errors into something a normal user can read. */
++function friendlyError(error: Error): string {
++  const msg = `${error.message ?? ""}`.toLowerCase();
++  if (msg.includes("user rejected") || msg.includes("user denied")) {
++    return "You rejected the request in your wallet.";
++  }
++  if (msg.includes("insufficient funds")) {
++    return "Not enough ETH to cover the gas fee.";
++  }
++  if (msg.includes("transfer amount exceeds balance")) {
++    return "The transfer amount exceeds your USDC balance.";
++  }
++  // Prefer viem's short message when present.
++  const short = (error as { shortMessage?: string }).shortMessage;
++  return short ?? "Something went wrong. Please try again.";
++}
+diff --git a/src/hooks/useUsdcBalance.ts b/src/hooks/useUsdcBalance.ts
+new file mode 100644
+index 0000000..bc9969a
+--- /dev/null
++++ b/src/hooks/useUsdcBalance.ts
+@@ -0,0 +1,44 @@
++import { useReadContract } from "wagmi";
++import type { Address } from "viem";
++import { USDC_ADDRESS, USDC_DECIMALS, usdcAbi } from "@/lib/usdc";
++
++/**
++ * Reads the connected account's USDC balance and the token's decimals from
++ * chain. We trust the on-chain `decimals()` when available and fall back to
++ * the known constant (6) so amount parsing is never blocked on an RPC read.
++ */
++export function useUsdcBalance(address?: Address) {
++  const balance = useReadContract({
++    address: USDC_ADDRESS,
++    abi: usdcAbi,
++    functionName: "balanceOf",
++    args: address ? [address] : undefined,
++    query: {
++      enabled: Boolean(address),
++      // USDC balances move often; refresh on a modest interval.
++      refetchInterval: 15_000,
++    },
++  });
++
++  const decimalsRead = useReadContract({
++    address: USDC_ADDRESS,
++    abi: usdcAbi,
++    functionName: "decimals",
++    query: {
++      // decimals never changes; cache it hard.
++      staleTime: Infinity,
++      gcTime: Infinity,
++    },
++  });
++
++  const decimals = decimalsRead.data ?? USDC_DECIMALS;
++
++  return {
++    value: balance.data,
++    decimals,
++    isLoading: balance.isLoading,
++    isError: balance.isError,
++    error: balance.error,
++    refetch: balance.refetch,
++  };
++}
+diff --git a/src/lib/format.ts b/src/lib/format.ts
+new file mode 100644
+index 0000000..4c9b2c6
+--- /dev/null
++++ b/src/lib/format.ts
+@@ -0,0 +1,65 @@
++import { formatUnits } from "viem";
++
++/**
++ * Format a raw token amount (bigint, base units) for display, trimming to a
++ * sensible number of fractional digits without losing precision silently.
++ */
++export function formatTokenAmount(
++  value: bigint,
++  decimals: number,
++  displayDecimals = 2,
++): string {
++  const full = formatUnits(value, decimals);
++  const num = Number(full);
++
++  // For very small non-zero balances, avoid showing a misleading "0.00".
++  if (num > 0 && num < 1 / 10 ** displayDecimals) {
++    return `<${1 / 10 ** displayDecimals}`;
++  }
++
++  return num.toLocaleString("en-US", {
++    minimumFractionDigits: 0,
++    maximumFractionDigits: displayDecimals,
++  });
++}
++
++/** Shorten an address to 0x1234…abcd for compact display. */
++export function shortenAddress(address: string): string {
++  if (address.length < 10) return address;
++  return `${address.slice(0, 6)}…${address.slice(-4)}`;
++}
++
++/**
++ * Validate a user-entered decimal amount string against a token's decimals.
++ * Returns a structured result so the UI can show precise errors.
++ */
++export function validateAmountInput(
++  raw: string,
++  decimals: number,
++): { ok: true } | { ok: false; reason: string } {
++  const trimmed = raw.trim();
++  if (trimmed === "") return { ok: false, reason: "Enter an amount." };
++
++  // Only digits with a single optional decimal point.
++  if (!/^\d*\.?\d*$/.test(trimmed)) {
++    return { ok: false, reason: "Amount must be a number." };
++  }
++  if (trimmed === "." || trimmed === "") {
++    return { ok: false, reason: "Enter an amount." };
++  }
++
++  const [, fraction = ""] = trimmed.split(".");
++  if (fraction.length > decimals) {
++    return {
++      ok: false,
++      reason: `USDC supports at most ${decimals} decimal places.`,
++    };
++  }
++
++  const num = Number(trimmed);
++  if (!Number.isFinite(num) || num <= 0) {
++    return { ok: false, reason: "Amount must be greater than zero." };
++  }
++
++  return { ok: true };
++}
+diff --git a/src/lib/usdc.ts b/src/lib/usdc.ts
+new file mode 100644
+index 0000000..0a58415
+--- /dev/null
++++ b/src/lib/usdc.ts
+@@ -0,0 +1,26 @@
++import { erc20Abi, getAddress, type Address } from "viem";
++import { mainnet } from "wagmi/chains";
++
++/**
++ * Circle USDC on Ethereum mainnet.
++ * Checksummed via getAddress so it matches on-chain expectations exactly.
++ */
++export const USDC_ADDRESS: Address = getAddress(
++  "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
++);
++
++/**
++ * USDC uses 6 decimals — NOT 18. Getting this wrong is the classic way to
++ * send someone 1,000,000,000,000x too much (or too little). We read the
++ * on-chain value at runtime too (see useUsdcMeta), but 6 is the correct
++ * constant for mainnet USDC and is used as the source of truth for parsing.
++ */
++export const USDC_DECIMALS = 6;
++
++export const USDC_SYMBOL = "USDC";
++
++/** The chain this app operates on. USDC here is the real mainnet token. */
++export const USDC_CHAIN = mainnet;
++
++/** Standard ERC-20 ABI is sufficient for balanceOf / decimals / transfer. */
++export const usdcAbi = erc20Abi;
+diff --git a/src/lib/wagmi.ts b/src/lib/wagmi.ts
+new file mode 100644
+index 0000000..22bdf92
+--- /dev/null
++++ b/src/lib/wagmi.ts
+@@ -0,0 +1,29 @@
++import { getDefaultConfig } from "@rainbow-me/rainbowkit";
++import { http } from "wagmi";
++import { mainnet } from "wagmi/chains";
++
++/**
++ * WalletConnect project id. RainbowKit needs one for WalletConnect-based
++ * wallets (mobile QR, etc). Without it those connectors are degraded, but
++ * injected wallets (MetaMask, Rabby, browser wallets) still work.
++ */
++const projectId =
++  process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID ?? "PLACEHOLDER_PROJECT_ID";
++
++const mainnetRpc = process.env.NEXT_PUBLIC_MAINNET_RPC_URL;
++
++/**
++ * Mainnet-only. This app deals with real USDC and real ETH; there is no
++ * testnet story here by design. If the connected wallet is on another
++ * network, the UI prompts the user to switch (see NetworkGuard).
++ */
++export const config = getDefaultConfig({
++  appName: "USDC Pay",
++  projectId,
++  chains: [mainnet],
++  transports: {
++    // Fall back to the chain's public RPC when no dedicated URL is provided.
++    [mainnet.id]: http(mainnetRpc),
++  },
++  ssr: true,
++});
+diff --git a/tsconfig.json b/tsconfig.json
+new file mode 100644
+index 0000000..37bdebf
+--- /dev/null
++++ b/tsconfig.json
+@@ -0,0 +1,23 @@
++{
++  "compilerOptions": {
++    "target": "ES2021",
++    "lib": ["dom", "dom.iterable", "esnext"],
++    "allowJs": true,
++    "skipLibCheck": true,
++    "strict": true,
++    "noEmit": true,
++    "esModuleInterop": true,
++    "module": "esnext",
++    "moduleResolution": "bundler",
++    "resolveJsonModule": true,
++    "isolatedModules": true,
++    "jsx": "preserve",
++    "incremental": true,
++    "plugins": [{ "name": "next" }],
++    "paths": {
++      "@/*": ["./src/*"]
++    }
++  },
++  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
++  "exclude": ["node_modules"]
++}
+
+# Untracked files and status
+ A .env.example
+ A .eslintrc.json
+ A .gitignore
+ A README.md
+ A next.config.mjs
+ A package.json
+ A src/app/globals.css
+ A src/app/layout.tsx
+ A src/app/page.tsx
+ A src/app/pay/page.tsx
+ A src/app/providers.tsx
+ A src/components/BalancePanel.tsx
+ A src/components/NetworkGuard.tsx
+ A src/components/PayForm.tsx
+ A src/hooks/useUsdcBalance.ts
+ A src/lib/format.ts
+ A src/lib/usdc.ts
+ A src/lib/wagmi.ts
+ A tsconfig.json
