@@ -62,10 +62,21 @@ NODE_OPTIONS="--no-experimental-webstorage"
 
 ## Verify before and after upload
 
-Before uploading, verify the expected change and route files exist in `out/`, and confirm generated metadata contains the production origin. After uploading:
+Before uploading, confirm the expected change is in `out/`, that every route emitted its own directory, and that generated metadata carries the production origin:
+
+```bash
+ls out/*/index.html # One directory with an index.html per route
+```
+
+After uploading:
 
 1. Record the CID. An unchanged CID means the uploaded bytes are identical; check the build output and upload target before blaming gateway caching.
 2. Load the root and at least one non-home route through the gateway. Root success does not prove exported routes resolve.
+
+   ```bash
+   curl -s -o /dev/null -w "%{http_code}" -L "https://<gateway>/ipfs/<cid>/debug/" # Expect 200, not 404
+   ```
+
 3. Verify the Open Graph image and URL use the production origin.
 4. For ENS, update the content hash only after the deployed CID has been reviewed and approved, then confirm the resolver and public gateway serve that CID.
 
