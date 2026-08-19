@@ -23,6 +23,16 @@ Use the generated Foundry/Next.js monorepo, wallet integration, contract hooks, 
 - Use `yarn fork --network <chain>` when behavior depends on deployed protocols, tokens, balances, or other real chain state.
 - In fork mode, point the frontend at the local Anvil network (`chains.foundry`, chain ID 31337), not the upstream chain being copied. Switch to the real target chain only for a real deployment.
 
+A fork also grants powers the real chain does not. Fund demo identities from state that already exists rather than deploying a mock token:
+
+```bash
+cast rpc anvil_impersonateAccount <whale>
+cast send <token> "transfer(address,uint256)" <demo-account> <amount> \
+  --from <whale> --unlocked
+```
+
+`anvil_setBalance` and `anvil_setStorageAt` are equivalent overrides when no suitable holder exists. Nothing here is broadcast; the fork is a local copy.
+
 Anvil normally mines only when a transaction arrives, so between transactions the latest block and `block.timestamp` remain frozen; the next transaction advances time in one jump. This silently breaks live deadlines, expiry, and vesting displays even when `vm.warp` unit tests pass. For continuous behavior, enable interval mining:
 
 ```bash
