@@ -5,7 +5,7 @@ description: Use when building, reviewing, fixing, or shipping a frontend for an
 
 # Frontend UX
 
-Working transaction code is not a finished product. These four are what gets left undone; check them before calling an onchain frontend finished.
+Working transaction code is not a finished product. Check these product-completeness surfaces before calling an onchain frontend finished.
 
 **Product identity.** Replace every framework default: tab title, favicon, OG/Twitter title, description and image, and visible "built with" branding. Nothing in the build fails when `Create Next App` or `Scaffold-ETH 2 App` ships to production, so nothing reminds you.
 
