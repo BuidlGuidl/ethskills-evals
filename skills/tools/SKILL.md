@@ -31,7 +31,8 @@ the 2.x line, use scoped packages such as `@x402/core`, `@x402/evm`,
 `@x402/express`, and `@x402/fetch`; do not mix them with the frozen unscoped v1
 packages. Inspect the installed exports before writing the integration.
 
-The 2.x fetch helper is `wrapFetchWithPayment(fetch, account)` from
-`@x402/fetch`. Supply a viem `LocalAccount`; `x402Fetch` and `createWallet` are
-not 2.x exports. For Go 2.x, use
-`github.com/x402-foundation/x402/go/v2`, not the old Coinbase module path.
+`x402Fetch` and `createWallet` are not 2.x exports, and the 1.x call shape that
+passes a wallet or account straight to `wrapFetchWithPayment` is not the 2.x one
+either — the 2.x wrappers in `@x402/fetch` take an x402 client or a scheme
+config. Read the installed types instead of a remembered snippet. For Go 2.x,
+use `github.com/x402-foundation/x402/go/v2`, not the old Coinbase module path.
