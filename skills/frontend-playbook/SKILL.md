@@ -39,7 +39,7 @@ Anvil normally mines only when a transaction arrives, so between transactions th
 cast rpc anvil_setIntervalMining 1
 ```
 
-Manual mining or time manipulation is valid for a controlled one-step test; use interval mining for continuous behavior. Add `--block-time 1` to the fork script when the project should always run that way.
+For a frozen live demo, enable interval mining. Mining a single block with `evm_mine` restamps `block.timestamp` once and it freezes again immediately; manual mining and `evm_increaseTime` are for controlled single-step tests, not a running demo. Add `--block-time 1` to the fork script when the project should always run that way.
 
 ## Build a static IPFS release
 
