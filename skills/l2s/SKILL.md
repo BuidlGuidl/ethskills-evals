@@ -19,7 +19,7 @@ description: Ethereum Layer 2 landscape — Arbitrum, Optimism, Base, zkSync, Sc
 
 **Unichain exists.** Launched mainnet February 11, 2025. Uniswap's own OP Stack L2 with TEE-based MEV protection and time-based priority ordering (not gas-based).
 
-**Aerodrome and Velodrome merged into "Aero."** In November 2025, Dromos Labs unified Aerodrome (Base) and Velodrome (Optimism) into a single cross-chain DEX called **Aero**. Same contracts, new brand. Aero dominates both Base and Optimism. Camelot is a major native DEX on Arbitrum. SyncSwap dominates zkSync. Don't default to Uniswap on every chain.
+**Aerodrome and Velodrome are merging into "Aero" — announced, not shipped.** Dromos Labs announced the merger in November 2025, but as of August 2026 it has not launched: the public audit contest runs 24 Aug - 11 Sep 2026, launch is targeted for September with no date pinned, and the AERO/VELO token consolidation is expected at launch rather than already done. Until it ships, **Aerodrome is the live protocol on Base and Velodrome on Optimism**, each with its own live token — check the protocol's own contracts list before wiring anything to the Aero name, and date any claim about it by state, not by the announcement. The steer underneath the branding still holds: the deepest venue on an L2 is often not Uniswap. Camelot is a major native DEX on Arbitrum, SyncSwap on zkSync. Don't default to Uniswap on every chain — check where liquidity for your pair actually sits.
 
 ## L2 Comparison Table (Mar 2026)
 
@@ -94,12 +94,14 @@ description: Ethereum Layer 2 landscape — Arbitrum, Optimism, Base, zkSync, Sc
 ### Dominant DEX Per Chain
 | Chain | Dominant DEX | Model | Why NOT Uniswap |
 |-------|-------------|-------|-----------------|
-| Base | **Aero** (was Aerodrome) | ve(3,3) — LPs earn emissions, voters earn fees | Deeper liquidity for most pairs |
-| Optimism | **Aero** (was Velodrome) | ve(3,3) — merged Nov 2025 under Dromos Labs | Same flywheel, unified brand |
+| Base | **Aerodrome** | ve(3,3) — LPs earn emissions, voters earn fees | Leads Base by routed volume (Uniswap leads by TVL — check depth for your pair) |
+| Optimism | **Velodrome** | ve(3,3), same team (Dromos Labs) | Deepest OP-native liquidity |
 | Arbitrum | Camelot + GMX | Native DEX + perps | Camelot for spot, GMX for perps |
 | zkSync | SyncSwap | Classic AMM | Largest native DEX on zkSync |
 
-See `addresses/SKILL.md` for verified contract addresses for all these protocols.
+Aero is the brand these two will ship under once the merger launches (targeted Sep 2026); until then use each protocol's current name, contracts and token.
+
+See `addresses/SKILL.md` for contract addresses, and verify them on the target chain before use.
 
 ## The Superchain (OP Stack)
 
