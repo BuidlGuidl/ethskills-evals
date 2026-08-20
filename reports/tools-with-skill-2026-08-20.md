@@ -120,15 +120,11 @@ server, and running them one at a time removes the port-collision question the
 it is untracked and does not enter the repo. The spawn command itself is byte-identical
 to the one in AGENTS.md and to the one every committed run used.
 
-**The codex `tools-quiz-004` rerun was attempted and abandoned.** It was meant to
-demonstrate that the rewritten expect_2 accepts a live-verified pin, which only
-codex/gpt-5.6-sol produces. Codex's `-s workspace-write` sandbox needs unprivileged user
-namespaces, and this host has `kernel.apparmor_restrict_unprivileged_userns=1`, so
-`bwrap` cannot start and every file write is refused — reproducible from an unsandboxed
-shell, so not an artifact of how the executor was spawned. Two attempts produced no
-`answer.md`; both run dirs were deleted rather than recorded as failures, because an
-environment blocker is not a result. `tools-eval-rejects-current-create-eth-pin` carries
-this as a run still owed.
+**The codex `tools-quiz-004` rerun was subsequently completed.** The paired
+codex/gpt-5.6-sol benchmark passed 3/3 in both arms. Its third `with_skill` answer used
+the live-verified pin `npx create-eth@2.0.23`, and the rewritten expect_2 passed it,
+directly closing the evidence gap described here. See
+`reports/tools-quiz-004-2026-08-20.md`.
 
 ## Wrap-up
 
@@ -140,4 +136,4 @@ this as a run still owed.
 | What mistakes repeated without the skill? | n/a — no `no_skill` runs. |
 | What mistakes remained with the skill? | None. No run reached the v1 line even transiently, none used a dead symbol as real, none went to Etherscan. |
 | What should change in the skill? | Nothing from these runs. The narrowed frontmatter, the rewritten x402 paragraph, and the `create-eth` rewording all held. |
-| What should change in the eval? | Two things still owed. The codex quiz-004 run that would demonstrate the fixed expect_2, blocked on host sandboxing. And a paired `no_skill` arm for goal-001 under the 4-expect spec — until then the headline for that task mixes a 4-expect `with_skill` set with a 3-expect `no_skill` set. |
+| What should change in the eval? | A paired `no_skill` arm for goal-001 under the 4-expect spec is still owed — until then the headline for that task mixes a 4-expect `with_skill` set with a 3-expect `no_skill` set. The codex quiz-004 confirmation is now complete. |
