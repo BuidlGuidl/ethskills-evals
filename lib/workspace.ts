@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { appendFileSync, constants, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, constants, existsSync, mkdirSync, readFileSync, rmdirSync } from "node:fs";
 import { access, chmod, cp, mkdir, readdir, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -24,16 +24,50 @@ export const GENERATED_DIRS = [
 
 // Workspaces live outside this repo. The markers below stop the tools that own them, but
 // nothing stops an executor from reading its way up the filesystem: under artifacts/ the
-// run dir's siblings are other runs of the same task, holding their answer.md, run.diff and
-// result.yaml, and tasks/ with every expect line is two directories further up. Somewhere
-// with nothing above it worth finding closes that; ~/.cache is the default, override for a
-// different disk.
+// run dir's siblings were other runs of the same task, holding their answer.md, run.diff and
+// result.yaml, and tasks/ with every expect line sat two directories further up. Out here the
+// run id sits above the task id (see setup-workspace), so a workspace's parent holds that one
+// workspace and nothing else. This is not a sandbox and does not pretend to be one: ~/.cache
+// still has $HOME above it, and the executor runs under the user's own uid. It closes the
+// eval-integrity adjacency, nothing more. Override for a different disk.
+// Resolved rather than used verbatim: the value reaches spawn({ cwd }), existsSync and rm in
+// three processes with three different cwds, and is printed for a human to cd into.
 export const workspaceRoot = () =>
-  process.env.EVAL_WORKSPACE_ROOT ?? path.join(homedir(), ".cache", "ethskills-evals");
+  path.resolve(process.env.EVAL_WORKSPACE_ROOT ?? path.join(homedir(), ".cache", "ethskills-evals"));
 
 // The run dir stays in the repo and points at the workspace, so verify and run-executor find
-// it without recomputing the layout, and a machine-local path is still recorded.
+// it without recomputing the layout, and a machine-local path is still recorded. Gitignored:
+// it is one machine's absolute path, and verify deletes what it points at.
 export const WORKSPACE_POINTER = "workspace.path";
+
+// A workspace's parent holds nothing but that workspace, so removing one leaves an empty dir
+// behind on every graded run. Best effort: a parent that still holds something — artifacts/
+// <task-id> with other runs under it — throws ENOTEMPTY and is left alone.
+export const pruneEmptyParent = (dir: string) => {
+  try {
+    rmdirSync(path.dirname(path.resolve(dir)));
+  } catch {
+    // not empty, or already gone
+  }
+};
+
+// The pointer is a hand-editable text file and verify feeds its contents straight to `rm -rf`.
+// A truncated or mangled value that still exists on disk — `~/.cache/ethskills-evals` with the
+// run id lost — would take every other run's workspace with it. Anything not inside the current
+// root and named for this run is refused rather than acted on.
+const assertOwnedWorkspace = (workspacePath: string, runDir: string) => {
+  const root = workspaceRoot();
+  const runId = path.basename(path.resolve(runDir));
+  const relativePath = path.relative(root, workspacePath);
+
+  if (!path.isAbsolute(workspacePath) || relativePath === "" || relativePath.startsWith("..")) {
+    throw new Error(`${WORKSPACE_POINTER} in ${runDir} points outside ${root}: ${workspacePath}`);
+  }
+
+  if (!relativePath.split(path.sep).includes(runId)) {
+    throw new Error(`${WORKSPACE_POINTER} in ${runDir} is not run ${runId}'s workspace: ${workspacePath}`);
+  }
+};
 
 export const readWorkspacePath = (runDir: string) => {
   const pointerPath = path.join(runDir, WORKSPACE_POINTER);
@@ -43,6 +77,8 @@ export const readWorkspacePath = (runDir: string) => {
   }
 
   const workspacePath = readFileSync(pointerPath, "utf8").trim();
+
+  assertOwnedWorkspace(workspacePath, runDir);
 
   if (!existsSync(workspacePath)) {
     throw new Error(`workspace ${workspacePath} is gone (deleted after grading?)`);

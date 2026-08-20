@@ -38,10 +38,11 @@ ethskills-evals/
 ├─ lib/judge.ts                  the blind judge: evidence in, graded expects out
 ├─ lib/evidence.ts               what the judge reads: the diff, or a snapshot of the files
 ├─ lib/transcript.ts             one transcript format across executors
-├─ lib/workspace.ts              the workspace's own git repo and the markers around it
+├─ lib/workspace.ts              where a workspace lives, its own git repo, the markers
 ├─ artifacts/                    per run: result.yaml + executor.yaml + transcript.md and
-│                                the graded evidence committed; workspaces, raw executor
-│                                capture and question-shaped snapshots gitignored
+│                                the graded evidence committed; raw executor capture,
+│                                question-shaped snapshots and workspace.path gitignored
+│                                (workspaces live outside the repo, under ~/.cache/)
 ├─ mistakes/                     mistake records mined from failures
 ├─ reports/                      markdown comparisons per benchmark
 └─ templates/                    workspace seeds (gitignored; tasks record how to regenerate)

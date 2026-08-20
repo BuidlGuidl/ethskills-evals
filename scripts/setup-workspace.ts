@@ -6,7 +6,7 @@ import process from "node:process";
 import yaml from "js-yaml";
 import { loadTaskSpec, parseArgs, requireString } from "../lib/task.js";
 import type { Executor, ResultRecord, Variant } from "../lib/types.js";
-import { WORKSPACE_MANIFEST, WORKSPACE_POINTER, copyTree, removeTree, seedWorkspaceRepo, workspaceRoot } from "../lib/workspace.js";
+import { WORKSPACE_MANIFEST, WORKSPACE_POINTER, copyTree, pruneEmptyParent, removeTree, seedWorkspaceRepo, workspaceRoot } from "../lib/workspace.js";
 
 const ROOT = process.cwd();
 const EXECUTORS = new Set<Executor>(["claude", "codex"]);
@@ -20,6 +20,7 @@ const fail = async (message: string, ...dirs: (string | undefined)[]): Promise<n
     // and leaving the dir behind for the next run of the same id to trip over.
     if (dir && existsSync(dir)) {
       await removeTree(dir);
+      pruneEmptyParent(dir);
     }
   }
 
@@ -122,7 +123,9 @@ const guardAgainstLeaks = async (workspacePath: string, taskPath: string, runDir
     if (bytes.length === taskSpecBytes.length && bytes.equals(taskSpecBytes)) {
       const relativePath = path.relative(workspacePath, file);
 
-      await fail(`leak detected: workspace contains a copy of the task spec at ${relativePath}`, runDir);
+      // The workspace goes too, not just the run dir: it holds the leaked spec, and it sits
+      // where the next run of this task would be created.
+      await fail(`leak detected: workspace contains a copy of the task spec at ${relativePath}`, runDir, workspacePath);
     }
   }
 };
@@ -139,7 +142,12 @@ const main = async () => {
     const timestamp = utcRunTimestamp(new Date());
     const runId = `${timestamp}-${executor}-${variant.replaceAll("_", "-")}-${run}`;
     const runDir = path.join(ROOT, "artifacts", spec.id, runId);
-    const workspacePath = path.join(workspaceRoot(), spec.id, runId);
+    // Run id above task id, not below: workspaces now outlive setup, and grouping them by task
+    // would put a live no_skill run one `ls ../` away from a concurrent with_skill sibling —
+    // its .agents/skills/<skill>/SKILL.md is the skill under test. This way the parent holds
+    // exactly one workspace. Task id stays under it so two tasks set up in the same second
+    // cannot land on one dir.
+    const workspacePath = path.join(workspaceRoot(), runId, spec.id);
 
     if (existsSync(runDir)) {
       await fail(`run dir already exists: ${runDir}`);

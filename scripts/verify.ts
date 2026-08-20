@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import yaml from "js-yaml";
@@ -7,7 +7,7 @@ import { buildEvidence, snapshotOutput, writeDiff } from "../lib/evidence.js";
 import { judgeExpectations } from "../lib/judge.js";
 import { isRecord, loadTaskSpec, loadYamlFile, parseArgs, requireString } from "../lib/task.js";
 import type { Executor, ExecutorRecord, ExpectStatus, JudgeSpec, ResultRecord, Variant } from "../lib/types.js";
-import { readWorkspacePath } from "../lib/workspace.js";
+import { pruneEmptyParent, readWorkspacePath } from "../lib/workspace.js";
 
 const ROOT = process.cwd();
 const EXECUTORS = new Set<Executor>(["claude", "codex"]);
@@ -209,16 +209,27 @@ const main = async () => {
 
     await writeFile(resultPath, yaml.dump(gradedResult, { lineWidth: -1 }));
 
-    // Workspaces sit outside the repo now, so nothing cleans them up with the run dir and a
-    // benchmark leaves tens of gigabytes behind. The grade is written and the evidence is
-    // captured, so the workspace is spent — keep it only when you mean to dig through it.
-    if (args["keep-workspace"] === true) {
+    summarize(verdict.expects);
+
+    // After the summary, and never fatal. Workspaces sit outside the repo now, so nothing
+    // cleans them up with the run dir and a benchmark leaves tens of gigabytes behind — but
+    // the grade is already written, and result.yaml carrying `pass` means the regrade guard
+    // will refuse to run this run again. A failed rm (EBUSY, a read-only mount, an open handle)
+    // must not be the reason a graded run never reports.
+    // `!== undefined` rather than `=== true`: parseArgs takes the next token as the value, so
+    // `--keep-workspace true` yields the string "true", and reading that as "delete it" would
+    // irreversibly discard the workspace the user asked to keep.
+    if (args["keep-workspace"] !== undefined) {
       console.log(`workspace kept at ${workspacePath}`);
     } else {
-      await rm(workspacePath, { recursive: true, force: true });
+      try {
+        await rm(workspacePath, { recursive: true, force: true });
+        pruneEmptyParent(workspacePath);
+      } catch (error) {
+        console.warn(`verify: graded, but could not remove ${workspacePath}: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
 
-    summarize(verdict.expects);
     process.exit(pass ? 0 : 2);
   } catch (error) {
     console.error(`verify: ${error instanceof Error ? error.message : String(error)}`);
