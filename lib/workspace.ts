@@ -46,11 +46,12 @@ const cloneArgs = (sourceDir: string, targetDir: string) =>
     ? ["-Rc", `${sourceDir}/.`, targetDir]
     : ["-a", "--reflink=auto", `${sourceDir}/.`, targetDir];
 
-// fs.rm unlinks a file through its parent directory, so it needs write permission there, and
-// the partial tree a failed cp leaves behind carries the template's read-only dirs verbatim
-// (.git/objects/xx, unplugged Yarn packages). Without the walk, clearing the destination
-// EACCESes in exactly the place merging into it would have.
-const removeTree = async (dir: string) => {
+// How a copied tree gets deleted, by either path. fs.rm unlinks a file through its parent
+// directory, so it needs write permission there, and a copy carries the template's read-only
+// dirs verbatim (.git/objects/xx, unplugged Yarn packages) — a plain rm EACCESes on exactly
+// the dirs the copy reproduced, whether it is the fallback clearing a partial tree or a
+// caller tearing down a workspace it can no longer use.
+export const removeTree = async (dir: string) => {
   await chmod(dir, 0o700);
 
   for (const entry of await readdir(dir, { recursive: true, withFileTypes: true })) {

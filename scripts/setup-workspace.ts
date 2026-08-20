@@ -1,12 +1,12 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { constants, existsSync, readFileSync } from "node:fs";
-import { access, cp, mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { access, cp, mkdir, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import yaml from "js-yaml";
 import { loadTaskSpec, parseArgs, requireString } from "../lib/task.js";
 import type { Executor, ResultRecord, Variant } from "../lib/types.js";
-import { WORKSPACE_MANIFEST, copyTree, seedWorkspaceRepo } from "../lib/workspace.js";
+import { WORKSPACE_MANIFEST, copyTree, removeTree, seedWorkspaceRepo } from "../lib/workspace.js";
 
 const ROOT = process.cwd();
 const EXECUTORS = new Set<Executor>(["claude", "codex"]);
@@ -15,7 +15,10 @@ const SETUP_ARGS = new Set(["task", "executor", "variant", "run"]);
 
 const fail = async (message: string, runDir?: string): Promise<never> => {
   if (runDir) {
-    await rm(runDir, { recursive: true, force: true });
+    // removeTree, not rm: the run dir holds a copy of the template, and a plain unlink through
+    // one of its read-only dirs throws past this line — replacing `message` with an EACCES and
+    // leaving the run dir behind for the next run of the same id to trip over.
+    await removeTree(runDir);
   }
 
   console.error(`setup-workspace: ${message}`);
