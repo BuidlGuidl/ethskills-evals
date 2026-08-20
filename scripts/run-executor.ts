@@ -3,6 +3,7 @@ import { createWriteStream, existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
+import { finished } from "node:stream/promises";
 import yaml from "js-yaml";
 import { loadYamlFile, parseArgs, requireString } from "../lib/task.js";
 import { buildTranscript } from "../lib/transcript.js";
@@ -133,15 +134,24 @@ const main = async () => {
   process.on("SIGTERM", stop);
 
   const exit = await new Promise<number>(resolve => {
+    // `error` resolves without waiting for `close`, so the stdio handlers can still be live
+    // when the streams below are ended: a late chunk would then write after end and take
+    // the process down after the run, leaving executor.yaml.finished null on a live run.
+    // The message goes to errStream too, or executor.stderr and transcript.md disagree.
     child.on("error", error => {
       errors.push(error.message);
+      errStream.write(error.message);
+      child.stdout.destroy();
+      child.stderr.destroy();
       resolve(127);
     });
     child.on("close", (code, signal) => resolve(code ?? (signal ? 143 : 1)));
   });
 
+  // end() only queues the flush; process.exit below drops whatever is still buffered.
   outStream.end();
   errStream.end();
+  await Promise.all([finished(outStream), finished(errStream)]);
 
   const transcript = buildTranscript(
     { run: requireString(result.run, "run"), executor, model, exit, workspacePath },

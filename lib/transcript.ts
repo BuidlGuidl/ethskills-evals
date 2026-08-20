@@ -57,7 +57,7 @@ const resultText = (content: unknown): string => {
 // claude -p --output-format stream-json emits one JSON event per line. The rendered
 // transcript keeps what a reader of the report needs — what the agent said, what it ran,
 // what came back — and drops the rest; the raw jsonl sits beside it for anything else.
-const renderClaude = (raw: string) => {
+const renderClaude = (raw: string, stderr: string) => {
   const sections: string[] = [];
 
   for (const line of raw.split("\n")) {
@@ -119,6 +119,14 @@ const renderClaude = (raw: string) => {
     }
   }
 
+  // Everything claude has to say goes to stdout, so stderr is a diagnostic — a bad key, an
+  // unavailable model, a crash before the first event. executor.stderr is not committed, so
+  // dropping it here is how a failed run ends up with a transcript that reads as if the
+  // agent did nothing.
+  if (stderr.trim().length > 0) {
+    sections.push(`## stderr\n\n${fence(stderr)}`);
+  }
+
   return sections.join("\n\n");
 };
 
@@ -145,7 +153,7 @@ export const buildTranscript = (header: TranscriptHeader, stdout: string, stderr
     `**executor**: ${header.executor}  |  **model**: ${header.model ?? "cli default"}  |  **exit**: ${header.exit}`,
     `**workspace**: ${header.workspacePath}`,
   ].join("\n");
-  const body = header.executor === "claude" ? renderClaude(stdout) : renderCodex(stderr, stdout);
+  const body = header.executor === "claude" ? renderClaude(stdout, stderr) : renderCodex(stderr, stdout);
 
   return `${heading}\n\n${body}\n`;
 };
