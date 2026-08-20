@@ -1,6 +1,6 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { appendFileSync, constants, existsSync, mkdirSync } from "node:fs";
-import { access, cp, mkdir } from "node:fs/promises";
+import { access, chmod, cp, mkdir, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 
 // Where setup installs the skill. Evidence that reaches the judge must exclude these, or the
@@ -34,22 +34,73 @@ export const WORKSPACE_MANIFEST = `${JSON.stringify({ name: "eval-workspace", pr
 // 1.9 GB across 237k files: 48s and 830 MB per workspace, against 91s and the full 1.9 GB
 // for fs.cp. The clone is not free — every file still needs its own inode and directory
 // entry, and at this file count that metadata is most of the 830 MB. Node's own
-// COPYFILE_FICLONE is no help at all (3.5 GB copied, 3.5 GB of disk gone), hence shelling
-// out; a filesystem that cannot clone fails the cp and lands on the portable path below.
+// COPYFILE_FICLONE is no help at all (3.5 GB copied, 3.5 GB of disk gone), hence shelling out.
+//
+// The two flags disagree about a filesystem that cannot clone: macOS -c fails, and lands on
+// the portable path below. --reflink=auto never fails — it silently degrades to a plain copy,
+// so an ext4 host (most CI runners) gets the speed but pays the full 1.9 GB. Making that
+// visible would mean --reflink=always, which instead drops those hosts onto fs.cp, the
+// slowest of the three, so the degraded copy is the deliberate trade.
 const cloneArgs = (sourceDir: string, targetDir: string) =>
   process.platform === "darwin"
     ? ["-Rc", `${sourceDir}/.`, targetDir]
     : ["-a", "--reflink=auto", `${sourceDir}/.`, targetDir];
 
+// fs.rm unlinks a file through its parent directory, so it needs write permission there, and
+// the partial tree a failed cp leaves behind carries the template's read-only dirs verbatim
+// (.git/objects/xx, unplugged Yarn packages). Without the walk, clearing the destination
+// EACCESes in exactly the place merging into it would have.
+const removeTree = async (dir: string) => {
+  await chmod(dir, 0o700);
+
+  for (const entry of await readdir(dir, { recursive: true, withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      await chmod(path.join(entry.parentPath, entry.name), 0o700);
+    }
+  }
+
+  await rm(dir, { recursive: true, force: true });
+};
+
+// Owns targetDir: the fallback empties it first, so pass a destination this copy may define.
 export const copyTree = async (sourceDir: string, targetDir: string) => {
   await access(sourceDir, constants.R_OK);
   await mkdir(targetDir, { recursive: true });
 
-  if (spawnSync("cp", cloneArgs(sourceDir, targetDir), { stdio: "ignore" }).status === 0) {
+  const clone = spawnSync("cp", cloneArgs(sourceDir, targetDir), {
+    encoding: "utf8",
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+
+  if (clone.status === 0) {
     return;
   }
 
-  await cp(sourceDir, targetDir, { recursive: true, force: true });
+  // A signal is not a failure to retry. Ctrl-C reaches the whole foreground process group, so
+  // cp dies while node stays up to handle it: falling back here answers the interrupt by
+  // starting the slower copy from scratch, and the run takes longer than if nothing was hit.
+  if (clone.signal !== null) {
+    throw new Error(`cp was killed by ${clone.signal}`);
+  }
+
+  // Say which copy failed and why. A host without cp, or a BSD cp that rejects --reflink=auto
+  // (every non-darwin non-Linux platform takes that branch), would otherwise sit on the slow
+  // path forever with nothing in the output to explain it — and if fs.cp then fails too, its
+  // error is the only one that reaches the caller.
+  const reason = clone.error?.message || clone.stderr?.trim() || `exit ${clone.status}`;
+
+  console.warn(`workspace: cp could not clone ${sourceDir} (${reason}) — falling back to a full copy`);
+
+  // cp leaves a partial tree behind when it fails, and fs.cp does not merge into one safely:
+  // force unlinks before overwriting, and cp -a finalizes directory modes from the source, so
+  // a read-only dir already laid down hard-fails the merge. Start from an empty destination.
+  await removeTree(targetDir);
+  await mkdir(targetDir, { recursive: true });
+
+  // verbatimSymlinks, or fs.cp resolves each relative link target against the source and
+  // writes it back absolute: every node_modules/.bin entry would then point into the shared
+  // template, which is the isolation this copy exists to give the run.
+  await cp(sourceDir, targetDir, { recursive: true, force: true, verbatimSymlinks: true });
 };
 
 const git = (workspacePath: string, args: string[]) =>
