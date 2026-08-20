@@ -166,7 +166,9 @@ Every report ends with this table. Answer the last row honestly: sometimes the e
 
 ## What gets committed
 
-Committed: task specs, vendored skills under test, workspace templates under `templates/`, `result.yaml`, `run.diff`, `output/`, mistake records, reports. Gitignored: workspaces, transcripts.
+Committed: task specs, vendored skills under test, workspace templates under `templates/`, `result.yaml`, `run.diff`, `transcript.md`, mistake records, reports. Gitignored: workspaces, `transcript.jsonl` (the raw stream-json `transcript.md` is rendered from), and `output/`.
+
+This line said the opposite until 2026-08-20 — transcripts gitignored, `output/` committed — while `.gitignore` and all 210 committed runs did the reverse. Follow `.gitignore`; the transcript is what a reviewer re-derives a report's claims from, so it is the record that has to survive.
 
 ## Code style
 
