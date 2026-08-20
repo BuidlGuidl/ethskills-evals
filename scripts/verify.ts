@@ -128,6 +128,24 @@ const walkFiles = async (dir: string) => {
 // packages/app/node_modules reaches the judge.
 const excludePathspec = (dir: string) => [`:(exclude)${dir}`, `:(exclude,glob)**/${dir}/**`];
 
+const rootCommit = (workspacePath: string) => {
+  try {
+    const roots = execFileSync("git", ["-C", workspacePath, "rev-list", "--max-parents=0", "HEAD"], {
+      encoding: "utf8",
+      stdio: "pipe",
+    })
+      .trim()
+      .split("\n")
+      .filter(line => line.length > 0);
+
+    // A run that grafted in unrelated history can leave several roots; the last one listed is
+    // the oldest, which is setup's baseline.
+    return roots.at(-1) ?? null;
+  } catch {
+    return null;
+  }
+};
+
 const writeDiff = async (workspacePath: string, diffPath: string) => {
   const pathspec = [".", ...[...SKILL_INSTALL_DIRS, ...GENERATED_DIRS].flatMap(excludePathspec)];
 
@@ -137,7 +155,15 @@ const writeDiff = async (workspacePath: string, diffPath: string) => {
   // its scaffolder wrote (foundry's omits node_modules), so the pathspec is what actually
   // keeps the installed skill and generated trees out of the judge's evidence.
   execFileSync("git", ["-C", workspacePath, "add", "-N", "--", ...pathspec], { encoding: "utf8" });
-  const diff = execFileSync("git", ["-C", workspacePath, "diff", "--", ...pathspec], { encoding: "utf8" });
+
+  // Diff against setup's baseline commit, not the index. A bare `git diff` compares the worktree
+  // to the index, so a run that commits its own work leaves nothing to see and gets graded on an
+  // empty file. The baseline is the workspace repo's root commit, which setup creates empty, so
+  // everything the run produced is in the diff whether it committed or not. Runs from before the
+  // workspace had a repo of its own fall back to the old behaviour.
+  const baseline = rootCommit(workspacePath);
+  const diffArgs = baseline === null ? ["diff"] : ["diff", baseline];
+  const diff = execFileSync("git", ["-C", workspacePath, ...diffArgs, "--", ...pathspec], { encoding: "utf8" });
   const status = execFileSync("git", ["-C", workspacePath, "status", "--porcelain", "--", ...pathspec], { encoding: "utf8" });
   const content = `${diff}${diff.endsWith("\n") || diff.length === 0 ? "" : "\n"}\n# Untracked files and status\n${status}`;
 

@@ -111,6 +111,34 @@ const walkFiles = async (dir: string) => {
   return entries;
 };
 
+// A workspace under artifacts/ has no repository of its own, so every tool that resolves a
+// project by walking up to the nearest .git resolves it to this repo — and an executor spawned
+// there inherits the orchestrator's project identity, including its memory directory. One
+// building-blocks run read four of those memory files and wrote two more back, one of which
+// stated a graded expect line outright. Giving the workspace its own repo cuts that: the run is
+// its own project, with its own empty memory. The empty baseline commit is what verify diffs
+// against, so a run that commits its own work is still graded on what it produced.
+const initWorkspaceRepo = (workspacePath: string) => {
+  const git = (...args: string[]) =>
+    execFileSync("git", ["-C", workspacePath, ...args], { encoding: "utf8", stdio: "pipe" });
+
+  git("init", "-q");
+  // -c over global config: the orchestrator's identity is not the executor's, and a machine
+  // with no user.email configured would otherwise fail the commit and take the run with it.
+  execFileSync(
+    "git",
+    [
+      "-C", workspacePath,
+      "-c", "user.name=eval-harness",
+      "-c", "user.email=eval-harness@localhost",
+      "commit", "-q", "--allow-empty", "-m", "baseline",
+    ],
+    { encoding: "utf8", stdio: "pipe" },
+  );
+
+  return git("rev-parse", "HEAD").trim();
+};
+
 // The task yaml carries the expect lines, i.e. the grading. It must never
 // reach the executor's workspace in any form.
 const guardAgainstLeaks = async (workspacePath: string, taskPath: string, runDir: string) => {
@@ -164,6 +192,10 @@ const main = async () => {
       }
 
       await guardAgainstLeaks(workspacePath, taskPath, runDir);
+
+      // After the leak guard: the seed, TASK.md and the skill are all in place, so the baseline
+      // commit is empty and every file the run touches shows up in the diff.
+      initWorkspaceRepo(workspacePath);
 
       const result: ResultRecord = {
         task: spec.id,
