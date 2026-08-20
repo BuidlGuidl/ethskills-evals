@@ -1,6 +1,6 @@
 ---
 name: tools
-description: Choose and verify current Ethereum development tools, especially agent-readable onchain data and x402 HTTP payments. Use when selecting packages, scaffolds, testing stacks, RPC or explorer integrations, or tools that let an AI agent interact with Ethereum.
+description: Choose and verify current Ethereum development tools, especially agent-readable onchain data and x402 HTTP payments. Use when selecting packages or a scaffold for an Ethereum project, or wiring the tools that let an AI agent read onchain data and pay for HTTP calls.
 ---
 
 # Ethereum Development Tools
@@ -10,9 +10,11 @@ official package registry or documentation before recommending or importing
 them; do not resolve dependency conflicts by silently falling back to a stale
 major version.
 
-For a new Scaffold-ETH 2 app, give the canonical setup command
-`npx create-eth@latest`. Verify that it resolves, but do not replace `@latest`
-with a pinned version unless the user explicitly asks for reproducibility.
+For a new Scaffold-ETH 2 app, the live scaffold package is `create-eth`:
+`npx create-eth@latest`. Check that it resolves before handing it over. Pinning
+the version `latest` currently resolves to is fine once you have verified it —
+what is not fine is `create-eth-app` or `create-scaffold-eth`, which are dead
+package names rather than older spellings of this one.
 
 ## Give agents structured onchain data
 
@@ -26,13 +28,17 @@ or hand-decode raw logs when an indexed interface fits the task.
 
 ## Add inline HTTP payments
 
-For x402 TypeScript projects, keep the implementation on one current major. On
-the 2.x line, use scoped packages such as `@x402/core`, `@x402/evm`,
-`@x402/express`, and `@x402/fetch`; do not mix them with the frozen unscoped v1
-packages. Inspect the installed exports before writing the integration.
+For x402 TypeScript projects, use the scoped `@x402/*` packages — `@x402/core`,
+`@x402/evm`, `@x402/express`, `@x402/fetch` — and keep the whole implementation on
+one major. The unscoped `x402`, `x402-fetch`, and `x402-express` packages are
+frozen at 1.2.0 and are not the maintained line, whatever a version range resolves
+them to; do not fall back to them to clear a dependency conflict. `@coinbase/x402`
+is the Coinbase facilitator config, which sits alongside the scoped family rather
+than replacing it. Inspect the installed exports before writing the integration.
 
-`x402Fetch` and `createWallet` are not 2.x exports, and the 1.x call shape that
-passes a wallet or account straight to `wrapFetchWithPayment` is not the 2.x one
-either — the 2.x wrappers in `@x402/fetch` take an x402 client or a scheme
-config. Read the installed types instead of a remembered snippet. For Go 2.x,
-use `github.com/x402-foundation/x402/go/v2`, not the old Coinbase module path.
+`x402Fetch` and `createWallet` do not exist in the scoped packages at all, and
+passing a wallet or account straight to `wrapFetchWithPayment` is the frozen v1
+call shape — the scoped `@x402/fetch` wrappers take an x402 client or a scheme
+config. Read the installed types instead of a remembered snippet. For Go, use
+`github.com/x402-foundation/x402/go/v2`; the old `github.com/coinbase/x402/go`
+path does not error, it silently resolves to a stale pre-Foundation commit.
