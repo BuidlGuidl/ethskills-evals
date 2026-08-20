@@ -126,7 +126,11 @@ const walkFiles = async (dir: string) => {
 // A bare :(exclude)<dir> only matches at the workspace root, while walkFiles skips by
 // directory name at any depth, so each dir needs the glob form too or a nested
 // packages/app/node_modules reaches the judge.
-const excludePathspec = (dir: string) => [`:(exclude)${dir}`, `:(exclude,glob)**/${dir}/**`];
+// Both forms are glob-magic on purpose. A literal `:(exclude)out` names an existing path, and
+// git refuses the whole `add` when a pathspec names a path the repo's own .gitignore covers —
+// which foundry's scaffold does for out/ and cache/. The glob form excludes the same paths
+// without naming them, so the add succeeds and the generated trees still stay out.
+const excludePathspec = (dir: string) => [`:(exclude,glob)**/${dir}`, `:(exclude,glob)**/${dir}/**`];
 
 const rootCommit = (workspacePath: string) => {
   try {
