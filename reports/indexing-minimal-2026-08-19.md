@@ -35,3 +35,16 @@ Cost, across all four tasks, with_skill came in cheaper on average (goal $3.30 v
 - per-task reports: `reports/indexing-{quiz-001,quiz-002,quiz-003,goal-001}-2026-08-19.md`
 - `mistakes/indexing/indexing-read-side-deploy-omitted.yaml` updated: no_skill 1/3 on this stack, was 3/3 on codex
 - 7 runs were killed mid-flight by a session rate limit on the first attempt (12 concurrent executors) and deleted rather than graded; they were re-run at 2-way concurrency. No partial run was recorded.
+
+## Addendum, 2026-08-20 — codex answered the open question
+
+The verdict above proposed one experiment: goal-001 on codex `gpt-5.6-terra` against the minimized skill, with "if codex also converges, retire the skill" attached to it. It ran (`reports/indexing-goal-001-2026-08-20.md`, commit `0dc65d2`) and **codex did not converge**: `3/3` with the skill against `0/3` without it, every no_skill run failing both expect_5 and expect_6, which is the original #64 delta reproduced exactly on 24 lines instead of 318.
+
+**The verdict is therefore resolved the other way: keep the minimal skill.** Points 1 and 2 above are closed; do not fold the deploy-home paragraph into the wiki. Point 3 is amended by the codex evidence — two of three with_skill runs there made a valid named production decision in README prose with no committed artifact, so a deploy-artifact check would have missed them. Keep expect_5/expect_6 as the graded surface and treat a committed Dockerfile/railway.json as supplementary evidence, not a replacement.
+
+What the two rounds say together is that the same 24 lines are worth nothing on claude `claude-opus-5` (no_skill 2/3, and the one failure names a full run story without a host) and worth the entire task on codex `gpt-5.6-terra` (no_skill 0/3, stopping at a local read side every time). The content is not the variable; the executor's default thoroughness about production is. Two consequences for the program in issue #1:
+
+- A verdict cell in that table is only meaningful with a stack attached. "Wiki — the skill is dead weight" was true of this skill on one stack and false on another, from identical content and identical checks.
+- Trimming to nudges is safe under both readings. The 294 lines cut were dead weight on both stacks; the paragraph that survived is the one carrying the codex delta.
+
+Token use also split by stack and cancels out as an argument either way: with_skill ran cheaper on claude (goal $3.30 vs $6.78) and about 42% more tokens on codex (57,384 vs 40,395 average). Both n=3, descriptive only.
