@@ -40,6 +40,8 @@ The tested candidate's opening instruction did add capability: it made live, pai
 
 The new shorter version was not the version tested here. It must be rerun against this same task before merge; do not transfer the 3/3 score to it without evidence.
 
+**Superseded 2026-08-21.** That re-run happened: the 128-word trigger reproduces this split, 3/3 vs 1/3, and fires unprompted in all three skilled runs. See `reports/building-blocks-goal-002-2026-08-21.md`, which also records two things this round got wrong — a control that shipped the fees-plus-emissions double count, against the claim below that even failed controls implemented the Aerodrome mechanics correctly, and an `expect_2` verdict on the newer round's passing control that looks like a judge false pass.
+
 Two things the re-run has to settle beyond the pass count. The benchmarked `description` named Uniswap, Aerodrome, Aave, GMX and Pendle; the shipped one names no protocol, and this task's input names no DEX, so whether the skill still fires unprompted is itself untested. And the run record has to carry the evidence the judge graded — `run.diff` committed and non-empty, plus a full session transcript — or the re-run reproduces the same unauditable result at a different sha.
 
 ## Integrity notes
