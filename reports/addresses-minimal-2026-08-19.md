@@ -5,7 +5,11 @@
 **Runs:** 24 graded — `with_skill` 3 per task across 6 tasks, plus `no_skill` 3 each on the two
 tasks whose expects changed (goal-001, quiz-001)
 **Date:** 2026-08-18/19
-**Skill version:** `a461aa8` — the reduced skill from this branch, 39 lines / 706 words
+**Skill version:** `a461aa8` — the reduced skill from this branch, 39 lines / 706 words as
+run. Two sentences were edited after the runs on PR #75 review and did not go through the
+benchmark (now 39 lines / 753 words): the "unlike v3" clause, which was false — v3's Base
+router differs from its mainnet one, as this PR's own expects pin — and the Slipstream
+"where the major Base pairs actually trade" claim, which now names its metric and its date.
 **Baseline:** [#62](https://github.com/BuidlGuidl/ethskills-evals/pull/62), same stack, skill
 `326ad4b` (547 lines / 2,840 words of address tables)
 
@@ -17,17 +21,25 @@ the skill, or the transcript.
 
 | task | no_skill | with_skill | #62 with_skill | failing check |
 | --- | --- | --- | --- | --- |
-| quiz-001 — Base swap venue + router address | **3/3** | **3/3** | 2/3 | — |
+| quiz-001 — Base swap venue + router address | **3/3** | **3/3** | 2/3 ‡ | — |
 | quiz-002 — Uniswap v4 differs per chain | 3/3 † | **3/3** | 3/3 | — |
 | quiz-003 — vanity CREATE2 proves nothing cross-chain | 3/3 † | **3/3** | 3/3 | — |
 | quiz-004 — deprecated V1 VELO token | 3/3 † | **3/3** | 3/3 | — |
 | quiz-005 — per-chain Aave pools + native USDC | 3/3 † | **3/3** | 2/3 | — |
-| goal-001 — unprompted viem swap build | **1/3** | **3/3** | 3/3 | expect_6 (verify-before-funds) |
-| **total** | | **18/18** | 16/18 | |
+| goal-001 — unprompted viem swap build | **1/3** | **3/3** | 3/3 ‡ | expect_6 (verify-before-funds) |
+| **total** | | **18/18** | 16/18 ‡ | |
 
 † carried over from #62. Those four tasks have identical inputs and identical expects, and the
 judge model is unchanged, so re-running the unaided variant would have re-measured a constant.
 goal-001 and quiz-001 were re-run in both variants because their expects moved (below).
+
+‡ **graded against a different rubric.** quiz-001's three expects were all rewritten and
+goal-001 gained expect_7 and a reworded expect_6, so the `#62 with_skill` cell on those two rows
+is not a like-for-like comparison and neither is the 16/18 total that contains them. quiz-001's
+2/3 → 3/3 in particular is confounded: #62's failing run copied the skill's TVL claim with no
+lookup and would probably fail the new expect_1 too, but that is an argument, not a measurement.
+The `no_skill` vs `with_skill` columns are the sound comparison on those rows — both variants ran
+on the current expects. Read the #62 column per-expect or not at all.
 
 Mean cost and effort per run:
 
@@ -115,21 +127,45 @@ All four #62 records for this skill are addressed by content, and the runs confi
 | `addresses-verified-stamp-substitutes-for-check` | fixed | stamp and ✅ column deleted; 0/18 runs cite the skill as a source, min 8 Bash calls per run |
 | `addresses-aerodrome-slipstream-missing` | fixed | Slipstream named in the skill; quiz-001 run 1 and the goal runs route through its router |
 | `addresses-morpho-arbitrum-absent` | fixed | false claim deleted; quiz-003 3/3 including expect_4 |
-| `addresses-aero-merger-tense` | open | no longer present in `skills/addresses`, still live in `skills/l2s` and `skills/building-blocks` |
+| `addresses-aero-merger-tense` | fixed | gone from `skills/addresses` — no run produced a merger-tense claim |
 
-No new mistake records. Nothing failed that a record does not already cover.
+One new record, and it is bookkeeping rather than a run finding:
+`mistakes/building-blocks/building-blocks-aero-merger-tense.yaml`. The merger-tense error lives in
+three vendored skills; it was filed once under `addresses`, and `skills/l2s` got its own record.
+Holding the addresses record open for the other two left `mistakes/addresses/` describing an L375
+that `skills/addresses` no longer has, so the addresses record is now closed on its own skill and
+the building-blocks half is tracked against building-blocks. Nothing else failed that a record does
+not already cover.
+
+## Evidence
+
+Every run directory carries the graded material, not just the verdict: `output/` for all 24 runs —
+`swap.ts` + `NOTES.md` for goal-001, `answer.md` or `chains.ts` for the quizzes — committed
+verbatim as the judge saw it, lockfiles included. These tasks are all bare-workspace, so there is
+no scaffold to diff and `output/` is the whole deliverable.
+
+This matters most on goal-001, where the entire `3/3 vs 1/3` delta rests on expect_6 grading the
+text of `NOTES.md`, and that text is not recoverable from `transcript.md` (the goal transcripts
+carry 25-48 `…[+N chars]` truncation markers each). The same goes for the "0/18 outputs cite the
+skill as an address source" claim, which is a statement about `answer.md`.
+
+`.gitignore` blanket-ignored `artifacts/**/output/` — written for template-seeded runs, where the
+snapshot is hundreds of unchanged scaffold files — which silently swallowed the evidence for
+question-shaped runs too, against AGENTS.md "What gets committed". These 24 are force-added; the
+rule's comment now says so. Narrowing the rule itself belongs on the harness branch, along with
+the missing `executor_model` / `executor_exit` fields in `result.yaml`.
 
 ## Verdict
 
 | Question | Answer |
 | --- | --- |
-| Did the skill improve pass rate? | `with_skill 18/18` against `16/18` for the same tasks on the pre-cut skill. Against `no_skill`: goal-001 `3/3 vs 1/3`, quiz-001 `3/3 vs 3/3`, and the four carried quizzes are saturated in both variants. The uplift is confined to the unprompted build, which is where #62 found it too. |
+| Did the skill improve pass rate? | `with_skill 18/18` against `16/18` for the same tasks on the pre-cut skill — but see ‡: two of those six rows moved rubric, so that pair is not a clean measurement. Against `no_skill`: goal-001 `3/3 vs 1/3`, quiz-001 `3/3 vs 3/3`, and the four carried quizzes are saturated in both variants. The uplift is confined to the unprompted build, which is where #62 found it too. |
 | Did it reduce time/tokens? | Not against the old skill: the tables were faster where their facts held (quiz-004 52s → 171s, quiz-002 72s → 387s). Against `no_skill` it is roughly neutral on the quizzes and cheaper on goal-001 ($3.70 vs $4.53). The cut trades speed for verification, deliberately. |
 | Did it create negative deltas? | None. Both #62 negative deltas closed and no new ones appeared. |
 | What mistakes repeated without the skill? | `no_skill` goal-001 runs 1 and 3: verified thoroughly themselves, never told the human to confirm against an explorer or deployment list. |
 | What mistakes remained with the skill? | None observed in 18 runs. |
 | What should change in the skill? | Nothing this benchmark can see. It is saturated at 18/18 — which also means it can no longer detect a regression, so the next content change needs a harder task, not this set. |
-| What should change in the eval? | (1) The five quizzes are exhausted: `no_skill` is 15/15 in #62 and `with_skill` 15/15 here, so they measure nothing about this skill on this model — retire them as a regression check or replace with goal-shaped tasks. (2) expect_7 passes in both variants; keep it as a correctness guard, not a signal. (3) goal-001 is the only discriminating task left, and one expect carries the entire delta — a second goal task, targeting a different unprompted habit, would stop the verdict resting on a single line. (4) Nothing here tests the "bridged vs native" or "older deployment" rules unprompted; both currently only appear in quizzes that ask directly. |
+| What should change in the eval? | (1) The five quizzes are exhausted: `no_skill` is 15/15 in #62 and `with_skill` 15/15 here, so they measure nothing about this skill on this model — retire them as a regression check or replace with goal-shaped tasks. (2) expect_7 passes in both variants; keep it as a correctness guard, not a signal. (3) goal-001 is the only discriminating task left, and one expect carries the entire delta — a second goal task, targeting a different unprompted habit, would stop the verdict resting on a single line. (4) Nothing here tests the "bridged vs native" or "older deployment" rules unprompted; both currently only appear in quizzes that ask directly. (5) `quiz-001` expect_3 grades four things at once — address genuine for the venue, not a mainnet carryover, right router within the venue, attributed to a source — so a fail does not say which, the same defect goal-001 fixed by splitting expect_3/expect_4 and adding expect_7. Promoting the router-within-venue clause to a `quiz-001` expect_4 changes the expect count and needs a re-run, so it is held for the next benchmark. |
 
 ## Run conditions
 
