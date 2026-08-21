@@ -129,13 +129,12 @@ All four #62 records for this skill are addressed by content, and the runs confi
 | `addresses-morpho-arbitrum-absent` | fixed | false claim deleted; quiz-003 3/3 including expect_4 |
 | `addresses-aero-merger-tense` | fixed | gone from `skills/addresses` — no run produced a merger-tense claim |
 
-One new record, and it is bookkeeping rather than a run finding:
-`mistakes/building-blocks/building-blocks-aero-merger-tense.yaml`. The merger-tense error lives in
-three vendored skills; it was filed once under `addresses`, and `skills/l2s` got its own record.
-Holding the addresses record open for the other two left `mistakes/addresses/` describing an L375
-that `skills/addresses` no longer has, so the addresses record is now closed on its own skill and
-the building-blocks half is tracked against building-blocks. Nothing else failed that a record does
-not already cover.
+No new mistake records. The merger-tense error lives in three vendored skills and was filed once
+under `addresses`; `skills/l2s` and `skills/building-blocks` have since got their own records
+(`l2s-aero-merger-tense`, and `building-blocks-aero-merger-tense` from #69, which carries observed
+run frequency). Holding the addresses record open on their behalf left `mistakes/addresses/`
+describing an L375 that `skills/addresses` no longer has, so it is now closed on its own skill and
+the other two stand on theirs. Nothing else failed that a record does not already cover.
 
 ## Evidence
 

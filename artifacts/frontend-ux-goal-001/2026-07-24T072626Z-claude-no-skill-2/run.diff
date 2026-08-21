@@ -1,0 +1,600 @@
+diff --git a/packages/hardhat/contracts/MockUSDC.sol b/packages/hardhat/contracts/MockUSDC.sol
+new file mode 100644
+index 0000000..8fa6dd6
+--- /dev/null
++++ b/packages/hardhat/contracts/MockUSDC.sol
+@@ -0,0 +1,23 @@
++//SPDX-License-Identifier: MIT
++pragma solidity >=0.8.0 <0.9.0;
++
++import { ERC20 } from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
++
++/**
++ * Local-development stand-in for Circle's USDC. Matches the real token's name,
++ * symbol and 6-decimal precision. The open `mint` is a dev faucet only — the
++ * real USDC on Base is never deployed from this repo.
++ */
++contract MockUSDC is ERC20 {
++    constructor() ERC20("USD Coin", "USDC") {}
++
++    // USDC uses 6 decimals, not the ERC20 default of 18.
++    function decimals() public pure override returns (uint8) {
++        return 6;
++    }
++
++    // Faucet for local testing. Do not deploy to a live network.
++    function mint(address to, uint256 amount) external {
++        _mint(to, amount);
++    }
++}
+diff --git a/packages/hardhat/contracts/Staker.sol b/packages/hardhat/contracts/Staker.sol
+new file mode 100644
+index 0000000..c37ff11
+--- /dev/null
++++ b/packages/hardhat/contracts/Staker.sol
+@@ -0,0 +1,67 @@
++//SPDX-License-Identifier: MIT
++pragma solidity >=0.8.0 <0.9.0;
++
++import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
++import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
++
++/**
++ * Minimal USDC staking vault: users deposit USDC and can withdraw their full
++ * position at any time. No rewards, no lockups, no admin.
++ * @author BuidlGuidl
++ */
++contract Staker {
++    using SafeERC20 for IERC20;
++
++    // The staked token (USDC). Immutable so the vault can never be repointed.
++    IERC20 public immutable token;
++
++    // Staked balance per user.
++    mapping(address => uint256) public balanceOf;
++
++    // Total amount currently staked across all users.
++    uint256 public totalStaked;
++
++    event Staked(address indexed user, uint256 amount);
++    event Withdrawn(address indexed user, uint256 amount);
++
++    error ZeroAddress();
++    error ZeroAmount();
++    error NothingStaked();
++
++    constructor(IERC20 _token) {
++        if (address(_token) == address(0)) revert ZeroAddress();
++        token = _token;
++    }
++
++    /**
++     * Deposit USDC into the vault. Caller must approve this contract for `amount` first.
++     * @param amount amount of USDC (6 decimals) to stake
++     */
++    function stake(uint256 amount) external {
++        if (amount == 0) revert ZeroAmount();
++
++        // Effects before interaction (CEI). USDC is not fee-on-transfer, so the
++        // credited amount equals the transferred amount.
++        balanceOf[msg.sender] += amount;
++        totalStaked += amount;
++
++        token.safeTransferFrom(msg.sender, address(this), amount);
++
++        emit Staked(msg.sender, amount);
++    }
++
++    /**
++     * Withdraw the caller's entire staked position back to their wallet.
++     */
++    function withdraw() external {
++        uint256 amount = balanceOf[msg.sender];
++        if (amount == 0) revert NothingStaked();
++
++        balanceOf[msg.sender] = 0;
++        totalStaked -= amount;
++
++        token.safeTransfer(msg.sender, amount);
++
++        emit Withdrawn(msg.sender, amount);
++    }
++}
+diff --git a/packages/hardhat/deploy/00_deploy_staker.ts b/packages/hardhat/deploy/00_deploy_staker.ts
+new file mode 100644
+index 0000000..2cb214a
+--- /dev/null
++++ b/packages/hardhat/deploy/00_deploy_staker.ts
+@@ -0,0 +1,49 @@
++import { deployScript, artifacts } from "../rocketh/deploy.js";
++
++// Circle's canonical USDC on Base mainnet.
++const BASE_CHAIN_ID = 8453;
++const BASE_USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
++
++/**
++ * Deploys the Staker vault.
++ *
++ * - On Base mainnet it points at the real Circle USDC.
++ * - On any other network (local hardhat, testnets) it deploys a faithful
++ *   6-decimal MockUSDC and mints a supply to the deployer for testing.
++ */
++export default deployScript(
++  async env => {
++    const { deployer } = env.namedAccounts;
++
++    let usdcAddress: string;
++
++    if (env.network.chain.id === BASE_CHAIN_ID) {
++      usdcAddress = BASE_USDC;
++    } else {
++      const mockUSDC = await env.deploy("MockUSDC", {
++        account: deployer,
++        artifact: artifacts.MockUSDC,
++        args: [],
++      });
++      usdcAddress = mockUSDC.address;
++
++      // Fund the deployer with 1,000,000 USDC (6 decimals) for local testing.
++      await env.execute(mockUSDC, {
++        functionName: "mint",
++        args: [deployer, 1_000_000n * 10n ** 6n],
++        account: deployer,
++      });
++    }
++
++    await env.deploy("Staker", {
++      account: deployer,
++      artifact: artifacts.Staker,
++      args: [usdcAddress],
++    });
++
++    console.log("💰 Staking USDC at:", usdcAddress);
++  },
++  {
++    tags: ["Staker", "MockUSDC"],
++  },
++);
+diff --git a/packages/hardhat/test/Staker.ts b/packages/hardhat/test/Staker.ts
+new file mode 100644
+index 0000000..51b2e2a
+--- /dev/null
++++ b/packages/hardhat/test/Staker.ts
+@@ -0,0 +1,91 @@
++import { expect } from "chai";
++import { network } from "hardhat";
++import type { Abi_Staker } from "../generated/abis/Staker.js";
++import type { Abi_MockUSDC } from "../generated/abis/MockUSDC.js";
++import { loadAndExecuteDeploymentsFromFiles } from "../rocketh/environment.js";
++
++const { provider, networkHelpers, ethers } = await network.create();
++
++const USDC = (whole: bigint) => whole * 10n ** 6n; // USDC has 6 decimals
++
++// Deploys via the real deploy scripts (MockUSDC + Staker) on a fresh network.
++async function deployFixture() {
++  const env = await loadAndExecuteDeploymentsFromFiles({ provider });
++  const stakerDeployment = env.get<Abi_Staker>("Staker");
++  const usdcDeployment = env.get<Abi_MockUSDC>("MockUSDC");
++  const staker = await ethers.getContractAt(stakerDeployment.abi, stakerDeployment.address);
++  const usdc = await ethers.getContractAt(usdcDeployment.abi, usdcDeployment.address);
++  return { staker, usdc, stakerAddress: stakerDeployment.address };
++}
++
++describe("Staker", function () {
++  it("points at the deployed USDC token", async function () {
++    const { staker, usdc } = await networkHelpers.loadFixture(deployFixture);
++    expect(await staker.token()).to.equal(await usdc.getAddress());
++  });
++
++  it("lets a user stake USDC and emits Staked", async function () {
++    const { staker, usdc, stakerAddress } = await networkHelpers.loadFixture(deployFixture);
++    const [deployer] = await ethers.getSigners();
++
++    await usdc.approve(stakerAddress, USDC(100n));
++    await expect(staker.stake(USDC(100n))).to.emit(staker, "Staked").withArgs(deployer.address, USDC(100n));
++
++    expect(await staker.balanceOf(deployer.address)).to.equal(USDC(100n));
++    expect(await staker.totalStaked()).to.equal(USDC(100n));
++    expect(await usdc.balanceOf(stakerAddress)).to.equal(USDC(100n));
++  });
++
++  it("keeps positions isolated between users", async function () {
++    const { staker, usdc, stakerAddress } = await networkHelpers.loadFixture(deployFixture);
++    const [deployer, user] = await ethers.getSigners();
++
++    // Fund a second user from the deployer's minted supply.
++    await usdc.transfer(user.address, USDC(50n));
++
++    await usdc.approve(stakerAddress, USDC(100n));
++    await staker.stake(USDC(100n));
++    await usdc.connect(user).approve(stakerAddress, USDC(50n));
++    await staker.connect(user).stake(USDC(50n));
++
++    expect(await staker.balanceOf(deployer.address)).to.equal(USDC(100n));
++    expect(await staker.balanceOf(user.address)).to.equal(USDC(50n));
++    expect(await staker.totalStaked()).to.equal(USDC(150n));
++
++    // One user withdrawing must not touch the other's position.
++    await staker.connect(user).withdraw();
++    expect(await staker.balanceOf(deployer.address)).to.equal(USDC(100n));
++    expect(await staker.totalStaked()).to.equal(USDC(100n));
++  });
++
++  it("lets a user withdraw their full position", async function () {
++    const { staker, usdc, stakerAddress } = await networkHelpers.loadFixture(deployFixture);
++    const [deployer] = await ethers.getSigners();
++    const before = await usdc.balanceOf(deployer.address);
++
++    await usdc.approve(stakerAddress, USDC(100n));
++    await staker.stake(USDC(100n));
++    await expect(staker.withdraw()).to.emit(staker, "Withdrawn").withArgs(deployer.address, USDC(100n));
++
++    expect(await staker.balanceOf(deployer.address)).to.equal(0n);
++    expect(await staker.totalStaked()).to.equal(0n);
++    expect(await usdc.balanceOf(deployer.address)).to.equal(before);
++  });
++
++  it("reverts when staking without approval", async function () {
++    const { staker } = await networkHelpers.loadFixture(deployFixture);
++    // Deployer holds USDC but has not approved the vault.
++    await expect(staker.stake(USDC(100n))).to.be.reverted;
++  });
++
++  it("reverts when staking zero", async function () {
++    const { staker } = await networkHelpers.loadFixture(deployFixture);
++    await expect(staker.stake(0n)).to.be.revertedWithCustomError(staker, "ZeroAmount");
++  });
++
++  it("reverts when withdrawing with nothing staked", async function () {
++    const { staker } = await networkHelpers.loadFixture(deployFixture);
++    const [, user] = await ethers.getSigners();
++    await expect(staker.connect(user).withdraw()).to.be.revertedWithCustomError(staker, "NothingStaked");
++  });
++});
+diff --git a/packages/nextjs/app/page.tsx b/packages/nextjs/app/page.tsx
+index 05a7d29..3c59e8e 100644
+--- a/packages/nextjs/app/page.tsx
++++ b/packages/nextjs/app/page.tsx
+@@ -5,7 +5,7 @@ import { useAccount } from "wagmi";
+ import { Address } from "@scaffold-ui/components";
+ import type { NextPage } from "next";
+ import Link from "next/link";
+-import { BugAntIcon, MagnifyingGlassIcon } from "@heroicons/react/24/outline";
++import { BanknotesIcon, BugAntIcon, MagnifyingGlassIcon } from "@heroicons/react/24/outline";
+ import { useTargetNetwork } from "~~/hooks/scaffold-eth";
+ 
+ 
+@@ -19,35 +19,33 @@ const Home: NextPage = () => {
+         <div className="px-5">
+           <h1 className="text-center">
+             <span className="block text-2xl mb-2">Welcome to</span>
+-            <span className="block text-4xl font-bold">Scaffold-ETH 2</span>
+-            
++            <span className="block text-4xl font-bold">USDC Staking</span>
+           </h1>
+           <div className="flex justify-center items-center space-x-2 flex-col">
+             <p className="my-2 font-medium">Connected Address:</p>
+             <Address address={connectedAddress} chain={targetNetwork} />
+           </div>
+-          
+-<p className="text-center text-lg">
+-  Get started by editing{" "}
+-  <code className="italic bg-base-300 text-base font-bold max-w-full break-words break-all inline-block">
+-    packages/nextjs/app/page.tsx
+-  </code>
+-</p>
+-<p className="text-center text-lg">
+-  Edit your smart contract{" "}
+-  <code className="italic bg-base-300 text-base font-bold max-w-full break-words break-all inline-block">
+-    YourContract.sol
+-  </code>{" "}
+-  in{" "}
+-  <code className="italic bg-base-300 text-base font-bold max-w-full break-words break-all inline-block">
+-    packages/hardhat/contracts
+-  </code>
+-</p>
+-
++          <p className="text-center text-lg mt-4">
++            Deposit USDC and withdraw your position anytime on the{" "}
++            <Link href="/stake" passHref className="link">
++              Stake
++            </Link>{" "}
++            page.
++          </p>
+         </div>
+ 
+         <div className="grow bg-base-300 w-full mt-16 px-8 py-12">
+           <div className="flex justify-center items-center gap-12 flex-col md:flex-row">
++            <div className="flex flex-col bg-base-100 border border-base-300 px-10 py-10 text-center items-center max-w-xs">
++              <BanknotesIcon className="h-8 w-8" />
++              <p>
++                Stake and withdraw USDC on the{" "}
++                <Link href="/stake" passHref className="link">
++                  Stake
++                </Link>{" "}
++                page.
++              </p>
++            </div>
+             <div className="flex flex-col bg-base-100 border border-base-300 px-10 py-10 text-center items-center max-w-xs">
+               <BugAntIcon className="h-8 w-8" />
+               <p>
+diff --git a/packages/nextjs/app/stake/page.tsx b/packages/nextjs/app/stake/page.tsx
+new file mode 100644
+index 0000000..ccedbb7
+--- /dev/null
++++ b/packages/nextjs/app/stake/page.tsx
+@@ -0,0 +1,236 @@
++"use client";
++
++import { useMemo, useState } from "react";
++import type { NextPage } from "next";
++import { erc20Abi, formatUnits, parseUnits } from "viem";
++import { useAccount, useReadContract, useWriteContract } from "wagmi";
++import { Balance } from "@scaffold-ui/components";
++import {
++  useDeployedContractInfo,
++  useScaffoldReadContract,
++  useScaffoldWriteContract,
++  useTargetNetwork,
++  useTransactor,
++} from "~~/hooks/scaffold-eth";
++
++const DEFAULT_DECIMALS = 6; // USDC
++
++// Safely turn a human-typed amount into base units; returns 0n on invalid input.
++const parseAmount = (value: string, decimals: number) => {
++  try {
++    return parseUnits(value || "0", decimals);
++  } catch {
++    return 0n;
++  }
++};
++
++const Stake: NextPage = () => {
++  const { address: connectedAddress, isConnected } = useAccount();
++  const { targetNetwork } = useTargetNetwork();
++
++  const [amount, setAmount] = useState("");
++  const [isApproving, setIsApproving] = useState(false);
++
++  const writeTx = useTransactor();
++  const { writeContractAsync: writeErc20 } = useWriteContract();
++
++  const { data: stakerInfo } = useDeployedContractInfo({ contractName: "Staker" });
++  const stakerAddress = stakerInfo?.address;
++
++  // USDC address comes from the vault itself, so this page works against the
++  // real token on Base and the mock token locally without any config changes.
++  const { data: tokenAddress } = useScaffoldReadContract({ contractName: "Staker", functionName: "token" });
++
++  const { data: stakedBalance, refetch: refetchStaked } = useScaffoldReadContract({
++    contractName: "Staker",
++    functionName: "balanceOf",
++    args: [connectedAddress],
++  });
++
++  const erc20Enabled = Boolean(tokenAddress && connectedAddress);
++
++  const { data: decimals } = useReadContract({
++    address: tokenAddress,
++    abi: erc20Abi,
++    functionName: "decimals",
++    query: { enabled: Boolean(tokenAddress) },
++  });
++
++  const { data: walletBalance, refetch: refetchWallet } = useReadContract({
++    address: tokenAddress,
++    abi: erc20Abi,
++    functionName: "balanceOf",
++    args: connectedAddress ? [connectedAddress] : undefined,
++    query: { enabled: erc20Enabled },
++  });
++
++  const { data: allowance, refetch: refetchAllowance } = useReadContract({
++    address: tokenAddress,
++    abi: erc20Abi,
++    functionName: "allowance",
++    args: connectedAddress && stakerAddress ? [connectedAddress, stakerAddress] : undefined,
++    query: { enabled: erc20Enabled && Boolean(stakerAddress) },
++  });
++
++  const { writeContractAsync: writeStake, isMining: isStaking } = useScaffoldWriteContract({ contractName: "Staker" });
++  const { writeContractAsync: writeWithdraw, isMining: isWithdrawing } = useScaffoldWriteContract({
++    contractName: "Staker",
++  });
++
++  const tokenDecimals = decimals ?? DEFAULT_DECIMALS;
++  const parsedAmount = useMemo(() => parseAmount(amount, tokenDecimals), [amount, tokenDecimals]);
++
++  const allowanceLoaded = allowance !== undefined;
++  const needsApproval = allowanceLoaded && parsedAmount > 0n && parsedAmount > allowance;
++  const exceedsBalance = walletBalance !== undefined && parsedAmount > walletBalance;
++  const canStake = parsedAmount > 0n && !exceedsBalance;
++
++  const refetchAll = () => {
++    refetchStaked();
++    refetchWallet();
++    refetchAllowance();
++  };
++
++  const setMax = () => {
++    if (walletBalance !== undefined) setAmount(formatUnits(walletBalance, tokenDecimals));
++  };
++
++  const handleApprove = async () => {
++    if (!tokenAddress || !stakerAddress) return;
++    try {
++      setIsApproving(true);
++      await writeTx(() =>
++        writeErc20({
++          address: tokenAddress,
++          abi: erc20Abi,
++          functionName: "approve",
++          args: [stakerAddress, parsedAmount],
++        }),
++      );
++      await refetchAllowance();
++    } catch {
++      // useTransactor already surfaces the error via a notification.
++    } finally {
++      setIsApproving(false);
++    }
++  };
++
++  const handleStake = async () => {
++    if (!canStake) return;
++    try {
++      await writeStake({ functionName: "stake", args: [parsedAmount] });
++      setAmount("");
++      refetchAll();
++    } catch {
++      // handled by the hook
++    }
++  };
++
++  const handleWithdraw = async () => {
++    try {
++      await writeWithdraw({ functionName: "withdraw" });
++      refetchAll();
++    } catch {
++      // handled by the hook
++    }
++  };
++
++  const format = (value: bigint | undefined) =>
++    value === undefined ? "…" : Number(formatUnits(value, tokenDecimals)).toLocaleString(undefined, {
++      maximumFractionDigits: 6,
++    });
++
++  const hasStake = stakedBalance !== undefined && stakedBalance > 0n;
++
++  return (
++    <div className="flex flex-col items-center grow w-full px-4 py-10">
++      <div className="w-full max-w-lg">
++        <h1 className="text-center mb-2">
++          <span className="block text-3xl font-bold">USDC Staking</span>
++          <span className="block text-base mt-1 opacity-70">Deposit USDC and withdraw your full position anytime.</span>
++        </h1>
++
++        {!isConnected ? (
++          <div className="alert mt-8 justify-center">
++            <span>Connect your wallet to start staking.</span>
++          </div>
++        ) : (
++          <div className="flex flex-col gap-6 mt-6">
++            {/* Balances */}
++            <div className="card bg-base-100 shadow-md">
++              <div className="card-body gap-4">
++                <h2 className="card-title text-lg">Your balances</h2>
++                <div className="flex justify-between items-center">
++                  <span className="opacity-70">Wallet USDC</span>
++                  <span className="font-medium">{format(walletBalance)} USDC</span>
++                </div>
++                <div className="flex justify-between items-center">
++                  <span className="opacity-70">ETH (for gas)</span>
++                  <Balance address={connectedAddress} chain={targetNetwork} />
++                </div>
++                <div className="flex justify-between items-center">
++                  <span className="opacity-70">Staked</span>
++                  <span className="font-medium">{format(stakedBalance)} USDC</span>
++                </div>
++              </div>
++            </div>
++
++            {/* Stake */}
++            <div className="card bg-base-100 shadow-md">
++              <div className="card-body gap-4">
++                <h2 className="card-title text-lg">Stake</h2>
++                <div className="join w-full">
++                  <input
++                    type="text"
++                    inputMode="decimal"
++                    placeholder="0.0"
++                    className="input input-bordered join-item w-full"
++                    value={amount}
++                    onChange={e => setAmount(e.target.value)}
++                  />
++                  <span className="btn btn-ghost join-item no-animation pointer-events-none">USDC</span>
++                  <button type="button" className="btn btn-outline join-item" onClick={setMax}>
++                    Max
++                  </button>
++                </div>
++                {exceedsBalance && <span className="text-error text-sm">Amount exceeds your wallet balance.</span>}
++
++                {needsApproval ? (
++                  <button className="btn btn-primary" disabled={!canStake || isApproving} onClick={handleApprove}>
++                    {isApproving && <span className="loading loading-spinner loading-sm" />}
++                    Approve USDC
++                  </button>
++                ) : (
++                  <button
++                    className="btn btn-primary"
++                    disabled={!canStake || isStaking || !allowanceLoaded}
++                    onClick={handleStake}
++                  >
++                    {isStaking && <span className="loading loading-spinner loading-sm" />}
++                    Stake
++                  </button>
++                )}
++              </div>
++            </div>
++
++            {/* Withdraw */}
++            <div className="card bg-base-100 shadow-md">
++              <div className="card-body gap-4">
++                <h2 className="card-title text-lg">Withdraw</h2>
++                <p className="opacity-70 text-sm">
++                  Withdraw your entire staked position of {format(stakedBalance)} USDC.
++                </p>
++                <button className="btn btn-secondary" disabled={!hasStake || isWithdrawing} onClick={handleWithdraw}>
++                  {isWithdrawing && <span className="loading loading-spinner loading-sm" />}
++                  Withdraw all
++                </button>
++              </div>
++            </div>
++          </div>
++        )}
++      </div>
++    </div>
++  );
++};
++
++export default Stake;
+diff --git a/packages/nextjs/components/Header.tsx b/packages/nextjs/components/Header.tsx
+index bc63eb4..a470beb 100644
+--- a/packages/nextjs/components/Header.tsx
++++ b/packages/nextjs/components/Header.tsx
+@@ -5,7 +5,7 @@ import Image from "next/image";
+ import Link from "next/link";
+ import { usePathname } from "next/navigation";
+ import { hardhat } from "viem/chains";
+-import { Bars3Icon, BugAntIcon } from "@heroicons/react/24/outline";
++import { Bars3Icon, BanknotesIcon, BugAntIcon } from "@heroicons/react/24/outline";
+ import { FaucetButton, RainbowKitCustomConnectButton } from "~~/components/scaffold-eth";
+ import { useOutsideClick, useTargetNetwork } from "~~/hooks/scaffold-eth";
+ 
+@@ -22,6 +22,11 @@ export const menuLinks: HeaderMenuLink[] = [
+     label: 'Home',
+     href: '/'
+   },
++  {
++    label: 'Stake',
++    href: '/stake',
++    icon: <BanknotesIcon className="h-4 w-4" />
++  },
+   {
+     label: 'Debug Contracts',
+     href: '/debug',
+
+# Untracked files and status
+ A packages/hardhat/contracts/MockUSDC.sol
+ A packages/hardhat/contracts/Staker.sol
+D  packages/hardhat/contracts/YourContract.sol
+ A packages/hardhat/deploy/00_deploy_staker.ts
+D  packages/hardhat/deploy/00_deploy_your_contract.ts
+ A packages/hardhat/test/Staker.ts
+D  packages/hardhat/test/YourContract.ts
+ M packages/nextjs/app/page.tsx
+ A packages/nextjs/app/stake/page.tsx
+ M packages/nextjs/components/Header.tsx
