@@ -11,7 +11,7 @@ Executor/judge: claude `claude-opus-5`, 3 runs/variant, 24 runs. Skill under tes
 
 ## What the rewrite cost: nothing measurable
 
-Cutting 294 lines did not lose a single check. Every claim the long version passed, the short version passes: the cap-derived page count, the two-step Studio path with live-sourced pricing, the Multicall3 current-state answer, event-first contracts, offchain ranking, and the read architecture written down. The trigger also survived the rewrite — the skill invoked itself in 11 of 12 with_skill runs on its `description` alone.
+Cutting 294 lines did not lose a single check. Every claim the long version passed, the short version passes: the cap-derived page count, the two-step Studio path with live-sourced pricing, the Multicall3 current-state answer, event-first contracts, offchain ranking, and the read architecture written down. The trigger also survived the rewrite — the skill invoked itself in 12 of 12 with_skill runs on its `description` alone, as the first tool call in every one.
 
 ## What the rewrite is worth: one sentence, on this stack
 

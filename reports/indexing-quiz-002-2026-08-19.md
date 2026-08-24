@@ -11,7 +11,7 @@ No run recommended the hosted service, and none called production queries free. 
 
 Both variants lean heavily on the live web here (no_skill 19-20 web calls per run), so this task measures research ability at least as much as retained knowledge. The one visible skill effect is how much research it takes: with_skill 20.7 turns / $0.86 avg against no_skill 26.3 turns / $1.20 avg — the skill front-loads the answer shape and the runs spend less time discovering it. n=3, so directional only.
 
-One with_skill run (`2026-08-19T033814Z-claude-with-skill-3`) never invoked the skill and passed anyway; the other two invoked it.
+**Trigger fired 3/3** — every with_skill run called `Skill(indexing)` as its first action, before any web call. (The earlier reading that `2026-08-19T033814Z-claude-with-skill-3` never invoked it was wrong; its transcript opens on the Skill call.)
 
 | Question | Answer |
 | --- | --- |
