@@ -3,7 +3,7 @@
 Executor/judge: codex `gpt-5.6-terra`. Runs: 3/variant. Skill under test: the 24-line minimized `skills/indexing` at `dc771ad`. Every run reports `self_judged: true` because executor and judge use the same agent/model, though every grade ran in a fresh blind process.
 
 | Variant | Pass | expect_1 | expect_2 | expect_3 | expect_4 | expect_5 | expect_6 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| --- | --- | --- | --- | --- | --- | --- | --- |
 | no_skill | 0/3 | 3/3 | 3/3 | 3/3 | 3/3 | 0/3 | 0/3 |
 | with_skill | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 |
 
