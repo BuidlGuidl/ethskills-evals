@@ -138,15 +138,20 @@ pass: false                    # true only when every expect passed
 mistake_id: gas-stale-eth-price
 skill: gas
 first_seen: 2026-07-06
-frequency:                     # per variant
-  no_skill: 3/3
-  with_skill: 1/3
+frequency:                     # per variant; nest under <executor>/<model> once a
+  no_skill: 3/3                # second stack has been measured, because a rate that
+  with_skill: 1/3              # averages two stacks describes neither
 category: stale-knowledge
 symptom: "Computes USD cost from a remembered ETH price instead of checking one."
 expected_pattern: "Fetch ETH/USD live (Chainlink feed, CoinGecko) before quoting dollars."
 skill_section: "What You Probably Got Wrong"   # the section that should prevent this, or "none" for a gap
 status: open                   # open | fixed | wontfix
 ```
+
+When the same mistake has been measured on more than one stack, `frequency` takes a stack
+key per measurement instead of the two bare variant lines — see
+`mistakes/indexing/indexing-read-side-deploy-omitted.yaml`, where the no_skill rate is
+`3/3` on codex and `1/3` on claude from identical content and identical checks.
 
 ## Reports
 
