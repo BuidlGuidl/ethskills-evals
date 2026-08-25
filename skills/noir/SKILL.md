@@ -34,7 +34,7 @@ npm install @noir-lang/noir_js "@aztec/bb.js@$(bb --version)"
 
 Also required, and usually already habit — confirm rather than rebuild:
 
-- `nargo compile` builds the circuit and `nargo execute` produces the witness from `Prover.toml`; everything else is `bb` — `bb prove`, `bb verify`, `bb write_vk`, and `bb write_solidity_verifier` fed by that VK. `nargo prove` / `nargo verify` / `nargo codegen-verifier` were removed. Generate the VK feeding the Solidity verifier with `--verifier_target evm` — `--oracle_hash keccak` is gone from bb 5.x — and keep prove, verify and VK on the same target. Smoke-test a real prove-and-verify before wiring a frontend.
+- `nargo compile` builds the circuit and `nargo execute` produces the witness from `Prover.toml`; everything else is `bb` — `bb prove`, `bb verify`, `bb write_vk`, and `bb write_solidity_verifier` fed by that VK. `nargo prove` / `nargo verify` / `nargo codegen-verifier` were removed. Generate the VK feeding the Solidity verifier with `--verifier_target evm` and keep prove, verify and VK on the same target: it names the transcript hash and the ZK setting together, which is the pair that has to match. The older `--oracle_hash keccak` still works — it lives under `--help-extended` now — but it names only the hash. Smoke-test a real prove-and-verify before wiring a frontend.
 - Public inputs use post-colon syntax: `root: pub Field`.
 - Scope the nullifier to the action in-circuit — hash the proposal or pool id into it, or one member's votes link across proposals.
 - Count the vote or release the funds only after `verify()` returns true, recording the nullifier hash so a replay reverts. Never leave a `MockVerifier` in a deploy path.

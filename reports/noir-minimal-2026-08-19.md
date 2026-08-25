@@ -46,11 +46,11 @@ and judge are byte-identical, and none were edited for this run.
 **The committed skill is no longer the benchmarked one.** Review of this PR turned up four
 wrong lines in `840dde0`, all inherited from the pre-cut text rather than introduced by the
 compression, and they are fixed in this branch (732 → 781 words): the `{ keccak: true }`
-example, the removed `--oracle_hash keccak` flag, the `>=0.8.21` Solidity floor with its
+example, the `--oracle_hash keccak` equivalence, the `>=0.8.21` Solidity floor with its
 dropped `solc_version` remedy, and the missing
 `npm install ... "@aztec/bb.js@$(bb --version)"` command. Each is scored against the 12 runs
-under "Skill edits"; none of them touched this benchmark. Everything below describes
-`840dde0`.
+under "Skill edits"; none of them changed an outcome — the fourth was the only one any run
+followed, and the legacy flag it names still works. Everything below describes `840dde0`.
 
 **noir-quiz-001 and noir-quiz-003 were deliberately skipped.** Both scored 5/5 and 4/4 in
 every run of both variants in #73. They discriminate nothing, so re-running them would
@@ -154,9 +154,10 @@ Read from each workspace's `package.json`, `package-lock.json` and the resolved
 
 **Every run pinned 5.1.0 to match the CLI; none took npm latest.** No expect_4 failure had
 to be attributed, because expect_4 passed 6/6. Neither of the two attributable causes
-occurred: no run shelled out to the `bb` CLI to prove, and no run proved on 5.2.0 against
-a 5.1.0 CLI. The drift is real and still live, but it did not touch this benchmark and
-nothing here is discounted for it.
+occurred: no run shelled out to the `bb` CLI *to prove* — `no-skill-1` did shell out for
+`write_vk` and `write_solidity_verifier` — and no run proved on 5.2.0 against a 5.1.0 CLI.
+The drift is real and still live, but it did not touch this benchmark and nothing here is
+discounted for it.
 
 ## Mined per task — reported, not graded
 
@@ -188,8 +189,10 @@ Filed as `noir-bit-oriented-hash-in-circuit`.
 **Proving path — all 6 runs prove in-process.** Every run, both variants, used
 `new UltraHonkBackend(circuit.bytecode, api)` with `await Barretenberg.new()` and
 `generateProof(witness, { verifierTarget: "evm" })`. Not one shelled out to the `bb` CLI in
-its prover. **This is where the `no_skill` baseline diverges most from #73**, where 2/3
-`no_skill` runs shelled out and failed expect_4.
+its prover. Five of the six are verifiable from the committed evidence; `no-skill-1`'s
+`scripts/lib/prover.mjs` is one of the two files the `lib` exclusion dropped, and was read
+from the workspace (see "Evidence integrity"). **This is where the `no_skill` baseline
+diverges most from #73**, where 2/3 `no_skill` runs shelled out and failed expect_4.
 
 Notably, no run used the skill's own `{ keccak: true }` example — see the skill-edit
 section below.
@@ -342,7 +345,9 @@ and VK on the same setting, which papers over it, but the example itself pairs a
 no-ZK flag with a ZK verifier.
 
 Inherited — the pre-cut skill said the same at lines 506–507 and 530. Latent, not observed:
-**0/6 goal-001 runs copied the example.** All six wrote `verifierTarget: 'evm'`, and
+**0/6 goal-001 runs copied the example** — the only occurrence anywhere is `with-skill-2`
+calling it wrong. All six wrote `verifierTarget: 'evm'` (five verifiable from the committed
+evidence, `no-skill-1` from the dropped `scripts/lib/prover.mjs`), and
 `with-skill-2` contradicted the skill in prose (`output/NOTES.md:252`: *"the deprecated
 `{ keccak: true }` (which means `evm-no-zk`) … produce proofs this verifier rejects"*).
 expect_4 accepts either, so it was never graded. **Applied:** the example is now
@@ -368,13 +373,24 @@ the cheapest possible nudge, and drift is the failure mode this benchmark was wa
 It did not fire — all six runs pinned 5.1.0 deliberately — but they had to reason their way
 there. **Applied:** the command is back, under the same prose.
 
-**4. `--oracle_hash keccak` no longer exists.** The skill told the reader to generate the VK
-with `--oracle_hash keccak` (or `--verifier_target evm`) — the same false equivalence as #1,
-one layer down. `bb` 5.1.0 has no `--oracle_hash` flag on `prove`, `verify`, `write_vk` or
-`write_solidity_verifier`; it has `--verifier_target`, where `evm` is keccak + ZK and
-`evm-no-zk` is the other one. Also inherited, also latent: every run that generated a
-verifier used `--verifier_target evm`, so no run followed the stale flag. **Applied:**
-`--verifier_target evm` only, with the removal noted.
+**4. `--oracle_hash keccak` is the legacy spelling, taught as an equivalent.** The skill
+said to generate the VK feeding the Solidity verifier with `--oracle_hash keccak` (or
+`--verifier_target evm`). Both work. `--oracle_hash` is still accepted by bb 5.1.0 — it sits
+under `--help-extended` rather than plain `bb prove --help`, and the CLI does reject
+genuinely unknown flags, so absence from the short help is not absence from the CLI (`--zk`
+and `--target` both exit 1 in `no-skill-3`'s quiz-002 transcript, two commands after
+`--oracle_hash keccak` proved and verified successfully there). The reason to teach
+`--verifier_target evm` is narrower than "the old flag is gone": `--oracle_hash` names only
+the transcript hash, while `--verifier_target` names hash and ZK setting together, and that
+pair is what has to match across prove, verify and VK.
+
+**This is the one edit the runs actually followed** — and they followed the old spelling:
+**all six quiz-002 runs used `--oracle_hash keccak`**, `with_skill` included, against 0/6 on
+goal-001. It worked for them, and `no-skill-3`'s VK built that way produced a *ZK* Honk
+Solidity verifier, which is evidence against reading the `evm` / `evm-no-zk` split as
+visible at this layer. Nothing was verified onchain in any run, so the pairing is untested
+here either way. **Applied:** `--verifier_target evm` only, with the older spelling
+described as naming the hash alone.
 
 Nothing else in the 12 runs points at a gap in the compressed text.
 
@@ -387,7 +403,7 @@ Nothing else in the 12 runs points at a gap in the compressed text.
 | Did it create negative deltas? | None observed. No `with_skill` run failed a check, took a wrong hash, or lost a note. |
 | What mistakes repeated without the skill? | `noir-bit-oriented-hash-in-circuit` (2/3), `noir-tree-mirror-from-view-call` (1/3). `noir-note-not-persisted` was filed at 3/3 and **withdrawn on re-read** — none of the three loses the note |
 | What mistakes remained with the skill? | None. Both standing records are 0/3 in `with_skill`. |
-| What should change in the skill? | Four inherited wrong lines, **all applied in this PR**: `{ keccak: true }` → `{ verifierTarget: "evm" }`; `--oracle_hash keccak` → `--verifier_target evm` (the flag is gone from bb 5.x); Solidity floor `>=0.8.21` → `>=0.8.27` with the `solc_version` remedy restored; the `@aztec/bb.js@$(bb --version)` install command restored. None of the four changed a run. Nothing else. |
+| What should change in the skill? | Four inherited wrong lines, **all applied in this PR**: `{ keccak: true }` → `{ verifierTarget: "evm" }`; `--oracle_hash keccak` → `--verifier_target evm` (legacy spelling, names only the hash); Solidity floor `>=0.8.21` → `>=0.8.27` with the `solc_version` remedy restored; the `@aztec/bb.js@$(bb --version)` install command restored. Only the fourth was followed by any run — 6/6 quiz-002 runs used the old spelling. Nothing else. |
 | What should change in the eval? | **Split expect_7** — it conjoins event replay and note handling and grades neither cleanly; the new half must grade **recoverability** (persisted, handed to the member, or deterministically re-derivable, leaf index recoverable), not "writes a note file", which would fail all three sound `no_skill` designs. **Add an expect for in-circuit hash choice on goal-001** — the sharpest variant split in the benchmark is ungraded, and a run shipping hand-rolled SHA-256 scored 7/7. **Narrow the harness's `lib` exclusion to the workspace root** so `js/lib/` and `scripts/lib/` reach the judge. **Retire quiz-002 expect_1 or rewrite it to check the import path** — it passed Poseidon2 3/3 in `no_skill` for the second benchmark running. Consider retiring noir-quiz-001 and noir-quiz-003 outright. |
 
 ## Verdict
