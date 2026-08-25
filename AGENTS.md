@@ -138,15 +138,20 @@ pass: false                    # true only when every expect passed
 mistake_id: gas-stale-eth-price
 skill: gas
 first_seen: 2026-07-06
-frequency:                     # per variant
-  no_skill: 3/3
-  with_skill: 1/3
+frequency:                     # per variant; nest under <executor>/<model> once a
+  no_skill: 3/3                # second stack has been measured, because a rate that
+  with_skill: 1/3              # averages two stacks describes neither
 category: stale-knowledge
 symptom: "Computes USD cost from a remembered ETH price instead of checking one."
 expected_pattern: "Fetch ETH/USD live (Chainlink feed, CoinGecko) before quoting dollars."
 skill_section: "What You Probably Got Wrong"   # the section that should prevent this, or "none" for a gap
 status: open                   # open | fixed | wontfix
 ```
+
+When the same mistake has been measured on more than one stack, `frequency` takes a stack
+key per measurement instead of the two bare variant lines — see
+`mistakes/indexing/indexing-read-side-deploy-omitted.yaml`, where the no_skill rate is
+`3/3` on codex and `1/3` on claude from identical content and identical checks.
 
 ## Reports
 
@@ -166,7 +171,9 @@ Every report ends with this table. Answer the last row honestly: sometimes the e
 
 ## What gets committed
 
-Committed: task specs, vendored skills under test, workspace templates under `templates/`, `result.yaml`, `run.diff`, `output/`, mistake records, reports. Gitignored: workspaces, transcripts.
+Committed: task specs, vendored skills under test, workspace templates under `templates/`, `result.yaml`, `run.diff`, `transcript.md`, mistake records, reports. Gitignored: workspaces, `transcript.jsonl` (the raw stream-json `transcript.md` is rendered from), and `output/`.
+
+This line said the opposite until 2026-08-20 — transcripts gitignored, `output/` committed — while `.gitignore` and all 210 committed runs did the reverse. Follow `.gitignore`; the transcript is what a reviewer re-derives a report's claims from, so it is the record that has to survive.
 
 ## Code style
 
