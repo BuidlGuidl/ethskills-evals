@@ -109,13 +109,36 @@ run 2 alone; the three runs were \$7.66, \$6.66 and \$3.45, mean **\$5.92 / 1431
 is slightly *cheaper* than the \$6.61 / 1502s no_skill mean. Every other row in that table
 is a mean. The "negative delta" it hedges about is an artifact.
 
-## Still outstanding
+## The corrected line, measured
 
-- **Three confirmatory quiz-001 runs against the corrected window line (`e16c438`) did not
-  complete.** All six attempts (three runs, one retry each) returned HTTP 429 —
-  *"You've hit your session limit"* — and were discarded by the abort guard rather than
-  graded. Nothing partial was recorded. The corrected line is therefore committed but
-  **unmeasured**; re-run `l2s-quiz-001 with_skill` after the usage window resets.
+Three further `l2s-quiz-001 with_skill` runs against `f9fb1ea` (the corrected window
+text): **3/3 pass**, run ids `2026-08-25T005210Z-claude-with-skill-4/5/6`. All three name
+both gates and put the effective wait at ~7 days; run 4 wrote *"Anyone quoting 'Celo exits
+in 3.5 days' is reading the game's `maxChallengeDuration` alone and understating the wait
+by 2x"*. None inherited the bad figure, and none had to rediscover the composite gate from
+scratch.
+
+That last part shows up in the cost, and it is the most useful number in this report:
+
+| quiz-001, `with_skill` | avg cost | avg secs |
+| --- | --- | --- |
+| @ 191dcc1 — states 7 days as the challenge window (wrong, cheap) | \$1.25 | 329 |
+| @ a3df027 — states ~3.5 days (wrong), tells the reader to measure | \$1.93 | 583 |
+| @ f9fb1ea — states both gates correctly, tells the reader to verify | **\$1.33** | **406** |
+| no_skill (2026-08-20) | \$2.24 | 663 |
+
+A correct stated figure with "verify it" next to it costs about a third less than an
+instruction to go and measure, and lands within 6% of the old wrong-but-cheap table. The
+efficiency case for a knowledge line survives minimization — but only when the line is
+right. This is the sharpest evidence in either l2s benchmark for issue #1's cost
+criterion, and it cuts against writing skills as pure nudges with the numbers stripped out.
+
+An earlier attempt at these three runs (2026-08-24 20:50-20:55) returned HTTP 429,
+*"You've hit your session limit"*, on all six tries including retries. The abort guard
+discarded every one; nothing partial was graded or recorded. The runs above are fresh, from
+after the window reset.
+
+## Still outstanding
 - The two new tasks the 2026-08-20 report asked for — a Celo CIP-64 task and a Unichain
   ordering task — still do not exist. The Unichain one is now writable: the skill states
   the ordering rule correctly, so an expect against reality no longer just measures the
@@ -127,9 +150,9 @@ is a mean. The "negative delta" it hedges about is an artifact.
 | Question | Answer |
 | --- | --- |
 | Did the skill improve pass rate? | Unchanged by the rewrite: **15/15 @ a3df027 vs 15/15 @ 191dcc1**, against **12/15 no_skill**. The delta is still quiz-003 alone, `3/3 vs 0/3`. |
-| Did it reduce time/tokens? | **No — it costs more than the skill it replaced**, on all five tasks (e.g. quiz-001 \$1.93 vs \$1.25), and slightly more than no_skill on quiz-003 and quiz-004. The saving the old version showed came from stating numbers, two of which were wrong. |
+| Did it reduce time/tokens? | Mixed, and the reason is instructive. At `a3df027` it **cost more than the skill it replaced**, on all five tasks (e.g. quiz-001 \$1.93 vs \$1.25), and slightly more than no_skill on quiz-003 and quiz-004. The saving the old version showed came from stating numbers, two of which were wrong. Correcting the Celo figure at `f9fb1ea` recovered most of it — quiz-001 \$1.33 vs \$1.25 at 191dcc1 and \$2.24 no_skill — so the cost is paid for wrong numbers, not for brevity. |
 | Did it create negative deltas? | None in score. One in cost, above. One in content, caught and fixed: the new "~3.5 days" Celo window (`l2s-celo-exit-window-composite`), which 0/6 runs actually inherited. |
 | What mistakes repeated without the skill? | `l2s-base-departure-model-blindspot` — not re-measured here; the 2026-08-20 no_skill arm stands (3/3). |
 | What mistakes remained with the skill? | None of the ten records the rewrite closed re-appeared. `l2s-base-departure-tense` 2/3 → 0/3, `l2s-stylus-multiplier-conflation` 1/3 → 0/3. |
-| What should change in the skill? | Nothing further from this run beyond `e16c438`, which is committed but unmeasured. The open question is whether the CIP-64 paragraph earns its place — it is the one piece of added content with no expect behind it. |
+| What should change in the skill? | Nothing further. `e16c438`'s corrected window is measured: quiz-001 3/3 at `f9fb1ea`, cheaper and correct. The open question is whether the CIP-64 paragraph earns its place — it is the one piece of added content with no expect behind it. |
 | What should change in the eval? | Write the Celo CIP-64 and Unichain ordering tasks. Four of five tasks now tie at 3/3 across three arms, so they are regression guards rather than discriminators, and the arms only separate in the ungraded reads — which is the resolution problem raised in issue #1, showing up here for the third skill running. |
