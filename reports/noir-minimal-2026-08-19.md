@@ -13,8 +13,10 @@ burned a compile-fail turn in every #73 run and occurred **zero** times in all 1
 here. The finding that complicates the story is on the other side: the `no_skill`
 baseline improved sharply (2/3 and 3/3, against #73's 1/3 on goal-001), so the graded
 numbers no longer separate the variants much. What still separates them is ungraded and
-only visible by reading circuits — hash choice, note persistence, and import path, where
-`with_skill` is 3/3, 3/3 and 3/3 on goal-001 against 1/3, 0/3 and 0/3 for `no_skill`.
+only visible by reading circuits — in-circuit hash choice (3/3 vs 1/3) and the skill's
+poseidon import path (3/3 vs 0/3) on goal-001. A third read, the note module written to
+disk (3/3 vs 0/3), is weaker than it looks: no `no_skill` run loses the note either, it
+just keeps it recoverable another way — see "Merkle path derivation and note handling".
 
 ## Setup
 
@@ -40,6 +42,15 @@ forge         = 1.4.4-stable      node  = v22.18.0
 
 Only `SKILL.md` differs from #73's environment. Task specs, expect lines, harness scripts
 and judge are byte-identical, and none were edited for this run.
+
+**The committed skill is no longer the benchmarked one.** Review of this PR turned up four
+wrong lines in `840dde0`, all inherited from the pre-cut text rather than introduced by the
+compression, and they are fixed in this branch (732 → 781 words): the `{ keccak: true }`
+example, the removed `--oracle_hash keccak` flag, the `>=0.8.21` Solidity floor with its
+dropped `solc_version` remedy, and the missing
+`npm install ... "@aztec/bb.js@$(bb --version)"` command. Each is scored against the 12 runs
+under "Skill edits"; none of them touched this benchmark. Everything below describes
+`840dde0`.
 
 **noir-quiz-001 and noir-quiz-003 were deliberately skipped.** Both scored 5/5 and 4/4 in
 every run of both variants in #73. They discriminate nothing, so re-running them would
@@ -112,8 +123,13 @@ still said v0.2.6 would now be actively harmful.
 three `with_skill` goal-001 runs. It still appears in `no_skill` (4 and 6 mentions in runs
 1 and 2), so the correction is doing work the baseline does not do for itself.
 
-**3. `bbup -v <version>` — confirmed.** Versioned `bbup` invocations appear in all three
-`with_skill` goal-001 runs (3, 3, 1) and in 0 `no_skill` runs.
+**3. `bbup -v <version>` — confirmed, but documented rather than invoked.** No run ran
+`bbup` at all; the toolchain was pre-installed per the task's pre-flight. What happened is
+that the skill's line propagated into the deliverable's install docs: a versioned `bbup`
+plus the bare-`bbup` caution appears in each of the three `with_skill` runs' `README.md`
+and in 0 `no_skill` deliverables (`no_skill`'s only `bbup` string is a `ls ~/.bb/`
+listing). `with-skill-2` and `-3` wrote `bbup -v 5.1.0`; `with-skill-1` copied the skill's
+`bbup -v <version>` placeholder verbatim. A real 3/3 vs 0/3 effect, on documentation.
 
 **`claude mcp add noir-mcp` / `/reload-plugins`: 0 turns in all 12 runs**, both variants.
 That section was deleted in the minimal skill and cost nothing to delete.
@@ -178,25 +194,39 @@ its prover. **This is where the `no_skill` baseline diverges most from #73**, wh
 Notably, no run used the skill's own `{ keccak: true }` example — see the skill-edit
 section below.
 
-**Merkle path derivation and note persistence.**
+**Merkle path derivation and note handling.**
 
-| run | mirror built from | note (nullifier+secret+leafIndex) persisted |
-| --- | --- | --- |
-| no-skill-1 | replayed events | **no** |
-| no-skill-2 | replayed events | **no** |
-| no-skill-3 | **`getCommitments()` view call** | **no** |
-| with-skill-1 | replayed events | yes — `scripts/client/identity.mjs` |
-| with-skill-2 | replayed events | yes — `js/lib/note.mjs` |
-| with-skill-3 | replayed events (viem `eventName`) | yes — `client/src/identity.js` |
+| run | mirror built from | note written to disk | how the member recovers it |
+| --- | --- | --- | --- |
+| no-skill-1 | replayed events | no | secret derived from a wallet signature; leaf index found in the tree |
+| no-skill-2 | replayed events | no | random secret printed at registration, re-imported with `--secret` / `--passphrase` |
+| no-skill-3 | **`getCommitments()` view call** | no | secret derived from a wallet signature; tradeoff written out in NOTES.md |
+| with-skill-1 | replayed events | yes — `scripts/client/identity.mjs` | the file the tool writes |
+| with-skill-2 | replayed events | yes — `js/lib/note.mjs` | the file the tool writes |
+| with-skill-3 | replayed events (viem `eventName`) | yes — `client/src/identity.js` | the file the tool writes |
 
 `no-skill-3` declared the `MemberJoined(leafIndex, commitment, tokenId, newRoot)` event in
 its client ABI and then never read it, calling `getCommitments()` in three places instead —
 the only graded failure in the benchmark. Filed as `noir-tree-mirror-from-view-call`.
 
-Note persistence splits 3/3 against 0/3 and is *almost* invisible to the score: expect_7
-names it, but conjunctively with the event-replay clause, and the judge passed
-`no-skill-1` and `no-skill-2` on the event-replay half while both persisted nothing. Filed
-as `noir-note-not-persisted`.
+**The note split is real but narrower than first filed.** Writing the note to disk is 3/3
+`with_skill` against 0/3 `no_skill` — but no `no_skill` run loses the member's witness.
+Two derive the secret from a signature over a fixed message, `no-skill-3` writing the
+tradeoff out: *"there is nothing to back up ... whoever holds the member's private key can
+recompute every nullifier that member ever published."* `no-skill-2` prints a random secret
+at registration ("SAVE IT", "store it like a seed phrase") and re-imports it via
+`--secret` / `--passphrase`, deliberately not derived from the ETH key so the voting key can
+rotate. All three find the leaf index by locating the commitment in the tree. That is a
+key-management design difference, not a lost note, so `noir-note-not-persisted` is
+**withdrawn** (0/3, kept only for the criterion it produced).
+
+The eval finding it surfaced still stands: expect_7 conjoins event replay and note handling
+and grades neither cleanly — it passed `no-skill-1` and `no-skill-2` on the event-replay
+half without looking at note handling at all. The split expect has to grade
+**recoverability** — persisted by the tool, handed to the member to keep, or
+deterministically re-derivable, with the leaf index recoverable from the tree — not one
+spelling of it. An expect demanding "writes nullifier+secret+leafIndex to disk" would fail
+all three `no_skill` designs.
 
 `with-skill-3` states the reasoning the skill supplies, in a code comment: *"The contract
 never hands out a Merkle path -- asking it for one would tell the node you query which leaf
@@ -284,16 +314,21 @@ all favour the compressed skill.
 n=3 is noisy and the baseline is the noisy half. A `no_skill` at 2/3 or 3/3 is base noise,
 not evidence about the cut.
 
-## Skill-edit candidates
+## Skill edits — all four applied in this PR
+
+The four below are wrong lines in the benchmarked skill `840dde0`. All four are **inherited
+from the pre-cut text rather than compression damage**, and all four are fixed in this
+branch rather than filed against a skill this PR is introducing. None of them changed a run:
+scored against the 12 runs, each is latent.
 
 **1. `{ keccak: true }` is deprecated and means `evm-no-zk` — not `evm`.** The skill's
-main code block is:
+main code block was:
 
 ```typescript
 const proof = await backend.generateProof(witness, { keccak: true });
 ```
 
-and its prose offers `{ keccak: true }` and `{ verifierTarget: "evm" }` as equivalents.
+and its prose offered `{ keccak: true }` and `{ verifierTarget: "evm" }` as equivalents.
 Per bb.js 5.1.0's own type declarations:
 
 ```
@@ -306,21 +341,40 @@ a proof made with `{ keccak: true }` (no-ZK). The skill elsewhere says to keep p
 and VK on the same setting, which papers over it, but the example itself pairs a deprecated
 no-ZK flag with a ZK verifier.
 
-**This is inherited, not compression damage** — the pre-cut skill said the same thing at
-lines 506–507 and 530. It is also latent rather than observed: all six goal-001 runs used
-`verifierTarget: 'evm'` and ignored the example, and `with-skill-2` explicitly contradicted
-it in a comment. expect_4 accepts either, so it was never graded. Fix: replace the example
-with `{ verifierTarget: "evm" }` and drop `{ keccak: true }`.
+Inherited — the pre-cut skill said the same at lines 506–507 and 530. Latent, not observed:
+**0/6 goal-001 runs copied the example.** All six wrote `verifierTarget: 'evm'`, and
+`with-skill-2` contradicted the skill in prose (`output/NOTES.md:252`: *"the deprecated
+`{ keccak: true }` (which means `evm-no-zk`) … produce proofs this verifier rejects"*).
+expect_4 accepts either, so it was never graded. **Applied:** the example is now
+`{ verifierTarget: "evm" }`, and the prose states the `evm` / `evm-no-zk` split instead of
+offering the two flags as equivalents.
 
 **2. The Solidity floor is stale, and the cut dropped the actionable remedy.** The minimal
-skill says the verifier needs `pragma solidity >=0.8.21`; the real floor is now `>=0.8.27`.
+skill said the verifier needs `pragma solidity >=0.8.21`; the real floor is now `>=0.8.27`.
 The pre-cut skill carried the concrete fix (`solc_version = '0.8.27'` in `foundry.toml`),
 which the compression dropped while keeping the stale number.
 
-This cost nothing observable — all six runs picked solc 0.8.27 or 0.8.28 and cancun on
-their own, confirming the "loud failure mode, runs self-correct" rationale for leaving
-claim #6 ungraded. It is the one place the cut is measurably thinner than the original, and
-it is worth one word (`0.8.21` → `0.8.27`).
+`tasks/noir-goal-001.yaml`'s notes already flagged the floor before the rewrite, so the
+compression had the correction in hand, carried the stale number forward and dropped the
+remedy. This cost nothing observable — all six runs picked solc 0.8.27 or 0.8.28 and cancun
+on their own, confirming the "loud failure mode, runs self-correct" rationale for leaving
+claim #6 ungraded. **Applied:** `>=0.8.27`, with the `solc_version = '0.8.27'` /
+`evm_version = 'cancun'` foundry.toml remedy restored.
+
+**3. The version-matching rule lost its one command.** The pre-cut skill had
+`npm install @noir-lang/noir_js "@aztec/bb.js@$(bb --version)"`; the minimal version kept
+the rule as prose only. With 5.2.0 live against this machine's 5.1.0 CLI, that command is
+the cheapest possible nudge, and drift is the failure mode this benchmark was watching for.
+It did not fire — all six runs pinned 5.1.0 deliberately — but they had to reason their way
+there. **Applied:** the command is back, under the same prose.
+
+**4. `--oracle_hash keccak` no longer exists.** The skill told the reader to generate the VK
+with `--oracle_hash keccak` (or `--verifier_target evm`) — the same false equivalence as #1,
+one layer down. `bb` 5.1.0 has no `--oracle_hash` flag on `prove`, `verify`, `write_vk` or
+`write_solidity_verifier`; it has `--verifier_target`, where `evm` is keccak + ZK and
+`evm-no-zk` is the other one. Also inherited, also latent: every run that generated a
+verifier used `--verifier_target evm`, so no run followed the stale flag. **Applied:**
+`--verifier_target evm` only, with the removal noted.
 
 Nothing else in the 12 runs points at a gap in the compressed text.
 
@@ -331,7 +385,19 @@ Nothing else in the 12 runs points at a gap in the compressed text.
 | Did the skill improve pass rate? | goal-001 `3/3 with_skill vs 2/3 no_skill`; quiz-002 `3/3 vs 3/3`. `with_skill` matches #73's bar exactly; the baseline rose enough that the aggregate barely separates them. Per-check and ungraded reads separate them clearly. |
 | Did it reduce time/tokens? | Yes on quiz-002: 280s/20.7 turns vs 463s/33.7, and $0.83 vs $1.59. A wash on goal-001 wall-clock (2161s vs 2150s), but ~10% fewer turns and ~26% lower cost. Same shape as #73. |
 | Did it create negative deltas? | None observed. No `with_skill` run failed a check, took a wrong hash, or lost a note. |
-| What mistakes repeated without the skill? | `noir-bit-oriented-hash-in-circuit` (2/3), `noir-note-not-persisted` (3/3), `noir-tree-mirror-from-view-call` (1/3) |
-| What mistakes remained with the skill? | None of the three. All are 0/3 in `with_skill`. |
-| What should change in the skill? | Replace `{ keccak: true }` with `{ verifierTarget: "evm" }` (deprecated, and means `evm-no-zk`; inherited from the pre-cut text). Update the Solidity floor `>=0.8.21` → `>=0.8.27` and restore the `solc_version = '0.8.27'` remedy the cut dropped. Nothing else. |
-| What should change in the eval? | **Split expect_7** — it conjoins event replay and note persistence, and passed two runs that persisted nothing; note persistence is a 3/3 vs 0/3 split the score sheet does not show. **Add an expect for in-circuit hash choice on goal-001** — the sharpest variant split in the benchmark is ungraded, and a run shipping hand-rolled SHA-256 scored 7/7. **Narrow the harness's `lib` exclusion to the workspace root** so `js/lib/` and `scripts/lib/` reach the judge. **Retire quiz-002 expect_1 or rewrite it to check the import path** — it passed Poseidon2 3/3 in `no_skill` for the second benchmark running. Consider retiring noir-quiz-001 and noir-quiz-003 outright. |
+| What mistakes repeated without the skill? | `noir-bit-oriented-hash-in-circuit` (2/3), `noir-tree-mirror-from-view-call` (1/3). `noir-note-not-persisted` was filed at 3/3 and **withdrawn on re-read** — none of the three loses the note |
+| What mistakes remained with the skill? | None. Both standing records are 0/3 in `with_skill`. |
+| What should change in the skill? | Four inherited wrong lines, **all applied in this PR**: `{ keccak: true }` → `{ verifierTarget: "evm" }`; `--oracle_hash keccak` → `--verifier_target evm` (the flag is gone from bb 5.x); Solidity floor `>=0.8.21` → `>=0.8.27` with the `solc_version` remedy restored; the `@aztec/bb.js@$(bb --version)` install command restored. None of the four changed a run. Nothing else. |
+| What should change in the eval? | **Split expect_7** — it conjoins event replay and note handling and grades neither cleanly; the new half must grade **recoverability** (persisted, handed to the member, or deterministically re-derivable, leaf index recoverable), not "writes a note file", which would fail all three sound `no_skill` designs. **Add an expect for in-circuit hash choice on goal-001** — the sharpest variant split in the benchmark is ungraded, and a run shipping hand-rolled SHA-256 scored 7/7. **Narrow the harness's `lib` exclusion to the workspace root** so `js/lib/` and `scripts/lib/` reach the judge. **Retire quiz-002 expect_1 or rewrite it to check the import path** — it passed Poseidon2 3/3 in `no_skill` for the second benchmark running. Consider retiring noir-quiz-001 and noir-quiz-003 outright. |
+
+## Verdict
+
+**Keep `skills/noir` as a minimal skill.** On graded numbers alone (goal-001 3/3 vs 2/3,
+quiz-002 3/3 vs 3/3) this reads as dead weight; the evidence says otherwise — −26% cost on
+goal-001, −48% on quiz-002, in-circuit hash choice 3/3 vs 1/3, the poseidon import path 3/3
+vs 0/6, and no negative delta anywhere in 12 runs. The 81% cut cost nothing this benchmark
+can see. Step 4 → 5 closes for noir with that, not with the table.
+
+The caveat worth carrying into issue #1: this is the second benchmark where **the pass
+column has run out of resolution** (after tools, #68). The baseline now passes most of what
+the skill is for, and everything that still separates the variants is ungraded.
