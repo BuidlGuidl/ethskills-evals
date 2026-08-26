@@ -31,9 +31,9 @@ The skills under `skills/` are vendored at a pinned commit, and a task spec may 
 
 ## The loop
 
-1. `yarn setup --task tasks/<id>.yaml --variant <no_skill|with_skill> --run <n> --executor <claude|codex>`
-2. Spawn a fresh executor in the printed workspace. Point it at `TASK.md` and nothing else.
-3. `yarn verify --run artifacts/<id>/<run-id> --judge-agent <claude|codex> --judge-model <model>` — snapshots output, runs the judge, fills `result.yaml`. Use the same judge for every run in the benchmark.
+1. `yarn setup --task tasks/<id>.yaml --variant <no_skill|with_skill> --run <n> --executor <claude|codex>` — builds `<run-dir>/workspace`, seeds it as its own git repo and records the baseline sha in `<run-dir>/baseline.sha`.
+2. `yarn run-executor --run artifacts/<id>/<run-id> --model <model>` — spawns the executor in that workspace on `TASK.md`, saves the transcript, records when it finished. Long runs: start it detached (`nohup yarn run-executor … &`) and wait for `finished:` in `executor.yaml`, because a harness that kills the foreground process kills the run.
+3. `yarn verify --run artifacts/<id>/<run-id> --judge-agent <claude|codex> --judge-model <model>` — assembles evidence, runs the judge, fills `result.yaml`. Use the same judge for every run in the benchmark.
 4. Repeat for every variant and run.
 5. Compare. The headline is raw pass counts per variant (`with_skill 2/3 vs no_skill 0/3`). Read per-check failures, not just the aggregate.
 6. File a mistake record in `mistakes/` the first time you see a mistake. `frequency: 1/1` is honest about weak evidence; an unfiled observation is lost.
@@ -46,30 +46,26 @@ Runs are append-only. A re-run after a patch is a new run id, never an overwrite
 
 1. **Never perform the task yourself.** Your context is contaminated by definition. Every run is a fresh executor. If you catch yourself editing files inside a workspace, stop, delete the run, start over.
 2. **The executor never sees the grading.** The task yaml and its expect lines stay out of the workspace. `setup` hard-fails on leaks; do not work around it.
-3. **Always use the scripts** for setup and grading. These are the two steps where improvisation quietly corrupts records.
-4. **Grade after execution, independently.** Never let an executor self-report success. Pass your own agent and model to `verify` (`--judge-agent`, `--judge-model`) so the grading runs on the orchestrator's model in a fresh, blind process. Forget them and the run's executor grades itself; that is recorded as `self_judged: true`, not silently allowed to pass as independent.
-5. **Delete workspaces after grading.** `verify` snapshots workspace output into `<run-dir>/output/` first, so nothing is lost.
+3. **Always use the scripts** — setup, execution, grading. All three. Improvisation at any of them quietly corrupts records, and spawning executors by hand is what once left runs graded before they finished and workspaces deleted under live processes.
+4. **Grade after execution, independently.** Never let an executor self-report success. `verify` requires `--judge-agent`, so the grading agent is always a stated choice; add `--judge-model` to grade on the orchestrator's model. When judge and executor are the same agent the record says `self_judged: true` — expected on a single-stack benchmark, and the report has to say so.
+5. **One executor per workspace, one run at a time per workspace.** `run-executor` refuses a second pass over a workspace that already ran. Runs in different workspaces are independent — each has its own git repo — but never point two processes at one run dir.
+6. **Delete workspaces only after `verify` has graded them.** Evidence is captured into `<run-dir>/run.diff` or `<run-dir>/output/` first and both are committed, so nothing is lost. Grading cannot start until `executor.yaml` says the executor finished, which is what keeps a live run from being graded and deleted under itself.
 
 ## The three roles
 
 **Orchestrator** (you): drafts tasks, spawns executors, grades with the scripts, writes records and reports.
 
-**Executor**: a freshly spawned agent that performs one run in a clean workspace. Record which model ran.
+**Executor**: a freshly spawned agent that performs one run in a clean workspace.
 
 ```bash
-# claude
-cd <workspace> && env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN \
-  claude -p "$(cat TASK.md)" --model <model> \
-  --setting-sources project --dangerously-skip-permissions --strict-mcp-config
-
-# codex
-cd <workspace> && codex exec -s workspace-write \
-  -c sandbox_workspace_write.network_access=true "$(cat TASK.md)"
+yarn run-executor --run artifacts/<id>/<run-id> --model <model>
 ```
 
-`--setting-sources project` is load-bearing for claude: user-level config crowds the skill listing and skills stop triggering. For codex the model comes from `~/.codex/config.toml`, and the network flag is load-bearing too: `workspace-write` blocks network by default, so without it every live-data task fails for the wrong reason.
+The script builds the executor's command, so the flags that matter cannot be forgotten: `--setting-sources project` for claude (user-level config crowds the skill listing and skills stop triggering) and `sandbox_workspace_write.network_access=true` for codex (`workspace-write` blocks network by default, so without it every live-data task fails for the wrong reason). Omit `--model` to let the CLI pick its own default; whatever ran is recorded in `executor.yaml` and copied into `result.yaml`.
 
-Save the executor's full transcript to `<run-dir>/transcript.md`.
+It writes `<run-dir>/transcript.md` beside the raw capture, and `<run-dir>/executor.yaml` with `started`, `finished`, `exit`. A run whose `finished` is still null was killed — including by Ctrl-C, which leaves the record untouched on purpose: it is a dead run, not a zero. Delete it and set up a new one. A run that finished with a non-zero exit is refused by `verify` unless you pass `--grade-failed-run`, so a CLI that was missing or crashed cannot be recorded as a model failure.
+
+`transcript.md` means the same thing on both stacks, which takes assembling: claude streams the whole session as stream-json on stdout, while codex writes the session log to stderr and leaves only the final message on stdout. Mine transcripts from `transcript.md` alone; the raw streams beside it are gitignored.
 
 **Judge**: a fresh, blind agent that grades `expect:` lines from the evidence `verify` assembles (diff + output files). It never sees the variant, the skill, or the transcript. Claude and codex both work.
 
@@ -80,6 +76,16 @@ yarn verify --run artifacts/<id>/<run-id> --judge-agent claude --judge-model <yo
 ```
 
 Omit `--judge-model` to let that agent's CLI pick its own default. Keep one judge for the length of a benchmark. A grader that changes between runs makes `with_skill` and `no_skill` incomparable.
+
+## Isolation
+
+Tooling resolves context by walking *up* the filesystem, and every such walk used to end in this repo. Two things stop it.
+
+**The workspace is its own git repo**, seeded by `setup` with a baseline commit whose sha lands in `<run-dir>/baseline.sha`. Executors run git — they are finishing a feature, so they commit. Without a repo of its own, `git add -A` from the workspace staged the orchestrator's files, `git commit -am` landed them on the checked-out branch, `git add .` exited 1 with a `-f` hint the executor would happily take, and runs in flight fought over one index.lock. `verify` diffs against that baseline, so an executor that commits its own work still produces evidence instead of an empty `run.diff`. Installed dependencies stay out through the workspace's `.git/info/exclude`, not a `.gitignore` the executor would read and the judge would see in the diff — note that this hides `lib/`, `out/`, `build/`, `cache/` and `target/` from the executor's own `git status` too, so a task whose deliverable lives in one of those needs `GENERATED_DIRS` trimmed first.
+
+**A minimal `package.json`** is dropped into any workspace that has none. npm resolves its project root by walking up for the nearest manifest, and a git boundary does not stop it: in a bare workspace the nearest one was this repo's, so `npm install` inside a run rewrote the framework's own manifest. The stub is part of the baseline commit, so it never appears in a diff, and `verify` skips it in the snapshot by content match.
+
+Both stop the tool that owns the marker, and nothing else. An executor can still read its way up the filesystem — `tasks/` with every expect line is three directories above the workspace, and sibling runs of the same task are two. Closing that means moving workspaces out of the tree, or a sandbox.
 
 ## Task spec
 
@@ -122,15 +128,19 @@ executor: claude
 variant: with_skill
 skill_version: 191dcc1         # git short sha of the skill source; null for no_skill
 created: 2026-07-06T09:30:00Z
+executor_model: claude-opus-5   # what actually ran; null when the CLI picked its default
+executor_exit: 0                # verify refuses anything else unless --grade-failed-run
 judge:                         # who graded this run
   agent: claude
   model: claude-opus-4-8       # null when the agent's CLI picked its own default
-  self_judged: false           # true when the executor agent also graded the run
+  self_judged: false           # true when judge and executor are the same agent
 expects:                       # judged expect lines, in task-spec order
   expect_1: pass
   expect_2: fail
 pass: false                    # true only when every expect passed
 ```
+
+Beside it, per run: `baseline.sha` (setup), `executor.yaml` + `transcript.md` (run-executor), `run.diff` or `output/` (verify).
 
 `mistakes/<skill>/<mistake-id>.yaml`. Scores say whether the skill helped; mistakes say what to write next.
 
@@ -155,7 +165,7 @@ key per measurement instead of the two bare variant lines — see
 
 ## Reports
 
-State the executor, the judge, and the run count at the top of every report. If any run came back `self_judged: true`, say so there.
+State the executor, its model, the judge, and the run count at the top of every report. If any run came back `self_judged: true`, say so there — on a single-stack benchmark that is every run, and it is a caveat on the numbers, not a defect in them.
 
 Every report ends with this table. Answer the last row honestly: sometimes the eval is the wrong artifact, not the skill.
 
@@ -171,9 +181,11 @@ Every report ends with this table. Answer the last row honestly: sometimes the e
 
 ## What gets committed
 
-Committed: task specs, vendored skills under test, workspace templates under `templates/`, `result.yaml`, `run.diff`, `transcript.md`, mistake records, reports. Gitignored: workspaces, `transcript.jsonl` (the raw stream-json `transcript.md` is rendered from), and `output/`.
+Committed: task specs, vendored skills under test, workspace templates under `templates/`, and per run `result.yaml`, `baseline.sha`, `executor.yaml`, `transcript.md`, `run.diff`, plus mistake records and reports. Gitignored: workspaces, the raw executor capture beside `transcript.md` (`transcript.jsonl`/`transcript.log`), `executor.err`, and `output/`.
 
 This line said the opposite until 2026-08-20 — transcripts gitignored, `output/` committed — while `.gitignore` and all 210 committed runs did the reverse. Follow `.gitignore`; the transcript is what a reviewer re-derives a report's claims from, so it is the record that has to survive.
+
+`output/` stays ignored by default because a bare task has no template to diff against and `verify` snapshots the whole workspace into it: a quiz leaves one `answer.md` of a few KB, a goal that scaffolds leaves a tree (noir-goal-001: 176 files, 760K). Where that snapshot is the graded deliverable and small — the question-shaped runs — force-add it (`git add -f`) so a reader of the eval PR can re-check the judge on the material the judge saw.
 
 ## Code style
 
