@@ -35,6 +35,7 @@ ethskills-evals/
 ├─ scripts/setup-workspace.ts    seeds the clean workspace, hard-fails on grading leaks
 ├─ scripts/run-executor.ts       spawns the executor on the task, records what it did
 ├─ scripts/verify.ts             assembles the evidence, spawns the judge
+├─ scripts/clean-workspaces.ts   reclaims workspaces the loop could not delete itself
 ├─ lib/judge.ts                  the blind judge: evidence in, graded expects out
 ├─ lib/evidence.ts               what the judge reads: the diff, or a snapshot of the files
 ├─ lib/transcript.ts             one transcript format across executors
@@ -74,5 +75,7 @@ yarn setup --task tasks/<id>.yaml --variant no_skill --run 1 --executor claude
 yarn run-executor --run artifacts/<id>/<run-id> --model <model>
 yarn verify --run artifacts/<id>/<run-id> --judge-agent claude --judge-model <model>
 ```
+
+Workspaces live outside the repo, under `~/.cache/ethskills-evals` or wherever `EVAL_WORKSPACE_ROOT` points — export it for the whole benchmark, since all three commands read it. `verify` deletes the workspace it graded; `yarn clean-workspaces --delete` reclaims the rest, and an SE2 workspace is gigabytes.
 
 Repeat per variant and run count, then compare `result.yaml`s and write the report. You don't normally type these; the orchestrator does. `AGENTS.md` has the full loop, the intake conversation, and the mistake-record format.
