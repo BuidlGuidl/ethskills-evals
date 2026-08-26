@@ -79,7 +79,7 @@ Omit `--judge-model` to let that agent's CLI pick its own default. Keep one judg
 
 Tooling resolves context by walking *up* the filesystem, and every such walk used to end in this repo. Two things stop it.
 
-**The workspace is its own git repo**, seeded by `setup` with a baseline commit whose sha lands in `<run-dir>/baseline.sha`. Executors run git — they are finishing a feature, so they commit. Without a repo of its own, `git add -A` from the workspace staged the orchestrator's files, `git commit -am` landed them on the checked-out branch, `git add .` exited 1 with a `-f` hint the executor would happily take, and runs in flight fought over one index.lock. `verify` diffs against that baseline, so an executor that commits its own work still produces evidence instead of an empty `run.diff`. Installed dependencies stay out through the workspace's `.git/info/exclude`, not a `.gitignore` the executor would read and the judge would see in the diff.
+**The workspace is its own git repo**, seeded by `setup` with a baseline commit whose sha lands in `<run-dir>/baseline.sha`. Executors run git — they are finishing a feature, so they commit. Without a repo of its own, `git add -A` from the workspace staged the orchestrator's files, `git commit -am` landed them on the checked-out branch, `git add .` exited 1 with a `-f` hint the executor would happily take, and runs in flight fought over one index.lock. `verify` diffs against that baseline, so an executor that commits its own work still produces evidence instead of an empty `run.diff`. Installed dependencies stay out through the workspace's `.git/info/exclude`, not a `.gitignore` the executor would read and the judge would see in the diff
 
 **A minimal `package.json`** is dropped into any workspace that has none. npm resolves its project root by walking up for the nearest manifest, and a git boundary does not stop it: in a bare workspace the nearest one was this repo's, so `npm install` inside a run rewrote the framework's own manifest. The stub is part of the baseline commit, so it never appears in a diff, and `verify` skips it in the snapshot by content match.
 
@@ -146,15 +146,20 @@ Beside it, per run: `baseline.sha` (setup), `executor.yaml` + `transcript.md` (r
 mistake_id: gas-stale-eth-price
 skill: gas
 first_seen: 2026-07-06
-frequency:                     # per variant
-  no_skill: 3/3
-  with_skill: 1/3
+frequency:                     # per variant; nest under <executor>/<model> once a
+  no_skill: 3/3                # second stack has been measured, because a rate that
+  with_skill: 1/3              # averages two stacks describes neither
 category: stale-knowledge
 symptom: "Computes USD cost from a remembered ETH price instead of checking one."
 expected_pattern: "Fetch ETH/USD live (Chainlink feed, CoinGecko) before quoting dollars."
 skill_section: "What You Probably Got Wrong"   # the section that should prevent this, or "none" for a gap
 status: open                   # open | fixed | wontfix
 ```
+
+When the same mistake has been measured on more than one stack, `frequency` takes a stack
+key per measurement instead of the two bare variant lines — see
+`mistakes/indexing/indexing-read-side-deploy-omitted.yaml`, where the no_skill rate is
+`3/3` on codex and `1/3` on claude from identical content and identical checks.
 
 ## Reports
 
@@ -174,9 +179,11 @@ Every report ends with this table. Answer the last row honestly: sometimes the e
 
 ## What gets committed
 
-Committed: task specs, vendored skills under test, workspace templates under `templates/`, and per run `result.yaml`, `baseline.sha`, `executor.yaml`, `transcript.md`, plus the evidence the judge graded — `run.diff` for repo-shaped tasks, `output/` for question-shaped ones. Mistake records and reports too. Gitignored: workspaces, and the raw executor capture beside `transcript.md`.
+Committed: task specs, vendored skills under test, workspace templates under `templates/`, and per run `result.yaml`, `baseline.sha`, `executor.yaml`, `transcript.md`, `run.diff`, plus mistake records and reports. Gitignored: workspaces, the raw executor capture beside `transcript.md` (`transcript.jsonl`/`transcript.log`), `executor.err`, and `output/`.
 
-Evidence is committed because it is the audit trail of the verdict: a reader of the eval PR has to be able to re-check the judge on the same material the judge saw. For question-shaped tasks that material is one `answer.md` of a few KB per run — the old rule that kept `output/` out of git was written when repo-shaped runs snapshotted a whole scaffold there, which can no longer happen.
+This line said the opposite until 2026-08-20 — transcripts gitignored, `output/` committed — while `.gitignore` and all 210 committed runs did the reverse. Follow `.gitignore`; the transcript is what a reviewer re-derives a report's claims from, so it is the record that has to survive.
+
+`output/` stays ignored by default because a bare task has no template to diff against and `verify` snapshots the whole workspace into it: a quiz leaves one `answer.md` of a few KB, a goal that scaffolds leaves a tree (noir-goal-001: 176 files, 760K). Where that snapshot is the graded deliverable and small — the question-shaped runs — force-add it (`git add -f`) so a reader of the eval PR can re-check the judge on the material the judge saw.
 
 ## Code style
 
