@@ -28,11 +28,11 @@ CROPS — censorship resistance, open source, privacy, security — is the Ether
 
 ## Randomness
 
-Every node re-executes the same code, so there is nothing random to read onchain. `block.timestamp`, `block.number` and `blockhash(block.number)` (always zero) are not sources. `block.prevrandao` is biasable — a proposer can drop a block to re-roll — which may be fine for a raffle and is not fine for money.
+Every node re-executes the same code, so there is nothing random to read onchain. `block.timestamp`, `block.number` and `blockhash(block.number)` (always zero) are not sources. `blockhash(block.number - 1)` — the usual first attempt — is not one either: it is already known when the transaction runs, so a caller can simulate the outcome and only send the winning transaction, and the proposer who produced that block could have dropped it to re-roll. `block.prevrandao` is biasable the same way, which may be fine for a raffle and is not fine for money.
 
 Two constructions work:
 
-- **Commit-reveal.** Participants commit `hash(secret, salt)` bound to their address, reveal after entries close, seed from the reveals plus a past blockhash. Put a stake at risk: whoever reveals last sees the outcome coming and can withhold. Mind the lookback — `blockhash` reaches back 256 blocks (~51 min); the EIP-2935 history contract at `0x0000F90827F1C53a10cb7A02335B175320002935` reaches 8191 (~27 h) — past that the seed is gone for good.
+- **Commit-reveal.** Participants commit `hash(secret, salt)` bound to their address, reveal after entries close, seed from the reveals plus a past blockhash. Put a stake at risk: whoever reveals last sees the outcome coming and can withhold. Mind the lookback — `blockhash` reaches back 256 blocks, the EIP-2935 history contract at `0x0000F90827F1C53a10cb7A02335B175320002935` reaches 8191, and past that the seed is gone for good. Convert those to wall clock at the target chain's block time before you size the reveal window: 256 blocks is ~51 min on mainnet at 12s and ~8.5 min on Base at 2s, and check EIP-2935 is deployed there at all before relying on the longer window.
 - **Chainlink VRF.** Verifiable, and asynchronous: the value arrives in a **later callback transaction**, never as the return value of the request. Budget that delay into the timeline and fund it — a subscription or a direct-funded consumer, in LINK or native ETH.
 
 ## Two small things
