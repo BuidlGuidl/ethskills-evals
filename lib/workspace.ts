@@ -40,17 +40,22 @@ export const GENERATED_DIRS = [
 // the same moment. Override for a different disk.
 // Resolved rather than used verbatim: the value reaches spawn({ cwd }), existsSync and rm in
 // three processes with three different cwds, and is printed for a human to cd into.
+// `||`, not `??`: the documented way to set this is an export for the whole benchmark, and the
+// way an export goes wrong is `export EVAL_WORKSPACE_ROOT=$UNSET` — empty, not absent. An empty
+// string is not nullish, and `path.resolve("")` is the cwd, so `??` would put every workspace
+// back inside this checkout with the pointer, the guard and the sweep all agreeing.
 export const workspaceRoot = () =>
-  path.resolve(process.env.EVAL_WORKSPACE_ROOT ?? path.join(homedir(), ".cache", "ethskills-evals"));
+  path.resolve(process.env.EVAL_WORKSPACE_ROOT || path.join(homedir(), ".cache", "ethskills-evals"));
 
 // The run dir stays in the repo and points at the workspace, so verify and run-executor find
 // it without recomputing the layout, and a machine-local path is still recorded. Gitignored:
 // it is one machine's absolute path, and verify deletes what it points at.
 export const WORKSPACE_POINTER = "workspace.path";
 
-// A workspace's parent holds nothing but that workspace, so removing one leaves an empty dir
-// behind on every graded run. Best effort: a parent that still holds something — artifacts/
-// <task-id> with other runs under it — throws ENOTEMPTY and is left alone.
+// A workspace's parent usually holds nothing but that workspace, so removing one leaves an
+// empty dir behind on every graded run. Best effort: a parent that still holds something — the
+// second task set up in the same second, or artifacts/<task-id> with other runs under it —
+// throws ENOTEMPTY and is left alone.
 export const pruneEmptyParent = (dir: string) => {
   try {
     rmdirSync(path.dirname(path.resolve(dir)));
@@ -84,9 +89,11 @@ const assertOwnedWorkspace = (workspacePath: string, runDir: string) => {
     );
   }
 
+  // By position, not membership: this is the check in front of `rm -rf`, so it should accept
+  // the layout setup writes and nothing else.
   const segments = relativePath.split(path.sep);
 
-  if (!segments.includes(runId) || !segments.includes(taskId)) {
+  if (segments.length !== 2 || segments[0] !== runId || segments[1] !== taskId) {
     throw new Error(`${WORKSPACE_POINTER} in ${runDir} is not ${taskId}/${runId}'s workspace: ${workspacePath}`);
   }
 };

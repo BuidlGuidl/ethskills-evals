@@ -21,6 +21,12 @@ const diskUsage = (dir: string) => {
   return result.status === 0 ? result.stdout.split("\t")[0].trim() : "size unknown";
 };
 
+// Everything setup builds has a TASK.md and a git repo of its own. Requiring both before a
+// dir can be deleted keeps a stale or mistyped --root — `.`, a home dir, last month's path —
+// from turning this into `rm -rf` over whatever happens to sit two levels under it. A workspace
+// that lost either one is left alone on purpose: the sweep is not the only way to reclaim disk.
+const isWorkspace = (dir: string) => existsSync(path.join(dir, "TASK.md")) && existsSync(path.join(dir, ".git"));
+
 // A run dir that carries `pass:` has been graded, and a graded workspace is spent by this
 // harness's own argument — the evidence is captured and committed, and the regrade guard
 // refuses to run it again. It is reclaimable whether verify deleted it or not, which is what
@@ -54,11 +60,18 @@ const isGraded = (runDir: string) => {
 // another worktree the live runs are invisible and their workspaces list as orphans.
 const findReclaimable = async (root: string) => {
   const reclaimable: { workspacePath: string; reason: string }[] = [];
+  let workspaces = 0;
 
   for (const runId of await listDirs(root)) {
     for (const taskId of await listDirs(path.join(root, runId))) {
       const runDir = path.join(ROOT, "artifacts", taskId, runId);
       const workspacePath = path.join(root, runId, taskId);
+
+      if (!isWorkspace(workspacePath)) {
+        continue;
+      }
+
+      workspaces++;
 
       if (!existsSync(runDir)) {
         reclaimable.push({ workspacePath, reason: "orphan" });
@@ -68,7 +81,7 @@ const findReclaimable = async (root: string) => {
     }
   }
 
-  return reclaimable;
+  return { reclaimable, workspaces };
 };
 
 // The run dir above a workspace is left behind when the workspace under it goes, whether
@@ -99,7 +112,7 @@ const main = async () => {
       return;
     }
 
-    const reclaimable = await findReclaimable(root);
+    const { reclaimable, workspaces } = await findReclaimable(root);
 
     for (const { workspacePath, reason } of reclaimable) {
       console.log(`${remove ? "removing" : reason}  ${workspacePath}  (${diskUsage(workspacePath)})`);
@@ -113,8 +126,12 @@ const main = async () => {
       await pruneEmptyRunDirs(root);
     }
 
-    if (reclaimable.length === 0) {
-      console.log(`nothing to clean: every workspace under ${root} belongs to a run that is still going`);
+    if (workspaces === 0) {
+      // Says what was actually looked at: an empty result here usually means the wrong root,
+      // not a tidy one.
+      console.log(`nothing to clean: no workspaces under ${root} — nothing there has both a TASK.md and a git repo`);
+    } else if (reclaimable.length === 0) {
+      console.log(`nothing to clean: all ${workspaces} workspace(s) under ${root} have a run dir, and none of those runs is graded`);
     } else if (!remove) {
       console.log(`\n${reclaimable.length} reclaimable workspace(s) under ${root}; re-run with --delete to remove them`);
     }
