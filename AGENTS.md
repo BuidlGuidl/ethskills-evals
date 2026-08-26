@@ -49,7 +49,7 @@ Runs are append-only. A re-run after a patch is a new run id, never an overwrite
 3. **Always use the scripts** — setup, execution, grading. All three. Improvisation at any of them quietly corrupts records, and spawning executors by hand is what once left runs graded before they finished and workspaces deleted under live processes.
 4. **Grade after execution, independently.** Never let an executor self-report success. `verify` requires `--judge-agent`, so the grading agent is always a stated choice; add `--judge-model` to grade on the orchestrator's model. When judge and executor are the same agent the record says `self_judged: true` — expected on a single-stack benchmark, and the report has to say so.
 5. **One executor per workspace, one run at a time per workspace.** `run-executor` refuses a second pass over a workspace that already ran. Runs in different workspaces are independent — each has its own git repo — but never point two processes at one run dir.
-6. **Delete workspaces only after `verify` has graded them.** Evidence is captured into `<run-dir>/run.diff` or `<run-dir>/output/` first and both are committed, so nothing is lost. Grading cannot start until `executor.yaml` says the executor finished, which is what keeps a live run from being graded and deleted under itself.
+6. **`verify` deletes the workspace once it has graded it.** Evidence is captured into `<run-dir>/run.diff` or `<run-dir>/output/` first and both are committed, so nothing is lost. Pass `--keep-workspace` when you mean to dig through it afterwards — it holds the workspace until the next `clean-workspaces --delete`, which counts a graded run's workspace as spent, so dig through it before you sweep. Grading cannot start until `executor.yaml` says the executor finished, which is what keeps a live run from being graded and deleted under itself. Every other ending orphans a workspace — a killed executor never gets graded, and deleting its run dir to start over (rules 1 and 3) deletes the only record of where its workspace is. `yarn clean-workspaces` lists what can be reclaimed — a workspace whose run dir is gone, and one whose run is already graded, which covers `--keep-workspace` and a cleanup that failed after the grade was written — and `--delete` removes them; run it after a benchmark, from the checkout that made the runs, or live runs in another worktree look like orphans. If the runs were made with `EVAL_WORKSPACE_ROOT` set, sweep that root: `--root <path>`, or the same variable in the environment. That variable is read by all three commands, not just `setup` — export it for the whole benchmark or `run-executor` and `verify` will look for the workspace under the default root.
 
 ## The three roles
 
@@ -79,13 +79,15 @@ Omit `--judge-model` to let that agent's CLI pick its own default. Keep one judg
 
 ## Isolation
 
-Tooling resolves context by walking *up* the filesystem, and every such walk used to end in this repo. Two things stop it.
+Tooling resolves context by walking *up* the filesystem, and every such walk used to end in this repo. Three things stop it.
+
+**The workspace lives outside the repo** — `~/.cache/ethskills-evals/<run-id>/<task-id>/`, or wherever `EVAL_WORKSPACE_ROOT` points; `<run-dir>/workspace.path` records where, gitignored because it is a machine-local path. The two markers below stop the tools that own them, and nothing else. Under `artifacts/` the run dir's siblings were other runs of the same task, holding their `answer.md`, `run.diff` and `result.yaml`, and `tasks/` with every expect line sat two directories further up — no marker stops an `ls`. What the move closes is that pair: neither the expect lines nor an earlier run's committed evidence is reachable by walking up from a workspace. What it does not close is the live neighbourhood — `ls ../..` is the root, so a run in flight lists the runs in flight beside it, and the run id names the variant. Run id above task id makes that reach cost a second `..` rather than the first, and graded runs drop out of it as `verify` deletes them, but layout cannot do more: same uid, so permissions are a no-op, and an unguessable name loses to an `ls`. It is not a sandbox — `~/.cache` still has `$HOME` above it and the executor runs under your uid.
 
 **The workspace is its own git repo**, seeded by `setup` with a baseline commit whose sha lands in `<run-dir>/baseline.sha`. Executors run git — they are finishing a feature, so they commit. Without a repo of its own, `git add -A` from the workspace staged the orchestrator's files, `git commit -am` landed them on the checked-out branch, `git add .` exited 1 with a `-f` hint the executor would happily take, and runs in flight fought over one index.lock. `verify` diffs against that baseline, so an executor that commits its own work still produces evidence instead of an empty `run.diff`. Installed dependencies stay out through the workspace's `.git/info/exclude`, not a `.gitignore` the executor would read and the judge would see in the diff — note that this hides `lib/`, `out/`, `build/`, `cache/` and `target/` from the executor's own `git status` too, so a task whose deliverable lives in one of those needs `GENERATED_DIRS` trimmed first.
 
 **A minimal `package.json`** is dropped into any workspace that has none. npm resolves its project root by walking up for the nearest manifest, and a git boundary does not stop it: in a bare workspace the nearest one was this repo's, so `npm install` inside a run rewrote the framework's own manifest. The stub is part of the baseline commit, so it never appears in a diff, and `verify` skips it in the snapshot by content match.
 
-Both stop the tool that owns the marker, and nothing else. An executor can still read its way up the filesystem — `tasks/` with every expect line is three directories above the workspace, and sibling runs of the same task are two. Closing that means moving workspaces out of the tree, or a sandbox.
+What is still open: a concurrent run's workspace, two directories up — the one an executor reaches without meaning to — and this repo, which nothing stops an executor from finding on purpose. Closing either means a sandbox profile or a container.
 
 ## Task spec
 
@@ -140,7 +142,7 @@ expects:                       # judged expect lines, in task-spec order
 pass: false                    # true only when every expect passed
 ```
 
-Beside it, per run: `baseline.sha` (setup), `executor.yaml` + `transcript.md` (run-executor), `run.diff` or `output/` (verify).
+Beside it, per run: `baseline.sha` and `workspace.path` (setup; the pointer is local-only), `executor.yaml` + `transcript.md` (run-executor), `run.diff` or `output/` (verify).
 
 `mistakes/<skill>/<mistake-id>.yaml`. Scores say whether the skill helped; mistakes say what to write next.
 
@@ -181,7 +183,7 @@ Every report ends with this table. Answer the last row honestly: sometimes the e
 
 ## What gets committed
 
-Committed: task specs, vendored skills under test, workspace templates under `templates/`, and per run `result.yaml`, `baseline.sha`, `executor.yaml`, `transcript.md`, `run.diff`, plus mistake records and reports. Gitignored: workspaces, the raw executor capture beside `transcript.md` (`transcript.jsonl`/`transcript.log`), `executor.err`, and `output/`.
+Committed: task specs, vendored skills under test, workspace templates under `templates/`, and per run `result.yaml`, `baseline.sha`, `executor.yaml`, `transcript.md`, `run.diff`, plus mistake records and reports. Gitignored: the raw executor capture beside `transcript.md` (`transcript.jsonl`/`transcript.log`), `executor.err`, `output/`, and `workspace.path` — an absolute path on one machine, pointing at a workspace `verify` has already deleted, so it is stale for every reader but the one who made it.
 
 This line said the opposite until 2026-08-20 — transcripts gitignored, `output/` committed — while `.gitignore` and all 210 committed runs did the reverse. Follow `.gitignore`; the transcript is what a reviewer re-derives a report's claims from, so it is the record that has to survive.
 

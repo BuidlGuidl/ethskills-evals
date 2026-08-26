@@ -1,6 +1,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { appendFileSync, constants, existsSync, mkdirSync } from "node:fs";
+import { appendFileSync, constants, existsSync, mkdirSync, readFileSync, rmdirSync } from "node:fs";
 import { access, chmod, cp, mkdir, readdir, rm } from "node:fs/promises";
+import { homedir } from "node:os";
 import path from "node:path";
 
 // Where setup installs the skill. Evidence that reaches the judge must exclude these, or the
@@ -20,6 +21,100 @@ export const GENERATED_DIRS = [
   "out", "cache", "broadcast", "coverage", ".turbo", ".husky", ".vscode",
   "target",
 ];
+
+// Workspaces live outside this repo. The markers below stop the tools that own them, but
+// nothing stops an executor from reading its way up the filesystem: under artifacts/ the run
+// dir's siblings were other runs of the same task — their answer.md, run.diff and result.yaml,
+// committed and so present on every machine — and tasks/ with every expect line sat two
+// directories further up. Out here neither is reachable by walking up.
+//
+// What is left is the live neighbourhood: `ls ../..` from a workspace is this root, so a run
+// in flight can list the runs in flight beside it, and the run id names the variant. Layout
+// does not close that — permissions are a no-op against the user's own uid, and an
+// unguessable dir name loses to an `ls`. What the run-id-above-task-id order does buy is that
+// a workspace's own parent holds nothing else, so the reach costs a second `..` and a
+// deliberate one. Graded runs drop out of it as verify deletes them.
+//
+// So: not a sandbox, and not pretending to be one. It closes the adjacency to the grading —
+// expect lines and earlier runs' evidence — and narrows the rest to whatever is running at
+// the same moment. Override for a different disk.
+// Resolved rather than used verbatim: the value reaches spawn({ cwd }), existsSync and rm in
+// three processes with three different cwds, and is printed for a human to cd into.
+// `||`, not `??`: the documented way to set this is an export for the whole benchmark, and the
+// way an export goes wrong is `export EVAL_WORKSPACE_ROOT=$UNSET` — empty, not absent. An empty
+// string is not nullish, and `path.resolve("")` is the cwd, so `??` would put every workspace
+// back inside this checkout with the pointer, the guard and the sweep all agreeing.
+export const workspaceRoot = () =>
+  path.resolve(process.env.EVAL_WORKSPACE_ROOT || path.join(homedir(), ".cache", "ethskills-evals"));
+
+// The run dir stays in the repo and points at the workspace, so verify and run-executor find
+// it without recomputing the layout, and a machine-local path is still recorded. Gitignored:
+// it is one machine's absolute path, and verify deletes what it points at.
+export const WORKSPACE_POINTER = "workspace.path";
+
+// A workspace's parent usually holds nothing but that workspace, so removing one leaves an
+// empty dir behind on every graded run. Best effort: a parent that still holds something — the
+// second task set up in the same second, or artifacts/<task-id> with other runs under it —
+// throws ENOTEMPTY and is left alone.
+export const pruneEmptyParent = (dir: string) => {
+  try {
+    rmdirSync(path.dirname(path.resolve(dir)));
+  } catch {
+    // not empty, or already gone
+  }
+};
+
+// The pointer is a hand-editable text file and verify feeds its contents straight to `rm -rf`.
+// A truncated or mangled value that still exists on disk — `~/.cache/ethskills-evals` with the
+// run id lost — would take every other run's workspace with it. Anything not inside the current
+// root and named for this run is refused rather than acted on.
+//
+// Both ids, not just the run id: run ids carry no task, so two tasks set up in the same second
+// by the same executor, variant and run number share one run dir up here, and the run id alone
+// would accept the other task's workspace as this one's.
+const assertOwnedWorkspace = (workspacePath: string, runDir: string) => {
+  const root = workspaceRoot();
+  const resolvedRunDir = path.resolve(runDir);
+  const runId = path.basename(resolvedRunDir);
+  const taskId = path.basename(path.dirname(resolvedRunDir));
+  const relativePath = path.relative(root, workspacePath);
+
+  // The root is where the pointer is checked against, so a run set up under a different
+  // EVAL_WORKSPACE_ROOT lands here rather than at a missing workspace: say so in the message,
+  // because the root named below is this shell's, not the one that made the run.
+  if (!path.isAbsolute(workspacePath) || relativePath === "" || relativePath.startsWith("..")) {
+    throw new Error(
+      `${WORKSPACE_POINTER} in ${runDir} points outside ${root}: ${workspacePath}. `
+        + `Export EVAL_WORKSPACE_ROOT if this run was set up under a different root.`,
+    );
+  }
+
+  // By position, not membership: this is the check in front of `rm -rf`, so it should accept
+  // the layout setup writes and nothing else.
+  const segments = relativePath.split(path.sep);
+
+  if (segments.length !== 2 || segments[0] !== runId || segments[1] !== taskId) {
+    throw new Error(`${WORKSPACE_POINTER} in ${runDir} is not ${taskId}/${runId}'s workspace: ${workspacePath}`);
+  }
+};
+
+export const readWorkspacePath = (runDir: string) => {
+  const pointerPath = path.join(runDir, WORKSPACE_POINTER);
+
+  if (!existsSync(pointerPath)) {
+    throw new Error(`no ${WORKSPACE_POINTER} in ${runDir}; the run was not set up by yarn setup`);
+  }
+
+  const workspacePath = readFileSync(pointerPath, "utf8").trim();
+
+  assertOwnedWorkspace(workspacePath, runDir);
+
+  if (!existsSync(workspacePath)) {
+    throw new Error(`workspace ${workspacePath} is gone (deleted after grading?)`);
+  }
+
+  return workspacePath;
+};
 
 // npm and friends resolve their project root by walking up for a package.json, and a git
 // boundary does not stop that walk: in a bare workspace under artifacts/ the nearest manifest

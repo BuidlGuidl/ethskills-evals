@@ -6,19 +6,22 @@ import process from "node:process";
 import yaml from "js-yaml";
 import { loadTaskSpec, parseArgs, requireString } from "../lib/task.js";
 import type { Executor, ResultRecord, Variant } from "../lib/types.js";
-import { WORKSPACE_MANIFEST, copyTree, removeTree, seedWorkspaceRepo } from "../lib/workspace.js";
+import { WORKSPACE_MANIFEST, WORKSPACE_POINTER, copyTree, pruneEmptyParent, removeTree, seedWorkspaceRepo, workspaceRoot } from "../lib/workspace.js";
 
 const ROOT = process.cwd();
 const EXECUTORS = new Set<Executor>(["claude", "codex"]);
 const VARIANTS = new Set<Variant>(["no_skill", "with_skill"]);
 const SETUP_ARGS = new Set(["task", "executor", "variant", "run"]);
 
-const fail = async (message: string, runDir?: string): Promise<never> => {
-  if (runDir) {
-    // removeTree, not rm: the run dir holds a copy of the template, and a plain unlink through
-    // one of its read-only dirs throws past this line — replacing `message` with an EACCES and
-    // leaving the run dir behind for the next run of the same id to trip over.
-    await removeTree(runDir);
+const fail = async (message: string, ...dirs: (string | undefined)[]): Promise<never> => {
+  for (const dir of dirs) {
+    // removeTree, not rm: one of these holds a copy of the template, and a plain unlink through
+    // a read-only dir it reproduced throws past this line — replacing `message` with an EACCES
+    // and leaving the dir behind for the next run of the same id to trip over.
+    if (dir && existsSync(dir)) {
+      await removeTree(dir);
+      pruneEmptyParent(dir);
+    }
   }
 
   console.error(`setup-workspace: ${message}`);
@@ -120,7 +123,9 @@ const guardAgainstLeaks = async (workspacePath: string, taskPath: string, runDir
     if (bytes.length === taskSpecBytes.length && bytes.equals(taskSpecBytes)) {
       const relativePath = path.relative(workspacePath, file);
 
-      await fail(`leak detected: workspace contains a copy of the task spec at ${relativePath}`, runDir);
+      // The workspace goes too, not just the run dir: it holds the leaked spec, and it sits
+      // where the next run of this task would be created.
+      await fail(`leak detected: workspace contains a copy of the task spec at ${relativePath}`, runDir, workspacePath);
     }
   }
 };
@@ -137,10 +142,20 @@ const main = async () => {
     const timestamp = utcRunTimestamp(new Date());
     const runId = `${timestamp}-${executor}-${variant.replaceAll("_", "-")}-${run}`;
     const runDir = path.join(ROOT, "artifacts", spec.id, runId);
-    const workspacePath = path.join(runDir, "workspace");
+    // Run id above task id, not below: workspaces now outlive setup, and grouping them by task
+    // would put a live no_skill run one `ls ../` away from a concurrent with_skill sibling —
+    // its .agents/skills/<skill>/SKILL.md is the skill under test. This way that reach costs a
+    // second `..`. The run id carries no task, so two different tasks set up in the same second
+    // by the same executor, variant and run number do share a parent — same variant, so what is
+    // next door is another task's TASK.md, not the skill under test.
+    const workspacePath = path.join(workspaceRoot(), runId, spec.id);
 
     if (existsSync(runDir)) {
       await fail(`run dir already exists: ${runDir}`);
+    }
+
+    if (existsSync(workspacePath)) {
+      await fail(`workspace already exists: ${workspacePath}`);
     }
 
     await mkdir(runDir, { recursive: true });
@@ -169,8 +184,9 @@ const main = async () => {
       // dir would have it hashing loose objects for nothing.
       await guardAgainstLeaks(workspacePath, taskPath, runDir);
 
-      // The baseline sha lives in the run dir, not just as a ref inside the workspace: the
-      // workspace is deleted after grading, the record is not.
+      // Both live in the run dir rather than only in the workspace: the workspace is deleted
+      // after grading, the record is not.
+      await writeFile(path.join(runDir, WORKSPACE_POINTER), `${workspacePath}\n`);
       await writeFile(path.join(runDir, "baseline.sha"), `${seedWorkspaceRepo(workspacePath)}\n`);
 
       const result: ResultRecord = {
@@ -184,10 +200,10 @@ const main = async () => {
 
       await writeFile(path.join(runDir, "result.yaml"), yaml.dump(result, { lineWidth: -1 }));
 
-      console.log(path.resolve(workspacePath));
+      console.log(workspacePath);
       console.log(`Run the executor with: yarn run-executor --run artifacts/${spec.id}/${runId} --model <model>`);
     } catch (error) {
-      await fail(error instanceof Error ? error.message : String(error), runDir);
+      await fail(error instanceof Error ? error.message : String(error), runDir, workspacePath);
     }
   } catch (error) {
     console.error(`setup-workspace: ${error instanceof Error ? error.message : String(error)}`);
