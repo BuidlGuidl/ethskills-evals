@@ -96,6 +96,28 @@ test("a scaffolded nested repo fails instead of grading as an empty run", async 
       git(scaffoldPath, ["commit", "-q", "-m", "scaffold"]);
     }
 
-    await assert.rejects(readDiff(workspacePath, baselineSha).run(), /nested git repo/);
+    await assert.rejects(readDiff(workspacePath, baselineSha).run(), /nested git repo in the workspace: my-dapp\b/);
   }
+});
+
+// The pre-check sees nothing here: the executor committed the gitlink, so the worktree is
+// clean and `git status --porcelain` is empty. Only the diff shows that a whole scaffold
+// collapsed into one line.
+test("a committed nested repo is caught in the diff, not just in status", async () => {
+  const { workspacePath, baselineSha } = seedTemplateWorkspace();
+  const scaffoldPath = path.join(workspacePath, "my-dapp");
+
+  mkdirSync(scaffoldPath);
+  git(scaffoldPath, ["init", "-q", "-b", "main"]);
+  git(scaffoldPath, ["config", "user.name", "eval executor"]);
+  git(scaffoldPath, ["config", "user.email", "executor@localhost"]);
+  write(workspacePath, "my-dapp/packages/nextjs/app/page.tsx", "export default () => null;\n");
+  git(scaffoldPath, ["add", "-A"]);
+  git(scaffoldPath, ["commit", "-q", "-m", "scaffold"]);
+  git(workspacePath, ["add", "my-dapp"]);
+  git(workspacePath, ["commit", "-q", "-m", "feat: scaffold the app"]);
+
+  assert.equal(git(workspacePath, ["status", "--porcelain"]), "");
+
+  await assert.rejects(readDiff(workspacePath, baselineSha).run(), /nested git repo in the workspace: my-dapp\b/);
 });

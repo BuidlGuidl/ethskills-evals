@@ -50,7 +50,7 @@ const excludePathspec = (dir: string) => [`:(exclude)${dir}`, `:(exclude,glob)**
 // git-inits unconditionally. With a commit in it the whole scaffold collapses to one
 // gitlink line; without one `git add -N` aborts ("does not have a commit checked out").
 // Both reach the judge as an empty run, so stop here instead of grading nothing.
-const assertNoNestedRepo = (workspacePath: string, nested: string[]) => {
+const assertNoNestedRepo = (nested: string[]) => {
   if (nested.length === 0) {
     return;
   }
@@ -59,6 +59,29 @@ const assertNoNestedRepo = (workspacePath: string, nested: string[]) => {
     `nested git repo in the workspace: ${nested.join(", ")}. git cannot diff through it, so the evidence would be empty. `
       + `Diff that repo from its own first commit, or re-run the task without a scaffolder that git-inits.`,
   );
+};
+
+// A gitlink is a mode line under its own `diff --git` header, and the mode line says only
+// 160000 — the path has to come off the header or the error names a mode bit.
+const gitlinkPaths = (diff: string) => {
+  const paths: string[] = [];
+  let current: string | null = null;
+
+  for (const line of diff.split("\n")) {
+    const header = /^diff --git a\/(.+) b\//.exec(line);
+
+    if (header) {
+      current = header[1];
+      continue;
+    }
+
+    if (current !== null && line.endsWith("mode 160000")) {
+      paths.push(current);
+      current = null;
+    }
+  }
+
+  return paths;
 };
 
 const nestedRepoDirs = (workspacePath: string, status: string) =>
@@ -73,10 +96,7 @@ export const writeDiff = async (workspacePath: string, diffPath: string, baselin
 
   // Untracked dirs are still collapsed to one entry here, so this is where a scaffolded
   // repo is cheapest to spot — and `git add -N` below would abort on it anyway.
-  assertNoNestedRepo(
-    workspacePath,
-    nestedRepoDirs(workspacePath, git(workspacePath, ["status", "--porcelain", "--", ...pathspec], "evidence")),
-  );
+  assertNoNestedRepo(nestedRepoDirs(workspacePath, git(workspacePath, ["status", "--porcelain", "--", ...pathspec], "evidence")));
 
   // Intent-to-add so new (untracked) files show their content in the diff, not just a
   // filename in status — the judge needs to see files the run created. Untracked files are
@@ -97,10 +117,7 @@ export const writeDiff = async (workspacePath: string, diffPath: string, baselin
 
   // The pre-check misses a nested repo the executor already committed: the worktree is
   // clean and the tree carries a gitlink instead.
-  assertNoNestedRepo(
-    workspacePath,
-    diff.split("\n").filter(line => line.endsWith("mode 160000")).map(line => line.trim()),
-  );
+  assertNoNestedRepo(gitlinkPaths(diff));
 
   const content = `${diff}${diff.endsWith("\n") || diff.length === 0 ? "" : "\n"}\n# Untracked files and status\n${status}`;
 

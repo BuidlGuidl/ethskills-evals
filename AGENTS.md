@@ -63,7 +63,9 @@ yarn run-executor --run artifacts/<id>/<run-id> --model <model>
 
 The script builds the executor's command, so the flags that matter cannot be forgotten: `--setting-sources project` for claude (user-level config crowds the skill listing and skills stop triggering) and `sandbox_workspace_write.network_access=true` for codex (`workspace-write` blocks network by default, so without it every live-data task fails for the wrong reason). Omit `--model` to let the CLI pick its own default; whatever ran is recorded in `executor.yaml` and copied into `result.yaml`.
 
-It writes `<run-dir>/transcript.md` (rendered) beside the raw capture, and `<run-dir>/executor.yaml` with `started`, `finished`, `exit`. A run whose `finished` is still null was killed — including by Ctrl-C, which leaves the record untouched on purpose: it is a dead run, not a zero. Delete it and set up a new one. A run that finished with a non-zero exit is refused by `verify` unless you pass `--grade-failed-run`, so a CLI that was missing or crashed cannot be recorded as a model failure.
+It writes `<run-dir>/transcript.md` beside the raw capture, and `<run-dir>/executor.yaml` with `started`, `finished`, `exit`. A run whose `finished` is still null was killed — including by Ctrl-C, which leaves the record untouched on purpose: it is a dead run, not a zero. Delete it and set up a new one. A run that finished with a non-zero exit is refused by `verify` unless you pass `--grade-failed-run`, so a CLI that was missing or crashed cannot be recorded as a model failure.
+
+`transcript.md` means the same thing on both stacks, which takes assembling: claude streams the whole session as stream-json on stdout, while codex writes the session log to stderr and leaves only the final message on stdout. Mine transcripts from `transcript.md` alone; the raw streams beside it are gitignored.
 
 **Judge**: a fresh, blind agent that grades `expect:` lines from the evidence `verify` assembles (diff + output files). It never sees the variant, the skill, or the transcript. Claude and codex both work.
 
@@ -127,7 +129,7 @@ variant: with_skill
 skill_version: 191dcc1         # git short sha of the skill source; null for no_skill
 created: 2026-07-06T09:30:00Z
 executor_model: claude-opus-5   # what actually ran; null when the CLI picked its default
-executor_exit: 0                # non-zero is a run that ended badly, graded anyway
+executor_exit: 0                # verify refuses anything else unless --grade-failed-run
 judge:                         # who graded this run
   agent: claude
   model: claude-opus-4-8       # null when the agent's CLI picked its own default
