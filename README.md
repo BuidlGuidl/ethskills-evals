@@ -33,10 +33,15 @@ ethskills-evals/
 ├─ skills/                       vendored skill versions under test
 ├─ tasks/                        task specs, one yaml per task (filename = task id)
 ├─ scripts/setup-workspace.ts    seeds the clean workspace, hard-fails on grading leaks
-├─ scripts/verify.ts             snapshots a finished run, spawns the judge
+├─ scripts/run-executor.ts       spawns the executor on the task, records what it did
+├─ scripts/verify.ts             assembles the evidence, spawns the judge
 ├─ lib/judge.ts                  the blind judge: evidence in, graded expects out
-├─ artifacts/                    per run: result.yaml + run.diff + output/ committed,
-│                                workspaces and transcripts gitignored
+├─ lib/evidence.ts               what the judge reads: the diff, or a snapshot of the files
+├─ lib/transcript.ts             one transcript format across executors
+├─ lib/workspace.ts              the workspace's own git repo and the markers around it
+├─ artifacts/                    per run: result.yaml + executor.yaml + transcript.md and
+│                                the graded evidence committed; workspaces, raw executor
+│                                capture and question-shaped snapshots gitignored
 ├─ mistakes/                     mistake records mined from failures
 ├─ reports/                      markdown comparisons per benchmark
 └─ templates/                    workspace seeds (gitignored; tasks record how to regenerate)
@@ -49,12 +54,13 @@ ethskills-evals/
 
 A benchmark is the same task run with the skill and without, a fresh executor per run, and raw pass counts per variant as the headline.
 
-The orchestrating agent works from `AGENTS.md`, the full playbook including every record schema. Two small scripts guard the steps where improvisation would quietly corrupt results:
+The orchestrating agent works from `AGENTS.md`, the full playbook including every record schema. Three small scripts guard the steps where improvisation would quietly corrupt results:
 
 - `yarn setup` builds a clean workspace for one run: task prompt in, skill installed (or not), and a hard fail if any grading material would leak in. The isolation is load-bearing, not hygiene. An executor that knows how it's being judged starts acting smart, so it gets the task and nothing else.
+- `yarn run-executor` spawns the executor in that workspace on `TASK.md` alone, builds the CLI invocation so the load-bearing flags cannot be forgotten, saves the transcript, and records when the process finished. A run whose executor was killed stays ungradeable by design: that is a dead run, not a zero.
 - `yarn verify` grades a finished run: snapshots the output, has a blind LLM judge grade the task's `expect:` lines against it, and writes `result.yaml`. No judge is baked in; the orchestrator passes `--judge-agent` and `--judge-model`, and `result.yaml` records which judge graded which run.
 
-Every run leaves three files behind: the diff of what the executor changed, its full transcript, and the graded `result.yaml`. The orchestrating agent never performs the task itself.
+Every run leaves a record behind: what the executor changed (`run.diff`, or a snapshot of the files for a task with no starting repo), its transcript, `executor.yaml` with the model and the exit, and the graded `result.yaml`. The orchestrating agent never performs the task itself.
 
 Executors are pluggable: `--executor claude` or `--executor codex`. Skills install at the cross-agent standard `.agents/skills/` (codex reads it natively; claude runs get a bridge copy at `.claude/skills/`).
 
@@ -64,7 +70,7 @@ Because the fixed part is this small, the orchestrator can bend the framework in
 
 ```bash
 yarn setup --task tasks/<id>.yaml --variant no_skill --run 1 --executor claude
-# spawn a fresh executor in the printed workspace (spawn commands in AGENTS.md)
+yarn run-executor --run artifacts/<id>/<run-id> --model <model>
 yarn verify --run artifacts/<id>/<run-id> --judge-agent claude --judge-model <model>
 ```
 
