@@ -1,10 +1,10 @@
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { loadYamlFile, parseArgs, requireString } from "../lib/task.js";
-import { workspaceRoot } from "../lib/workspace.js";
+import { WORKSPACE_POINTER, workspaceRoot } from "../lib/workspace.js";
 
 const ROOT = process.cwd();
 const CLEAN_ARGS = new Set(["delete", "root"]);
@@ -96,6 +96,40 @@ const pruneEmptyRunDirs = async (root: string) => {
   }
 };
 
+// An empty root is usually the wrong root: a benchmark run under EVAL_WORKSPACE_ROOT leaves
+// its workspaces there, and a later shell without the variable sweeps the default one and
+// finds nothing. Run dirs that still exist carry a pointer, so they can say where to look —
+// the orphans this script is mostly for cannot, which is why the sweep scans a root rather
+// than following pointers in the first place.
+const pointedAtRoots = async (sweptRoot: string) => {
+  const artifacts = path.join(ROOT, "artifacts");
+
+  if (!existsSync(artifacts)) {
+    return [];
+  }
+
+  const roots = new Set<string>();
+
+  for (const taskId of await listDirs(artifacts)) {
+    for (const runId of await listDirs(path.join(artifacts, taskId))) {
+      const pointerPath = path.join(artifacts, taskId, runId, WORKSPACE_POINTER);
+
+      if (!existsSync(pointerPath)) {
+        continue;
+      }
+
+      // The pointer is <root>/<run-id>/<task-id>; the root is what is left above those two.
+      const root = path.dirname(path.dirname(readFileSync(pointerPath, "utf8").trim()));
+
+      if (root !== sweptRoot && path.isAbsolute(root) && existsSync(root)) {
+        roots.add(root);
+      }
+    }
+  }
+
+  return [...roots].sort();
+};
+
 const main = async () => {
   try {
     const args = parseArgs(CLEAN_ARGS);
@@ -130,6 +164,10 @@ const main = async () => {
       // Says what was actually looked at: an empty result here usually means the wrong root,
       // not a tidy one.
       console.log(`nothing to clean: no workspaces under ${root} — nothing there has both a TASK.md and a git repo`);
+
+      for (const pointed of await pointedAtRoots(root)) {
+        console.log(`runs under artifacts/ point at ${pointed} — sweep it with --root ${pointed}`);
+      }
     } else if (reclaimable.length === 0) {
       console.log(`nothing to clean: all ${workspaces} workspace(s) under ${root} have a run dir, and none of those runs is graded`);
     } else if (!remove) {
