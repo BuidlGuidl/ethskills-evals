@@ -1,20 +1,17 @@
-import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { cp, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import yaml from "js-yaml";
+import { buildEvidence, snapshotOutput, writeDiff } from "../lib/evidence.js";
 import { judgeExpectations } from "../lib/judge.js";
 import { isRecord, loadTaskSpec, loadYamlFile, parseArgs, requireString } from "../lib/task.js";
 import type { Executor, ExecutorRecord, ExpectStatus, JudgeSpec, ResultRecord, Variant } from "../lib/types.js";
-import { GENERATED_DIRS, SKILL_INSTALL_DIRS, WORKSPACE_MANIFEST } from "../lib/workspace.js";
 
 const ROOT = process.cwd();
-const SKIP_DIRS = new Set([...SKILL_INSTALL_DIRS, ...GENERATED_DIRS]);
-const MAX_SNAPSHOT_FILE_BYTES = 256 * 1024;
 const EXECUTORS = new Set<Executor>(["claude", "codex"]);
 const VARIANTS = new Set<Variant>(["no_skill", "with_skill"]);
-const VERIFY_ARGS = new Set(["run", "judge-agent", "judge-model"]);
+const VERIFY_ARGS = new Set(["run", "judge-agent", "judge-model", "grade-failed-run"]);
 
 // The judge is a fresh, blind process, never the orchestrator's own contaminated
 // context. --judge-agent is required rather than defaulting to the run's executor:
@@ -125,115 +122,6 @@ const readBaselineSha = (runDir: string) => {
   return readFileSync(baselinePath, "utf8").trim();
 };
 
-const walkFiles = async (dir: string) => {
-  const entries: string[] = [];
-  const pending = [dir];
-
-  while (pending.length > 0) {
-    const current = pending.pop() as string;
-    const childNames = await readdir(current, { withFileTypes: true });
-
-    for (const child of childNames) {
-      const fullPath = path.join(current, child.name);
-
-      if (child.isDirectory()) {
-        if (!SKIP_DIRS.has(child.name)) {
-          pending.push(fullPath);
-        }
-      } else if (child.isFile()) {
-        entries.push(fullPath);
-      }
-    }
-  }
-
-  return entries;
-};
-
-// A bare :(exclude)<dir> only matches at the workspace root, while walkFiles skips by
-// directory name at any depth, so each dir needs the glob form too or a nested
-// packages/app/node_modules reaches the judge.
-const excludePathspec = (dir: string) => [`:(exclude)${dir}`, `:(exclude,glob)**/${dir}/**`];
-
-const writeDiff = async (workspacePath: string, diffPath: string, baselineSha: string) => {
-  const pathspec = [".", ...[...SKILL_INSTALL_DIRS, ...GENERATED_DIRS].flatMap(excludePathspec)];
-
-  // Intent-to-add so new (untracked) files show their content in the diff, not just a
-  // filename in status — the judge needs to see files the run created. Untracked files are
-  // not gitignored by default, and a repo the run created itself carries whatever .gitignore
-  // its scaffolder wrote (foundry's omits node_modules), so the pathspec is what actually
-  // keeps the installed skill and generated trees out of the judge's evidence.
-  //
-  // The add takes a bare "." rather than that pathspec: exclusion magic makes git enumerate
-  // ignored entries and exit 1 ("paths are ignored by one of your .gitignore files") the
-  // moment an installed node_modules sits at the workspace root, while a bare "." skips
-  // ignored trees silently. Evidence is the diff and status output below, and both keep the
-  // exclusions, so the extra intent-to-add entries never reach the judge.
-  execFileSync("git", ["-C", workspacePath, "add", "-N", "--", "."], { encoding: "utf8" });
-  // Against the baseline commit, not the index: an executor that commits its own work
-  // leaves a clean worktree, and a plain `git diff` would call that an empty run.
-  const diff = execFileSync("git", ["-C", workspacePath, "diff", baselineSha, "--", ...pathspec], { encoding: "utf8" });
-  const status = execFileSync("git", ["-C", workspacePath, "status", "--porcelain", "--", ...pathspec], { encoding: "utf8" });
-  const content = `${diff}${diff.endsWith("\n") || diff.length === 0 ? "" : "\n"}\n# Untracked files and status\n${status}`;
-
-  await writeFile(diffPath, content);
-};
-
-const snapshotOutput = async (workspacePath: string, outputPath: string) => {
-  await rm(outputPath, { recursive: true, force: true });
-
-  for (const file of await walkFiles(workspacePath)) {
-    const relativePath = path.relative(workspacePath, file);
-    const segments = relativePath.split(path.sep);
-
-    if (relativePath === "TASK.md" || segments.some(segment => SKIP_DIRS.has(segment))) {
-      continue;
-    }
-
-    // The manifest setup drops in to anchor the tooling walk is not something the run
-    // produced. Matched by content so a package.json the run wrote still reaches the judge.
-    if (relativePath === "package.json" && readFileSync(file, "utf8") === WORKSPACE_MANIFEST) {
-      continue;
-    }
-
-    // Backstop: a scaffold leaves big generated source too (lockfiles, bundled releases).
-    // Grading reads answer/source files; anything this large is not that.
-    if ((await stat(file)).size > MAX_SNAPSHOT_FILE_BYTES) {
-      continue;
-    }
-
-    // Skip binary assets (favicons, fonts, images). The judge reads evidence as text, and a
-    // NUL byte breaks the prompt arg; nothing gradeable lives in a binary anyway.
-    if (readFileSync(file).includes(0)) {
-      continue;
-    }
-
-    const target = path.join(outputPath, relativePath);
-
-    await mkdir(path.dirname(target), { recursive: true });
-    await cp(file, target);
-  }
-};
-
-const buildEvidence = async (runDir: string) => {
-  const sections: string[] = [];
-  const diffPath = path.join(runDir, "run.diff");
-  const outputPath = path.join(runDir, "output");
-
-  if (existsSync(diffPath)) {
-    sections.push(["# run.diff", readFileSync(diffPath, "utf8")].join("\n"));
-  }
-
-  if (existsSync(outputPath)) {
-    for (const file of await walkFiles(outputPath)) {
-      const relativePath = path.relative(outputPath, file);
-
-      sections.push([`# output/${relativePath}`, readFileSync(file, "utf8")].join("\n"));
-    }
-  }
-
-  return sections.join("\n\n");
-};
-
 const summarize = (expects: Record<string, ExpectStatus>) => {
   const rows = Object.entries(expects);
   const nameWidth = Math.max("check".length, ...rows.map(([name]) => name.length));
@@ -271,8 +159,15 @@ const main = async () => {
       throw new Error(`executor.yaml ran ${executorRecord.executor}, result.yaml says ${result.executor}`);
     }
 
-    if (executorRecord.exit !== 0) {
-      console.warn(`verify: executor exited ${executorRecord.exit ?? "unknown"} — grading what it left behind`);
+    // A CLI that was missing, crashed or was killed leaves evidence a judge reads as a bad
+    // answer, and the run then records as a model failure. That is the same
+    // harness-failure-stored-as-a-zero that --judge-agent exists to rule out, so grading a
+    // bad exit has to be a stated choice.
+    if (executorRecord.exit !== 0 && args["grade-failed-run"] === undefined) {
+      throw new Error(
+        `executor exited ${executorRecord.exit ?? "unknown"}; that is a harness failure, not a score. `
+          + `Delete ${runDir} and set up a new run, or pass --grade-failed-run to grade what it left behind anyway.`,
+      );
     }
 
     const taskSpec = loadTaskSpec(path.join(ROOT, "tasks", `${result.task}.yaml`));

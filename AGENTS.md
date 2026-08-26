@@ -31,7 +31,7 @@ The skills under `skills/` are vendored at a pinned commit, and a task spec may 
 
 ## The loop
 
-1. `yarn setup --task tasks/<id>.yaml --variant <no_skill|with_skill> --run <n> --executor <claude|codex>` — builds the workspace outside this repo, seeds it as its own git repo, records the baseline sha and the workspace path.
+1. `yarn setup --task tasks/<id>.yaml --variant <no_skill|with_skill> --run <n> --executor <claude|codex>` — builds `<run-dir>/workspace`, seeds it as its own git repo and records the baseline sha in `<run-dir>/baseline.sha`.
 2. `yarn run-executor --run artifacts/<id>/<run-id> --model <model>` — spawns the executor in that workspace on `TASK.md`, saves the transcript, records when it finished. Long runs: start it detached (`nohup yarn run-executor … &`) and wait for `finished:` in `executor.yaml`, because a harness that kills the foreground process kills the run.
 3. `yarn verify --run artifacts/<id>/<run-id> --judge-agent <claude|codex> --judge-model <model>` — assembles evidence, runs the judge, fills `result.yaml`. Use the same judge for every run in the benchmark.
 4. Repeat for every variant and run.
@@ -63,7 +63,7 @@ yarn run-executor --run artifacts/<id>/<run-id> --model <model>
 
 The script builds the executor's command, so the flags that matter cannot be forgotten: `--setting-sources project` for claude (user-level config crowds the skill listing and skills stop triggering) and `sandbox_workspace_write.network_access=true` for codex (`workspace-write` blocks network by default, so without it every live-data task fails for the wrong reason). Omit `--model` to let the CLI pick its own default; whatever ran is recorded in `executor.yaml` and copied into `result.yaml`.
 
-It writes `<run-dir>/transcript.md` (rendered) beside the raw capture, and `<run-dir>/executor.yaml` with `started`, `finished`, `exit`. A run whose `finished` is still null was killed: it is a dead run, not a zero — delete it and set up a new one.
+It writes `<run-dir>/transcript.md` (rendered) beside the raw capture, and `<run-dir>/executor.yaml` with `started`, `finished`, `exit`. A run whose `finished` is still null was killed — including by Ctrl-C, which leaves the record untouched on purpose: it is a dead run, not a zero. Delete it and set up a new one. A run that finished with a non-zero exit is refused by `verify` unless you pass `--grade-failed-run`, so a CLI that was missing or crashed cannot be recorded as a model failure.
 
 **Judge**: a fresh, blind agent that grades `expect:` lines from the evidence `verify` assembles (diff + output files). It never sees the variant, the skill, or the transcript. Claude and codex both work.
 
@@ -79,7 +79,7 @@ Omit `--judge-model` to let that agent's CLI pick its own default. Keep one judg
 
 Tooling resolves context by walking *up* the filesystem, and every such walk used to end in this repo. Two things stop it.
 
-**The workspace is its own git repo**, seeded by `setup` with a baseline commit whose sha lands in `<run-dir>/baseline.sha`. Executors run git — they are finishing a feature, so they commit. Without a repo of its own, `git add -A` from the workspace staged the orchestrator's files, `git commit -am` landed them on the checked-out branch, `git add .` exited 1 with a `-f` hint the executor would happily take, and runs in flight fought over one index.lock. `verify` diffs against that baseline, so an executor that commits its own work still produces evidence instead of an empty `run.diff`. Installed dependencies stay out through the workspace's `.git/info/exclude`, not a `.gitignore` the executor would read and the judge would see in the diff
+**The workspace is its own git repo**, seeded by `setup` with a baseline commit whose sha lands in `<run-dir>/baseline.sha`. Executors run git — they are finishing a feature, so they commit. Without a repo of its own, `git add -A` from the workspace staged the orchestrator's files, `git commit -am` landed them on the checked-out branch, `git add .` exited 1 with a `-f` hint the executor would happily take, and runs in flight fought over one index.lock. `verify` diffs against that baseline, so an executor that commits its own work still produces evidence instead of an empty `run.diff`. Installed dependencies stay out through the workspace's `.git/info/exclude`, not a `.gitignore` the executor would read and the judge would see in the diff — note that this hides `lib/`, `out/`, `build/`, `cache/` and `target/` from the executor's own `git status` too, so a task whose deliverable lives in one of those needs `GENERATED_DIRS` trimmed first.
 
 **A minimal `package.json`** is dropped into any workspace that has none. npm resolves its project root by walking up for the nearest manifest, and a git boundary does not stop it: in a bare workspace the nearest one was this repo's, so `npm install` inside a run rewrote the framework's own manifest. The stub is part of the baseline commit, so it never appears in a diff, and `verify` skips it in the snapshot by content match.
 

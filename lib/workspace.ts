@@ -51,7 +51,9 @@ export const seedWorkspaceRepo = (workspacePath: string) => {
   // .git/info/exclude, not .gitignore: dependencies installed into the template stay out
   // of the baseline without editing a file the executor reads and the judge sees in the
   // diff. Excluded here means excluded from the executor's commits too, so a run that
-  // installs node_modules cannot bury the evidence.
+  // installs node_modules cannot bury the evidence — and equally, these dirs disappear from
+  // the executor's own `git status`, so a task whose deliverable lands in lib/, out/,
+  // build/, cache/ or target/ needs that entry dropped from GENERATED_DIRS first.
   const excludePath = path.join(git(workspacePath, ["rev-parse", "--absolute-git-dir"]), "info", "exclude");
 
   mkdirSync(path.dirname(excludePath), { recursive: true });

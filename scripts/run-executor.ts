@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { createWriteStream, existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -224,9 +225,20 @@ const main = async () => {
     errors.push(chunk);
     process.stderr.write(chunk);
   });
+  // A child that dies before reading the prompt makes this write raise EPIPE. Unhandled,
+  // that kills run-executor after executor.yaml already exists, and the "already executed"
+  // guard then bricks the run dir. The exit code below is the report of what happened.
+  child.stdin.on("error", () => {});
   child.stdin.end(prompt);
 
-  const stop = () => child.kill("SIGTERM");
+  // Ctrl-C overrides node's default handler, so without the flag the parent would survive
+  // its child, stamp finished + exit 143, and hand verify a killed run that grades like a
+  // real one. An interrupted run must stay ungradeable.
+  let interrupted = false;
+  const stop = () => {
+    interrupted = true;
+    child.kill("SIGTERM");
+  };
 
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
@@ -240,6 +252,7 @@ const main = async () => {
   });
 
   rawStream.end();
+  await once(rawStream, "finish");
 
   const raw = chunks.join("");
   const header = [
@@ -253,7 +266,12 @@ const main = async () => {
   await writeFile(path.join(runDir, "transcript.md"), `${header}\n\n${body}\n`);
 
   if (errors.length > 0) {
-    await writeFile(path.join(runDir, "executor.stderr"), errors.join(""));
+    await writeFile(path.join(runDir, "executor.err"), errors.join(""));
+  }
+
+  if (interrupted) {
+    console.error(`run-executor: interrupted; ${recordPath} keeps finished: null, so verify will refuse this run. Delete ${runDir} and set up a new one.`);
+    process.exit(2);
   }
 
   await writeRecord(recordPath, { ...record, finished: new Date().toISOString(), exit });
