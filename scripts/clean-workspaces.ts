@@ -3,11 +3,11 @@ import { existsSync } from "node:fs";
 import { readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
-import { parseArgs } from "../lib/task.js";
+import { parseArgs, requireString } from "../lib/task.js";
 import { workspaceRoot } from "../lib/workspace.js";
 
 const ROOT = process.cwd();
-const CLEAN_ARGS = new Set(["delete"]);
+const CLEAN_ARGS = new Set(["delete", "root"]);
 
 const listDirs = async (dir: string) => {
   const entries = await readdir(dir, { withFileTypes: true });
@@ -57,7 +57,12 @@ const main = async () => {
   try {
     const args = parseArgs(CLEAN_ARGS);
     const remove = args.delete !== undefined;
-    const root = workspaceRoot();
+    // A benchmark run with EVAL_WORKSPACE_ROOT set leaves its orphans under that root, and
+    // cleaning up later from a shell that no longer has the variable would report the default
+    // root as clean while the gigabytes sit elsewhere. --root says which one to sweep.
+    const root = args.root === undefined
+      ? workspaceRoot()
+      : path.resolve(ROOT, requireString(args.root, "--root"));
 
     if (!existsSync(root)) {
       console.log(`nothing to clean: no workspace root at ${root}`);
