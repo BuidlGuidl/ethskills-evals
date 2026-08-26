@@ -144,9 +144,10 @@ const main = async () => {
     const runDir = path.join(ROOT, "artifacts", spec.id, runId);
     // Run id above task id, not below: workspaces now outlive setup, and grouping them by task
     // would put a live no_skill run one `ls ../` away from a concurrent with_skill sibling —
-    // its .agents/skills/<skill>/SKILL.md is the skill under test. This way the parent holds
-    // exactly one workspace. Task id stays under it so two tasks set up in the same second
-    // cannot land on one dir.
+    // its .agents/skills/<skill>/SKILL.md is the skill under test. This way that reach costs a
+    // second `..`. The run id carries no task, so two different tasks set up in the same second
+    // by the same executor, variant and run number do share a parent — same variant, so what is
+    // next door is another task's TASK.md, not the skill under test.
     const workspacePath = path.join(workspaceRoot(), runId, spec.id);
 
     if (existsSync(runDir)) {

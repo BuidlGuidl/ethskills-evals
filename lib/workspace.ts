@@ -23,13 +23,21 @@ export const GENERATED_DIRS = [
 ];
 
 // Workspaces live outside this repo. The markers below stop the tools that own them, but
-// nothing stops an executor from reading its way up the filesystem: under artifacts/ the
-// run dir's siblings were other runs of the same task, holding their answer.md, run.diff and
-// result.yaml, and tasks/ with every expect line sat two directories further up. Out here the
-// run id sits above the task id (see setup-workspace), so a workspace's parent holds that one
-// workspace and nothing else. This is not a sandbox and does not pretend to be one: ~/.cache
-// still has $HOME above it, and the executor runs under the user's own uid. It closes the
-// eval-integrity adjacency, nothing more. Override for a different disk.
+// nothing stops an executor from reading its way up the filesystem: under artifacts/ the run
+// dir's siblings were other runs of the same task — their answer.md, run.diff and result.yaml,
+// committed and so present on every machine — and tasks/ with every expect line sat two
+// directories further up. Out here neither is reachable by walking up.
+//
+// What is left is the live neighbourhood: `ls ../..` from a workspace is this root, so a run
+// in flight can list the runs in flight beside it, and the run id names the variant. Layout
+// does not close that — permissions are a no-op against the user's own uid, and an
+// unguessable dir name loses to an `ls`. What the run-id-above-task-id order does buy is that
+// a workspace's own parent holds nothing else, so the reach costs a second `..` and a
+// deliberate one. Graded runs drop out of it as verify deletes them.
+//
+// So: not a sandbox, and not pretending to be one. It closes the adjacency to the grading —
+// expect lines and earlier runs' evidence — and narrows the rest to whatever is running at
+// the same moment. Override for a different disk.
 // Resolved rather than used verbatim: the value reaches spawn({ cwd }), existsSync and rm in
 // three processes with three different cwds, and is printed for a human to cd into.
 export const workspaceRoot = () =>
@@ -55,17 +63,31 @@ export const pruneEmptyParent = (dir: string) => {
 // A truncated or mangled value that still exists on disk — `~/.cache/ethskills-evals` with the
 // run id lost — would take every other run's workspace with it. Anything not inside the current
 // root and named for this run is refused rather than acted on.
+//
+// Both ids, not just the run id: run ids carry no task, so two tasks set up in the same second
+// by the same executor, variant and run number share one run dir up here, and the run id alone
+// would accept the other task's workspace as this one's.
 const assertOwnedWorkspace = (workspacePath: string, runDir: string) => {
   const root = workspaceRoot();
-  const runId = path.basename(path.resolve(runDir));
+  const resolvedRunDir = path.resolve(runDir);
+  const runId = path.basename(resolvedRunDir);
+  const taskId = path.basename(path.dirname(resolvedRunDir));
   const relativePath = path.relative(root, workspacePath);
 
+  // The root is where the pointer is checked against, so a run set up under a different
+  // EVAL_WORKSPACE_ROOT lands here rather than at a missing workspace: say so in the message,
+  // because the root named below is this shell's, not the one that made the run.
   if (!path.isAbsolute(workspacePath) || relativePath === "" || relativePath.startsWith("..")) {
-    throw new Error(`${WORKSPACE_POINTER} in ${runDir} points outside ${root}: ${workspacePath}`);
+    throw new Error(
+      `${WORKSPACE_POINTER} in ${runDir} points outside ${root}: ${workspacePath}. `
+        + `Export EVAL_WORKSPACE_ROOT if this run was set up under a different root.`,
+    );
   }
 
-  if (!relativePath.split(path.sep).includes(runId)) {
-    throw new Error(`${WORKSPACE_POINTER} in ${runDir} is not run ${runId}'s workspace: ${workspacePath}`);
+  const segments = relativePath.split(path.sep);
+
+  if (!segments.includes(runId) || !segments.includes(taskId)) {
+    throw new Error(`${WORKSPACE_POINTER} in ${runDir} is not ${taskId}/${runId}'s workspace: ${workspacePath}`);
   }
 };
 
