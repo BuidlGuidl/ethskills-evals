@@ -1,6 +1,6 @@
 ---
 name: wallets
-description: Use when deciding who or what is allowed to sign for funds — giving an agent, bot, or deploy script spending authority, choosing how a treasury is custodied, handling a private key someone handed you, or batching actions from a user's existing EOA.
+description: Use when deciding who or what may sign for funds — an agent, bot, or deploy script that signs unattended; a treasury's custody; a Safe or multisig owner set and threshold; hardware wallet vs multisig; a private key pasted into a prompt, an .env, or a repo; or batching from a user's existing EOA (EIP-7702). Not for looking up a contract address (`addresses`) or building wallet-connect and approval UI (`frontend-ux`).
 ---
 
 # Wallets
@@ -24,4 +24,3 @@ That delegation persists. It stays in effect until it is replaced or explicitly 
 - **A key that arrived in a prompt, a chat, or a ticket is burned.** Say so, rotate it, replace the account — do not fund it on mainnet.
 - **`.gitignore` before the first push, not after.** A committed secret is compromised in seconds and stays compromised; deleting the commit does not undo it. Nothing the delivered code signs with may be baked into the repo — no hardcoded value, default, fallback, or filled-in example.
 - **Anything that moves funds gets a gate.** Print the amount, the checksummed destination, and the gas cost, then stop until a human says yes. Estimate gas and price it live; never from a remembered ETH price.
-- **Verify wallet-infrastructure addresses on the target chain** — EntryPoint, Safe singleton and factory — against the protocol's own deployment list ([Safe](https://docs.safe.global/advanced/smart-account-supported-networks), [EntryPoint](https://github.com/eth-infinitism/account-abstraction/releases)) and a code read at that address. These ship in versions that coexist on mainnet, and a deposit, a validation, or a derived address only ever belongs to the exact deployment you pointed at — so a remembered address is usually a superseded one.
