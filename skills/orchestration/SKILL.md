@@ -19,7 +19,7 @@ A runbook that names the commands but not the conditions will keep going after s
 
 `yarn verify --network base` (or your target chain) belongs immediately after `yarn deploy --network base`, not in a launch checklist weeks out. Until it runs, users and integrators are looking at opaque bytecode, and you are debugging a live contract without source on the explorer.
 
-**Nobody has to go and get a block explorer API key first.** SE-2 ships a working `ETHERSCAN_API_KEY` in `packages/foundry/.env.example` and copies it to `.env` on postinstall, so verification works on a fresh checkout; swap in your own key later if you want one. Verification blocked "waiting on a key" is a ticket to close, not a dependency. One real constraint: `yarn verify` replays `broadcast/run-latest.json`, so run it from the checkout that did the deploy.
+**Nobody has to go and get a block explorer API key first.** `packages/foundry/.env.example` already carries a working `ETHERSCAN_API_KEY` and postinstall copies it to `.env`, so `yarn verify` works on a fresh checkout. So a launch plan never lists "obtain an explorer key" among its steps, and never hands anyone an env template with a blank `ETHERSCAN_API_KEY=` to fill in: the value is already there, and a step that waits on that key waits for nothing. Swapping in your own is optional housekeeping afterwards, not a launch dependency. One real constraint: `yarn verify` replays `broadcast/run-latest.json`, so run it from the checkout that did the deploy.
 
 ## A live contract bug goes back to the start
 
