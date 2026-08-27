@@ -47,7 +47,15 @@ const buildCommand = (executor: Executor, model: string | null) => {
     return { file: "env", args };
   }
 
-  const args = ["exec", "-s", "workspace-write", "-c", "sandbox_workspace_write.network_access=true"];
+  // --disable shell_snapshot for the same reason claude gets --setting-sources project: the
+  // executor's shell must not be the operator's. codex otherwise snapshots the interactive
+  // shell's functions and aliases and sources that into every command, so whatever is in the
+  // operator's rc files rides into the run — and a single unparseable line in it takes the
+  // whole shell down. Seen on 2026-08-27: a snapshot that failed to re-parse ("syntax error
+  // near unexpected token `('", from extglob patterns `declare -f` dumps without the shopt
+  // that made them legal) left a with_skill run unable to read its own installed skill, which
+  // grades as a skill that did not help rather than as a broken run.
+  const args = ["exec", "--disable", "shell_snapshot", "-s", "workspace-write", "-c", "sandbox_workspace_write.network_access=true"];
 
   if (model) {
     args.push("-m", model);
