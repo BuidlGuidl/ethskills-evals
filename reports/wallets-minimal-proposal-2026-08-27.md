@@ -64,25 +64,39 @@ but if the skills are ever combined (issue #1 step 7) these are the seams.
 `description` is a routing signal, not a summary
 ([#91](https://github.com/BuidlGuidl/ethskills-evals/issues/91)), held to the bar damianmarti
 applied on building-blocks (#74): state when to invoke, front-load the keywords a user would
-actually type, name what it is *not* for.
+actually type, name what it is *not* for **where that is useful**.
 
 ```
 Use when deciding who or what may sign for funds — an agent, bot, or deploy script that signs
 unattended; a treasury's custody; a Safe or multisig owner set and threshold; hardware wallet vs
 multisig; a private key pasted into a prompt, an .env, or a repo; or batching from a user's
-existing EOA (EIP-7702). Not for looking up a contract address (`addresses`) or building
-wallet-connect and approval UI (`frontend-ux`).
+existing EOA (EIP-7702).
 ```
 
 The old one — *"How to create, manage, and use Ethereum wallets… Use this skill whenever you are
 sending transactions, signing messages, or managing funds"* — is the summary shape #91 describes,
 and it fired on all 33 `with_skill` runs including quiz-003 (debugging a paymaster deposit) and
 quiz-004 (a Safe address diverging per chain), where the skill had nothing to offer and cost
-context for it. Whether that is *correct* now has a cheap test, below.
+context for it.
 
-The two `Not for` clauses are load-bearing, not decoration: they forced the address bullet out of
-the body. A description that routes address work to `addresses` while the body teaches address
-verification is a skill arguing with its own trigger.
+**A `Not for` clause was tried here and dropped.** The first version added *"Not for looking up a
+contract address (`addresses`) or building wallet-connect and approval UI (`frontend-ux`)"*, and
+one `with_skill` run on quiz-004 measured what it did: the skill **fired anyway**. The prompt says
+"the counterfactual address of a user's 2-of-3 Safe — same owners, same threshold, same salt",
+which matches the description's own front-loaded custody keywords; the disclaimer lost to the noun
+overlap it was written against. The next move would have been sharpening it until quiz-004 stopped
+firing — which is over-pinning a description to one eval task, the same failure this suite already
+documented three times on expect lines. #91 asks for a not-for clause only where useful, and here
+it was not. Dropped.
+
+**One body change survives the clause that motivated it.** The verify-wallet-infrastructure-
+addresses bullet stays out — not because the description routes elsewhere, but on its own merits:
+it duplicated `skills/addresses`, and it was the one line in this cut that risked *creating* a
+negative delta on quiz-004.
+
+**What the firing does tell us**, recorded as an observation rather than a check: on a task the
+skill has no content for, it still loads and costs context. Whether it also *harms* the answer is
+what grading that run measures.
 
 ## Task review
 
@@ -95,8 +109,8 @@ already knows this" is the reported conclusion.
 | --- | --- | --- |
 | quiz-001 (7702 batching) | none — claim survives the cut | `with_skill` regression |
 | quiz-002 (multisig > lone hardware wallet) | **input reworded** — dropped "or is there a strictly more secure setup I can run entirely by myself", which stated half of expect_2 in the prompt | **both variants, fresh baseline** |
-| quiz-003 (EntryPoint mismatch) | **input reworded** — "explain what is actually mismatched" → "diagnose the root cause"; cut the trailing pointer at the deposit namespace | 1 run, **negative trigger check**, then retire |
-| quiz-004 (Safe CREATE2) | **input reworded** — dropped "so the address comes out identical on every chain", which asserted the answer | 1 run, **negative trigger check**, then retire |
+| quiz-003 (EntryPoint mismatch) | **input reworded** — "explain what is actually mismatched" → "diagnose the root cause"; cut the trailing pointer at the deposit namespace | none — **retire** |
+| quiz-004 (Safe CREATE2) | **input reworded** — dropped "so the address comes out identical on every chain", which asserted the answer | none — **retire**; the one run already spent stands as an observation |
 | quiz-005 (delegation persists) | none | `with_skill` regression |
 | quiz-006 (agent custody) | expect_2 no longer calls 2-of-3 "the skill's canonical" topology — the reduced skill prescribes no owner count | `with_skill` regression |
 | goal-001 (7702 unprompted) | none; the notes' "watch for the skill's hedges" instruction inverts, since the hedge is deleted | `with_skill` regression |
@@ -105,12 +119,8 @@ already knows this" is the reported conclusion.
 | goal-004 (guardrails, random key) | none | `with_skill` regression — **the one that matters most**, the guardrails lost the most words |
 
 quiz-003 and quiz-004 stop being skill tests entirely. Nothing in the reduced file makes either
-claim, and the description now names `addresses` as where address work belongs — so the right
-result on those two is that **the skill does not fire at all**. One `with_skill` run each answers
-that: read the transcript for whether the `Skill` tool was invoked. Not invoked is the pass, and
-both tasks then retire. Invoked means the description is still too broad, which is a finding about
-the description rather than about wallets. Their reworded inputs stay in the tree for whoever
-revives them on a smaller model tier.
+claim, so neither gets a re-baseline and both retire. Their reworded inputs stay in the tree for
+whoever revives them on a smaller model tier, where these claims may still be live.
 
 **Not changed, deliberately.** quiz-006 and goal-002's property-based expects (rewritten
 2026-08-05, both regraded to 3/3 vs 3/3 under two judges) and goal-004's expect_3, which failed
@@ -120,21 +130,19 @@ number look better, which is the failure mode this suite has already documented 
 
 ## Re-run plan
 
-Three blocks, 26 runs if all of it runs:
+Two blocks, 24 runs if all of it runs:
 
 - **6 runs — quiz-002**, `no_skill` and `with_skill` × 3. Its input moved, so the 2026-07-25
   baseline is void and both arms have to be measured again. It is the only reworded quiz that
   still tests a claim the reduced skill makes.
-- **2 runs — quiz-003 and quiz-004**, `with_skill` × 1 each, as negative trigger checks. Cheap,
-  and they answer the one question issue #91 raises about this description.
 - **18 runs — the regression checks** (quiz-001, quiz-005, quiz-006, goal-001, goal-002,
   goal-004), `with_skill` × 3 each. Inputs and expects unchanged there, so `no_skill` would
   re-measure a constant; the only question is whether the cut broke something.
 
-If that is too much inference, the block that cannot be skipped is 14 runs: quiz-002 both arms,
-the two trigger checks, and `with_skill` × 3 on goal-004 and goal-002 — the rewording decides
-whether quiz-002's wash was ever real, goal-004 is where the guardrail compression would show,
-and goal-002 is where the cost argument lives.
+If that is too much inference, the block that cannot be skipped is 12 runs: quiz-002 both arms and
+`with_skill` × 3 on goal-004 and goal-002 — the rewording decides whether quiz-002's wash was ever
+real, goal-004 is where the guardrail compression would show, and goal-002 is where the cost
+argument lives.
 
 Carry the cost column either way. goal-002 had `with_skill` at +50% duration and roughly double
 the turns on the old file for an identical verdict; whether the cut removes that is the strongest
