@@ -132,6 +132,13 @@ skill_version: 191dcc1         # git short sha of the skill source; null for no_
 created: 2026-07-06T09:30:00Z
 executor_model: claude-opus-5   # what actually ran; null when the CLI picked its default
 executor_exit: 0                # verify refuses anything else unless --grade-failed-run
+usage:                         # what the run cost; absent on runs made before 2026-08-27
+  duration_s: 812              # the harness's own wall clock — the one figure both stacks share
+  turns: 34                    # claude only
+  cost_usd: 4.66               # claude only; codex exec reports no price
+  input_tokens: 51204          # claude only
+  output_tokens: 8133          # claude only
+  total_tokens: 59337          # both stacks; on codex this is all there is
 judge:                         # who graded this run
   agent: claude
   model: claude-opus-4-8       # null when the agent's CLI picked its own default
@@ -169,12 +176,19 @@ key per measurement instead of the two bare variant lines — see
 
 State the executor, its model, the judge, and the run count at the top of every report. If any run came back `self_judged: true`, say so there — on a single-stack benchmark that is every run, and it is a caveat on the numbers, not a defect in them.
 
+Pass counts are not the whole verdict. `result.yaml` carries a `usage` block per run, so
+give the cost row real numbers rather than "no reduction observed": duration and tokens on
+both stacks, dollars on claude. Two arms that both pass every line are not equivalent if one
+of them took twice the tokens to get there, and on a saturated task that difference is the
+result. Dollars for a codex benchmark have to be derived from tokens and a published price —
+say so in the report rather than printing a figure the harness never measured.
+
 Every report ends with this table. Answer the last row honestly: sometimes the eval is the wrong artifact, not the skill.
 
 | Question | Answer |
 | --- | --- |
 | Did the skill improve pass rate? | raw counts, e.g. `2/3 vs 0/3` |
-| Did it reduce time/tokens? | yes/no, if observed |
+| Did it reduce time/tokens? | per-variant medians from `usage`, e.g. `808s / 59k tokens vs 1277s / 91k` |
 | Did it create negative deltas? | list them |
 | What mistakes repeated without the skill? | mistake ids |
 | What mistakes remained with the skill? | mistake ids |

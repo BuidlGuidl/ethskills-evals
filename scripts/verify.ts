@@ -6,6 +6,7 @@ import yaml from "js-yaml";
 import { buildEvidence, snapshotOutput, writeDiff } from "../lib/evidence.js";
 import { judgeExpectations } from "../lib/judge.js";
 import { isRecord, loadTaskSpec, loadYamlFile, parseArgs, requireString } from "../lib/task.js";
+import { parseUsageRecord } from "../lib/usage.js";
 import type { Executor, ExecutorRecord, ExpectStatus, JudgeSpec, ResultRecord, Variant } from "../lib/types.js";
 import { pruneEmptyParent, readWorkspacePath } from "../lib/workspace.js";
 
@@ -110,6 +111,7 @@ const loadExecutorRecord = (runDir: string): ExecutorRecord => {
     started: requireString(loaded.started, "started"),
     finished: requireString(loaded.finished, "finished"),
     exit: typeof loaded.exit === "number" ? loaded.exit : null,
+    usage: parseUsageRecord(loaded.usage),
   };
 };
 
@@ -202,6 +204,10 @@ const main = async () => {
       created: result.created,
       executor_model: executorRecord.model,
       executor_exit: executorRecord.exit ?? undefined,
+      // Copied from executor.yaml rather than re-derived: run-executor measured it, and
+      // the raw capture it measured from is gitignored, so result.yaml is where a reader
+      // of the eval PR can still see what the run cost.
+      usage: executorRecord.usage,
       judge: { ...judgeSpec, self_judged: judgeSpec.agent === result.executor },
       expects: verdict.expects,
       pass,
