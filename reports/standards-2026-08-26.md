@@ -79,7 +79,7 @@ Zero mentions of the skill, `.claude/skills`, or `SKILL.md` across all nine `wit
 | Question | Answer |
 | --- | --- |
 | Did the skill improve pass rate? | Marginally, on one task: `2/3 vs 3/3` on goal-001, and for a different reason than in #35 — the registry addresses, not the domain binding. `3/3 vs 3/3` on both quizzes. |
-| Did it reduce time/tokens? | **On the quizzes yes (−74% cost on quiz-001, 26 web calls → 0). On the goal task no — a 2.75× cost regression**, $2.56 → $7.04, 26 → 89 turns, caused by the new "read the installed types" instruction. Net across 18 runs the skill is 95% more expensive than no skill. |
+| Did it reduce time/tokens? | **Superseded for goal-001 by reports/standards-goal-001-2026-08-27.md** — the instruction that caused this was fixed in `e2e50ab` and the re-run came back $1.37/run, i.e. −46% against no_skill. As measured here: **On the quizzes yes (−74% cost on quiz-001, 26 web calls → 0). On the goal task no — a 2.75× cost regression**, $2.56 → $7.04, 26 → 89 turns, caused by the new "read the installed types" instruction. Net across 18 runs the skill is 95% more expensive than no skill. |
 | Did it create negative deltas? | Yes, the goal-task cost above. No graded regression: no `with_skill` run failed any line. |
 | What mistakes repeated without the skill? | `standards-registry-address-deferred-to-config` (1/3). `standards-missing-domain-binding` did NOT reproduce (0/3) once graded against the spec. |
 | What mistakes remained with the skill? | None. 33/33 expect lines pass across all nine `with_skill` runs. |
