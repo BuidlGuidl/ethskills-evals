@@ -1,6 +1,6 @@
 ---
 name: gas
-description: Measure current Ethereum transaction costs and use them when choosing between mainnet and L2s. Use when estimating gas or dollar costs, selecting a deployment chain, setting transaction fees, optimizing L2 fees, or claiming that Ethereum is expensive.
+description: Use when quoting a gas or dollar cost for a transaction or deployment, when cost is the reason to pick mainnet over an L2, when setting EIP-1559 fee fields or cutting L2 fees, or when calling Ethereum expensive or cheap. Not for non-cost chain selection (`l2s`).
 ---
 
 # Gas and Chain Cost
