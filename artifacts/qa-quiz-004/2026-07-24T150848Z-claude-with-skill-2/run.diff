@@ -1,0 +1,166 @@
+diff --git a/answer.md b/answer.md
+new file mode 100644
+index 0000000..0fb944b
+--- /dev/null
++++ b/answer.md
+@@ -0,0 +1,157 @@
++# Mobile WalletConnect deep-linking: why "Stake" does nothing, why the patch broke it, and the correct pattern
++
++## 1. Why nothing auto-opened before the patch
++
++`writeContractAsync` does not "open a wallet." Over a WalletConnect v2 (WCv2)
++session, it builds an `eth_sendTransaction` JSON-RPC request and **publishes it
++to the WalletConnect relay** — an encrypted message pushed over a websocket to
++the relay server. The wallet holds a persistent relay subscription, so Rainbow
++*receives* the request almost immediately and queues it internally. That is why,
++when the user manually switches to Rainbow, the signing prompt is already sitting
++there. The request landed fine. Nothing was broken on the transport.
++
++The missing piece is **foregrounding**. On mobile the dApp runs in a browser tab
++and the wallet is a separate, backgrounded native app. iOS/Android do **not** let
++a backgrounded app pull itself to the foreground when a websocket message arrives.
++The only thing that can bring Rainbow forward is the app currently in the
++foreground — the browser — navigating to the wallet's **deep link**
++(`rainbow://` / a universal link). That navigation counts as a user-initiated
++app switch, which the OS honors.
++
++RainbowKit/WCv2 are *supposed* to fire that redirect automatically using the
++wallet's redirect metadata stored on the session (`peer.metadata.redirect`).
++On the initial pairing it does (that's the QR/deep-link handoff). On **subsequent
++session requests** this auto-redirect is unreliable and frequently doesn't fire —
++older `@walletconnect` versions, missing `redirect` metadata, or the request
++originating outside a fresh user gesture. Result: the request is on the relay,
++Rainbow has it, but no one told the OS to surface Rainbow. Tap → "nothing happens."
++
++## 2. Why the patch made it worse
++
++```js
++window.location.href = "rainbow://";   // runs first, synchronously
++await writeContractAsync(...);          // runs second — or not at all
++```
++
++Two problems, both caused by inverting the order:
++
++- **You open the wallet before the request exists.** At the instant
++  `location.href` fires, `writeContractAsync` has not run, so nothing has been
++  published to the relay. Rainbow foregrounds and finds an **empty queue** —
++  literally nothing to sign.
++- **Foregrounding Rainbow backgrounds the browser tab, which pauses its JS.**
++  Mobile browsers throttle/suspend background tabs: the event loop and the relay
++  websocket stall. So the `writeContractAsync` publish that was supposed to run
++  "next" is delayed or never completes while the tab is backgrounded. Even once
++  the request eventually goes out, Rainbow is already open and showing nothing.
++
++So the patch reliably wins the race it should lose: wallet first, request never.
++Before the patch the request at least arrived (just without foregrounding);
++after the patch you broke the transport too.
++
++## 3. The correct pattern
++
++### Ordering — fire the request, *don't* await it, then deep-link
++
++`writeContractAsync` only resolves **after** the user approves in the wallet — it
++returns the tx hash post-signature. So you can never `await` it before opening the
++wallet; that's a deadlock (the wallet must open for the user to sign, but you'd be
++waiting for the signature before opening). Instead:
++
++```js
++async function onStake() {
++  if (!shouldDeepLink()) {
++    return writeContractAsync(stakeArgs);   // desktop/injected: just send
++  }
++
++  const scheme = await getWalletRedirect(); // from the session, see below
++
++  // start the request — this publishes to the relay — but do NOT await yet
++  const txPromise = writeContractAsync(stakeArgs);
++
++  // give the relay publish a moment, then foreground the wallet
++  setTimeout(() => {
++    if (scheme) window.location.href = scheme;
++  }, 200);
++
++  return txPromise; // await elsewhere for the hash / receipt
++}
++```
++
++Key point: the JSON-RPC request is published to the relay early in the
++`writeContractAsync` lifecycle, *before* the promise resolves. The short delay
++lets that publish happen, then you foreground a wallet that already has the
++request queued.
++
++### The delay and why its length is bounded on both sides
++
++~150–300 ms. It is a compromise between two hard constraints:
++
++- **Lower bound:** the request must reach the relay before Rainbow foregrounds,
++  or you recreate the patch's "empty queue" bug. A few hundred ms covers the
++  serialize + websocket publish.
++- **Upper bound:** mobile browsers only allow a programmatic app-open
++  (`location.href` to a custom scheme) while the **transient user activation**
++  from the tap is still live. Wait too long and the browser treats the navigation
++  as un-gestured and silently blocks it — the deep link does nothing. Keep it well
++  under a second.
++
++Too short → wallet opens to nothing. Too long → deep link ignored. ~200 ms sits
++in the middle.
++
++### Which scheme to open — never hardcode `rainbow://`
++
++`connector.id === "walletConnect"` for **every** wallet connected via WC —
++MetaMask, Trust, Coinbase, Rainbow all report the same id. It tells you the
++*transport*, not the *wallet*. Hardcoding `rainbow://` sends MetaMask users to
++Rainbow (or nowhere).
++
++Read the wallet's own redirect metadata off the live session:
++
++```js
++async function getWalletRedirect() {
++  const provider = await connector.getProvider();
++  const redirect = provider?.session?.peer?.metadata?.redirect;
++  // prefer the universal link (more reliable on iOS), fall back to native scheme
++  return redirect?.universal || redirect?.native || null;
++}
++```
++
++`native` is the custom scheme (`rainbow://`); `universal` is an https universal
++link (`https://rnbwapp.com/...`). Universal links are generally more reliable on
++iOS, so prefer them when present.
++
++### When to skip the deep link entirely
++
++- **Not a WalletConnect connection** — injected/extension (`connector.id`
++  `injected`/`metaMask`), Coinbase in-app, etc. There's no separate app to
++  foreground; the provider is in-page.
++- **In-app / embedded wallet browser** — the dApp is loaded *inside* MetaMask's,
++  Coinbase's, or Rainbow's own browser. The wallet is already the host and injects
++  its provider; deep-linking would try to leave the in-app browser. Detect via an
++  injected provider being present.
++- **Desktop, including desktop WalletConnect (QR)** — on a QR pairing the wallet
++  is on a *different device*; opening a scheme on the desktop is meaningless.
++  Gate on mobile user-agent / platform.
++- **No redirect metadata on the session** (`peer.metadata.redirect` missing/empty)
++  — you don't know the scheme, so don't guess. Skip rather than fire a blank/wrong
++  scheme that just blanks the page.
++
++```js
++function shouldDeepLink() {
++  return isMobile()                       // not desktop / not QR pairing
++      && connector?.id === "walletConnect"// WC transport, not injected/in-app
++      && !window.ethereum?.isMetaMask;    // not inside an in-app wallet browser
++}
++```
++
++## TL;DR
++
++The request was always reaching Rainbow over the relay; what was missing was
++foregrounding, which only a deep link from the foreground browser can do. The
++patch deep-linked *before* creating the request (and backgrounded the tab that
++still had to send it), so Rainbow opened to an empty queue. The fix: fire
++`writeContractAsync` without awaiting, wait ~200 ms so the request reaches the
++relay while staying inside the tap's activation window, then open the scheme —
++read from the session's `peer.metadata.redirect`, never hardcoded — and skip the
++deep link on desktop, injected/in-app, and metadata-less sessions.
+
+# Untracked files and status
+ A answer.md

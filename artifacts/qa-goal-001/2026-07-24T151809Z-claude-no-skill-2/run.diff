@@ -1,0 +1,95 @@
+diff --git a/REVIEW.md b/REVIEW.md
+new file mode 100644
+index 0000000..cf45746
+--- /dev/null
++++ b/REVIEW.md
+@@ -0,0 +1,86 @@
++# Pre-ship Review — USDC Payouts dApp (Base)
++
++Scope: frontend (`packages/nextjs`) + configuration. Report only; no code changed.
++Contract reviewed for context: `packages/hardhat/contracts/Payouts.sol`.
++
++Severity legend: **ship-blocking** = will break for real users or cost them money / fail silently; **should-fix** = works but hurts UX, correctness margins, or violates project conventions.
++
++---
++
++## Ship-blocking
++
++### 1. Payouts feed scans from block 0 on Base mainnet — will not load
++- **File:** `packages/nextjs/app/payouts/page.tsx:32` (`fromBlock: 0n`)
++- **Problem:** `useScaffoldEventHistory` fetches logs in 500-block batches (hook default `blocksBatchSize: 500`). Base is at ~33.7M blocks; from block 0 that is ~67,000 sequential `eth_getLogs` calls. On the shared Alchemy key this rate-limits/times out, so the "Latest payouts" feed effectively never populates (and hammers the RPC on every mount, made worse by `watch: true`).
++- **Fix:** Drop `fromBlock` entirely so the hook uses the contract's `deployedOnBlock` (33712450, already present in `deployedContracts.ts:48`), or set it explicitly:
++  ```ts
++  const { data: payouts } = useScaffoldEventHistory({
++    contractName: "Payouts",
++    eventName: "Paid",
++    fromBlock: PAYOUTS_DEPLOY_BLOCK, // 33712450n
++    watch: true,
++  });
++  ```
++
++### 2. Writes bypass Scaffold-ETH hooks — no network guard, no user feedback
++- **File:** `packages/nextjs/app/payouts/page.tsx:6,21,36-47,49-62`
++- **Problem:** Uses raw wagmi `useWriteContract` instead of `useScaffoldWriteContract`. Consequences for real users:
++  - **No target-network check.** If the wallet is on a chain other than Base, the approve/pay tx is sent to the wrong network (or with the wrong contract address) instead of prompting a switch. Scaffold's write hook guards this; raw wagmi does not.
++  - **No success/error notifications or tx-status toast** (transactor). Errors are swallowed to `console.error` (lines 44–46, 59–61) — a failed or reverted payout looks identical to nothing happening.
++  - This directly violates AGENTS.md: "Always use hooks from `packages/nextjs/hooks/scaffold-eth` for contract interactions."
++- **Fix:** Use `useScaffoldWriteContract({ contractName: "USDC" })` for `approve` and `useScaffoldWriteContract({ contractName: "Payouts" })` for `pay`, and surface outcomes via `notification` + `getParsedError` from `~~/utils/scaffold-eth`.
++
++### 3. No input validation → invalid recipient / bad amount fail silently
++- **File:** `packages/nextjs/app/payouts/page.tsx:55` (`recipient as \`0x${string}\``), `:42,:55` (`parseUnits(amount || "0", 6)`)
++- **Problem:**
++  - Recipient is cast to `0x${string}` with no `isAddress` check. A malformed/empty address throws inside viem, caught only by `console.error` — the user sees nothing and doesn't know why the payout didn't send.
++  - `type="number"` allows values with >6 decimals or scientific notation; `parseUnits(..., 6)` throws on >6 decimal places, again silently.
++  - An empty amount becomes `parseUnits("0", 6)` = 0, which the contract rejects (`require(amount > 0)`) — the "Send Payout" button is enabled and reverts on-chain, costing gas.
++- **Fix:** Validate before writing: `isAddress(recipient)`, non-empty/positive amount, and disable "Send Payout" until both are valid. Use the SE-2 `AddressInput` and `IntegerInput`/`EtherInput`-style components per AGENTS.md; show a notification on validation failure.
++
++---
++
++## Should-fix
++
++### 4. Approve → Pay race: `isPending` doesn't reflect confirmation, no allowance check
++- **File:** `packages/nextjs/app/payouts/page.tsx:21,101,108`
++- **Problem:** A single shared `isPending` drives both buttons and only reflects the *request* being in-flight, not the tx being *mined*. After clicking Approve, a user can immediately click "Send Payout"; the allowance isn't set yet, so `transferFrom` reverts and gas is wasted. There's no `allowance` read to gate the flow.
++- **Fix:** Read current allowance (`useScaffoldReadContract({ contractName: "USDC", functionName: "allowance", args: [connectedAddress, PAYOUTS.address] })`) and conditionally show Approve vs. Send Payout, or auto-sequence (await approve confirmation before enabling pay). At minimum, don't share one pending flag across two independent actions.
++
++### 5. Balance not refetched after a payout
++- **File:** `packages/nextjs/app/payouts/page.tsx:23-27`
++- **Problem:** The `balanceOf` read has no `watch`, so after a successful payout the displayed balance stays stale until the next natural refetch. Combined with issue #7 (30s polling), the balance can look wrong for up to 30s.
++- **Fix:** Add `watch: true` to the balance read, or refetch on payout success.
++
++### 6. `walletConnectProjectId` and Alchemy key rely on shared public defaults
++- **File:** `packages/nextjs/scaffold.config.ts:16,44` (`DEFAULT_ALCHEMY_API_KEY`, WC id `3a81...d64`), env in `packages/nextjs/.env.example`
++- **Problem:** Shipping to real users on Base mainnet on the shared/default Alchemy key and default WalletConnect project id means rate-limiting under real traffic and no ownership/analytics/allowlist control over WalletConnect. This amplifies issue #1.
++- **Fix:** Set `NEXT_PUBLIC_ALCHEMY_API_KEY` and `NEXT_PUBLIC_WALLET_CONNECT_PROJECT_ID` in Vercel/system env before ship (fields already wired in the config and `.env.example`).
++
++### 7. Polling interval is 30s — feed/balance feel stale for a payments UX
++- **File:** `packages/nextjs/scaffold.config.ts:29` (`pollingInterval: 30000`)
++- **Problem:** AGENTS.md advises *decreasing* the polling interval for L2 chains; this is set well *above* the 4000ms default. On Base (2s blocks) a payout can take up to 30s to appear in the feed / reflect in balance, which reads as "it didn't work."
++- **Fix:** Lower to ~5000–8000ms (balance Base RPC cost vs. responsiveness).
++
++### 8. Hardcoded `bg-black` / raw Tailwind instead of DaisyUI theme
++- **File:** `packages/nextjs/app/payouts/page.tsx:65` (`bg-black text-white`), `:121` (`border-gray-700`), `:122,124` (`opacity-70`)
++- **Problem:** The page forces a black background and raw Tailwind colors, ignoring the app's DaisyUI theme (rest of the app is themeable, incl. light mode). Inputs use `input-bordered`/`textarea-bordered` DaisyUI classes on a hardcoded black bg, which can produce poor contrast in light theme. Violates the AGENTS.md styling guidance (prefer DaisyUI `base-*`/`neutral` tokens over raw Tailwind).
++- **Fix:** Use theme tokens: `bg-base-100 text-base-content`, `border-base-300`, and a DaisyUI `card` for feed rows.
++
++### 9. List keyed by array index
++- **File:** `packages/nextjs/app/payouts/page.tsx:120-121` (`key={i}`)
++- **Problem:** With `watch: true` the feed grows/reorders; index keys cause React reconciliation glitches (wrong row reused). Minor but real.
++- **Fix:** Key by a stable id such as `` `${payout.transactionHash}-${payout.logIndex}` ``.
++
++### 10. `btn ... loading` className is deprecated DaisyUI usage
++- **File:** `packages/nextjs/app/payouts/page.tsx:101,108`
++- **Problem:** `loading` as a `btn` modifier is legacy DaisyUI; the current pattern is a separate `<span className="loading loading-spinner">`. May render as a no-op spinner depending on the installed DaisyUI version.
++- **Fix:** Render `<span className="loading loading-spinner loading-sm" />` inside the button while pending.
++
++---
++
++## Notes / non-issues (verified, no action needed)
++- Feed ordering: the hook `.reverse()`s results (newest-first), so the "Latest payouts" heading matches the display order. OK.
++- `deployedContracts[8453]` matches `targetNetworks: [chains.base]` (8453) — module-level access is consistent with the target network. OK.
++- USDC 6-decimals hardcoding matches Base USDC (`0x8335...2913`). OK, though reading `decimals()` would be more robust if the token ever changes.
++- `burnerWalletMode: 'localNetworksOnly'` correctly hides the burner wallet on mainnet. OK.
+
+# Untracked files and status
+ A REVIEW.md
