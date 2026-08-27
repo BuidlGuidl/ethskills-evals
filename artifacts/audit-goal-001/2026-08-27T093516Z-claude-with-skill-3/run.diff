@@ -1,0 +1,914 @@
+diff --git a/AUDIT-REPORT.md b/AUDIT-REPORT.md
+new file mode 100644
+index 0000000..19748f9
+--- /dev/null
++++ b/AUDIT-REPORT.md
+@@ -0,0 +1,905 @@
++# ArbiLend — Security Audit Report
++
++**Scope:** `src/LendingMarket.sol`, `src/CollateralVault.sol`, `src/PriceOracle.sol`,
++`src/MarketProxy.sol`, `src/interfaces/*` (420 LoC total, commit `9852d3e`).
++**Target chain:** Arbitrum One. **Debt asset:** USDC. **Launch collateral:** wstETH.
++**Method:** manual review of the full source, cross-checked against the deployment
++parameters and collateral roadmap declared in `README.md`. No test suite exists, so
++nothing here is backed by an executing PoC — every finding is derived from the code path.
++
++---
++
++## Verdict
++
++**Do not deploy.** Four issues are individually sufficient to lose the entire book on day
++one, and three of them are one-line access-control omissions. Two of the four (C-1, C-2)
++give an anonymous caller full control of the protocol in a single transaction with no
++prerequisites. One (C-3) fires with no attacker at all — it liquidates honest users at
++199% collateralisation.
++
++The good news: the top of this list is cheap to fix. C-1 through C-4 are roughly a day of
++work plus tests. The High section is where the real engineering time goes.
++
++---
++
++## Ranked summary
++
++Hand rows 1–4 to the team Monday. Rows 5–13 before any real money moves. The rest before
++the collateral shortlist in the README gets listed.
++
++| # | Sev | Contract · function | One line |
++|---|-----|---------------------|----------|
++| C-1 | Critical | `LendingMarket.upgradeTo` | No access control — anyone upgrades the proxy and drains everything |
++| C-2 | Critical | `LendingMarket.setOracle` | No access control — anyone sets prices, mints debt or liquidates the book |
++| C-3 | Critical | `LendingMarket.healthFactor` | Divides before multiplying — positions at 199% LTV are liquidatable |
++| C-4 | Critical | `LendingMarket.setLiquidationThreshold` | No access control — force-liquidate every position for the 5% bonus |
++| H-1 | High | `PriceOracle.getPrice` | `latestAnswer()`, no staleness / negative / round checks |
++| H-2 | High | `PriceOracle` config (per README) | wstETH priced off a **stETH/USD** feed — ~20% collateral undervaluation |
++| H-3 | High | `PriceOracle.getPrice` | No Arbitrum L2 sequencer-uptime check — mass unfair liquidation after an outage |
++| H-4 | High | `LendingMarket.borrowWithSig` | No nonce, no deadline — signature replayable forever |
++| H-5 | High | `LendingMarket.borrow` / `liquidateAll` | `borrow(0)` appends to `borrowers` for free — permanent keeper DoS |
++| H-6 | High | `CollateralVault.withdraw` | Transfer before state update — reentrant drain once a hook token is listed |
++| H-7 | High | Both contracts, all ERC20 calls | Return values unchecked — USDT is on the shortlist |
++| H-8 | High | `LendingMarket._liquidate` | No close factor, liquidator overpays when underwater — bad debt sticks |
++| H-9 | High | `LendingMarket.accrueInterest` | Interest keyed to `block.number × 12s` on Arbitrum |
++| M-1 | Medium | `LendingMarket.initialize` | Front-runnable; implementation left uninitialised |
++| M-2 | Medium | `CollateralVault.deposit` | Credits `amount`, not amount received — breaks on fee-on-transfer and rebasing |
++| M-3 | Medium | `LendingMarket.listCollateral` | No feed check, no `decimals()` check, no delist path — bricks health checks |
++| M-4 | Medium | `LendingMarket.collateralValueUsd` | Unbounded token loop inside every health check |
++| M-5 | Medium | `LendingMarket.upgradeTo` | No `isContract` check — upgrade to an EOA freezes the protocol silently |
++| M-6 | Medium | `LendingMarket.setBorrowRate` etc. | No parameter bounds, no timelock, single-EOA owner |
++| M-7 | Medium | `LendingMarket.repay` | Transfer before state update (CEI) |
++| M-8 | Medium | Protocol-wide | No pause / emergency stop |
++| L-1 … L-10 | Low/Info | various | See below |
++
++---
++
++# Critical
++
++## C-1 — `LendingMarket.upgradeTo` has no access control
++
++**Severity:** Critical · **Contract:** `LendingMarket` · **Function:** `upgradeTo` (L84–89)
++
++```solidity
++function upgradeTo(address newImplementation) external {
++    assembly { sstore(IMPLEMENTATION_SLOT, newImplementation) }
++    emit Upgraded(newImplementation);
++}
++```
++
++There is no `onlyOwner`. There is no `_authorizeUpgrade`. `MarketProxy` deliberately has no
++admin of its own — the comment on L4 of `MarketProxy.sol` says "the implementation owns the
++upgrade entry point" — so this function *is* the entire upgrade authorisation model, and it
++authorises everyone.
++
++**What the attacker gets.** Any address calls `MarketProxy.upgradeTo(evilImpl)`. The call
++delegatecalls into the market, which writes `evilImpl` into the proxy's ERC-1967 slot. The
++attacker now controls the contract at the proxy address. Because `CollateralVault.market` is
++the proxy address, `onlyMarket` is satisfied, so the attacker's implementation calls
++`vault.seize(anyUser, anyToken, attacker, fullBalance)` in a loop and takes **every deposit
++in the vault**, plus the treasury's seeded USDC sitting in the market. Total loss of protocol
++funds, one transaction, no capital required, no race to win.
++
++**Fix.** Add `onlyOwner`, and put the owner behind a multisig + timelock before launch:
++
++```solidity
++function upgradeTo(address newImplementation) external onlyOwner {
++    if (newImplementation.code.length == 0) revert NotAContract();
++    assembly { sstore(IMPLEMENTATION_SLOT, newImplementation) }
++    emit Upgraded(newImplementation);
++}
++```
++
++Better still, drop the hand-rolled proxy and inherit OpenZeppelin `UUPSUpgradeable` so
++`_authorizeUpgrade` is a compile-time obligation rather than something you have to remember.
++See also M-5 for the missing contract check.
++
++---
++
++## C-2 — `LendingMarket.setOracle` has no access control
++
++**Severity:** Critical · **Contract:** `LendingMarket` · **Function:** `setOracle` (L91–94)
++
++```solidity
++function setOracle(PriceOracle newOracle) external {
++    oracle = newOracle;
++    emit OracleUpdated(address(newOracle));
++}
++```
++
++Same omission as C-1. Note that `setBorrowRate` and `listCollateral` directly below and above
++it *do* carry `onlyOwner` — this is an inconsistency a reviewer's eye slides straight over,
++which is exactly why it survived to code-complete.
++
++**What the attacker gets.** Two shapes, both terminal:
++
++- *Inflate collateral.* Deploy a contract exposing `getPrice(address)` that returns `1e30`
++  for wstETH and the honest price for USDC. Call `setOracle(fake)`. Deposit 1 wei of wstETH,
++  `borrow()` the market's entire USDC balance — `healthFactor` sees astronomic collateral and
++  passes. Walk away. The treasury's seed capital is gone.
++- *Crash collateral.* Return near-zero for wstETH instead. Every borrower's health factor
++  drops below `WAD`, then `liquidateAll()` seizes their collateral. The attacker pays each
++  user's debt and receives collateral valued at the fake price — `_liquidate` computes
++  `takeUsd * unit / price`, and a tiny `price` makes that quotient enormous, capped only by
++  the user's actual balance. Every wstETH deposit in the vault, for the cost of the outstanding
++  debt.
++
++Because `oracle` is read fresh on every call, the swap needs no waiting period and can be
++reverted in the same transaction to muddy the trail.
++
++**Fix.** `external onlyOwner`. Additionally, changing the oracle is a
++governance-grade action: route it through the same timelock as upgrades, and consider
++validating that the new oracle returns a non-zero price for every entry in
++`collateralTokens` plus `debtAsset` before accepting it.
++
++---
++
++## C-3 — `healthFactor` divides before it multiplies, so healthy users get liquidated
++
++**Severity:** Critical · **Contract:** `LendingMarket` · **Function:** `healthFactor` (L146–151),
++reached from `liquidate`, `liquidateAll`, `_borrow`, `requireHealthy`
++
++```solidity
++return (collateralValueUsd(user) / debtUsd) * liquidationThreshold * WAD / BPS;
++```
++
++`collateralValueUsd` and `debtValueUsd` both return 1e18-scaled USD, so
++`collateralValueUsd(user) / debtUsd` is a **small integer** — it truncates the collateral
++ratio to a whole number before any of the scaling is applied. The 1e18 fixed-point precision
++this function claims in its own docstring is destroyed on the first operation.
++
++Worked numbers at the README's 8000 bps threshold, which nominally allows borrowing up to
++125% collateralisation:
++
++| Actual collateral ratio | `C/D` truncated | Health factor | Liquidatable? | Correct answer |
++|---|---|---|---|---|
++| 1.24× | 1 | 0.8e18 | yes | yes |
++| 1.50× | 1 | 0.8e18 | **yes** | **no** |
++| 1.99× | 1 | 0.8e18 | **yes** | **no** |
++| 2.00× | 2 | 1.6e18 | no | no |
++| 2.99× | 2 | 1.6e18 | no | no |
++
++**What the unlucky user gets.** They deposit $199k of wstETH, borrow $100k of USDC — a
++conservative, doubly-overcollateralised position that any lending market on Arbitrum would
++call safe — and they are liquidatable the instant the transaction lands. A keeper running
++`liquidateAll()` repays their $100k debt and seizes $105k of their collateral. The user is
++down the 5% bonus and their position is force-closed, through no fault of their own and with
++no price movement required.
++
++Note the failure is *one-directional*: the truncation only ever rounds the health factor
++down, so the protocol never under-liquidates — it only ever over-liquidates. Every single
++error is paid for by a user. And the effect is worst for the most conservative borrowers,
++because it makes the effective requirement a hard 2.0× rather than the advertised 1.25×.
++
++`_borrow` runs the same check, so this also silently halves everyone's advertised borrowing
++power.
++
++**Fix.** Multiply first, divide once, at the end:
++
++```solidity
++function healthFactor(address user) public view returns (uint256) {
++    uint256 debtUsd = debtValueUsd(user);
++    if (debtUsd == 0) return type(uint256).max;
++    return collateralValueUsd(user) * liquidationThreshold * WAD / (BPS * debtUsd);
++}
++```
++
++Then add an invariant test asserting that a position at exactly
++`BPS * WAD / liquidationThreshold` collateralisation has `healthFactor == WAD`, and fuzz
++ratios across the boundary. The same "divide last" discipline should be applied to
++`collateralValueUsd` and `_liquidate`, which are correct today only because each of their
++individual divisions is by a token unit.
++
++---
++
++## C-4 — `LendingMarket.setLiquidationThreshold` has no access control
++
++**Severity:** Critical · **Contract:** `LendingMarket` · **Function:** `setLiquidationThreshold` (L96–99)
++
++```solidity
++function setLiquidationThreshold(uint256 bps) external {
++    liquidationThreshold = bps;
++    emit LiquidationThresholdUpdated(bps);
++}
++```
++
++Third missing modifier. Unlike C-1 and C-2 this one does not hand over custody, but it does
++hand over the liquidation switch — and it is unbounded as well as unguarded (see M-6).
++
++**What the attacker gets.**
++
++- *Set it to 0.* Every position with non-zero debt now has `healthFactor == 0`. The attacker
++  immediately calls `liquidate(victim)` on each borrower, repaying their debt and collecting
++  collateral worth 105% of it. Profit is the 5% bonus on the **entire outstanding debt of the
++  market**, taken from users who were never unhealthy. On a $20M book that is $1M, and the
++  attacker can set the threshold back to 8000 in the same transaction so the book looks
++  untouched afterwards. Users additionally lose their positions and their price exposure.
++- *Set it to `type(uint256).max`.* Now nothing is ever liquidatable. Prices fall, positions go
++  underwater, and the protocol accrues bad debt it can never clear. This is a griefing action
++  with no cost to the attacker and no on-chain remedy short of an upgrade.
++
++**Fix.** `external onlyOwner`, plus bounds and an accrual, matching the shape of
++`setBorrowRate` immediately below it:
++
++```solidity
++function setLiquidationThreshold(uint256 bps) external onlyOwner {
++    if (bps == 0 || bps > BPS) revert InvalidThreshold();
++    accrueInterest();
++    liquidationThreshold = bps;
++    emit LiquidationThresholdUpdated(bps);
++}
++```
++
++Lowering the threshold makes existing positions liquidatable, so this belongs behind the
++timelock even once it is owner-gated — users need time to top up.
++
++> **Cross-cutting note on C-1/C-2/C-4.** Three of the four criticals are the same missing
++> modifier. Before Monday's fixes, grep every `external` function in `src/` and justify the
++> absence of a modifier on each one in writing. A `slither . --detect suicidal,unprotected-upgrade`
++> run and a "every state-changing external function has an access-control test" rule in CI
++> would have caught all three for free.
++
++---
++
++# High
++
++## H-1 — Oracle accepts unvalidated, deprecated Chainlink data
++
++**Severity:** High · **Contract:** `PriceOracle` · **Function:** `getPrice` (L39–45)
++
++```solidity
++int256 answer = feed.latestAnswer();
++return uint256(answer) * 10 ** (18 - feed.decimals());
++```
++
++Three separate defects in two lines:
++
++1. **`latestAnswer()` is deprecated.** It has no `updatedAt`, so there is no way to know the
++   answer is fresh. If an aggregator stops updating — node outage, feed deprecation, a fresh
++   feed that has never been written — this returns a stale or zero price indefinitely and the
++   market keeps trading against it. Chainlink's own docs tell integrators to use
++   `latestRoundData()`; the interface at `src/interfaces/IAggregatorV3.sol:11` already declares it.
++2. **No negative check.** `uint256(answer)` on a negative `int256` wraps to a value near
++   `2^256`. Multiplying that by `10 ** 10` overflows and reverts under 0.8.x checked
++   arithmetic, so a negative answer bricks every health check and every liquidation until the
++   feed recovers — a full protocol freeze at exactly the moment liquidations are needed.
++3. **No circuit-breaker awareness.** Chainlink aggregators clamp to `minAnswer`/`maxAnswer`.
++   During a violent depeg the feed reports the floor, not the market price. This is the exact
++   mechanism that cost Venus ~$11M in the LUNA collapse.
++
++**What the unlucky user gets.** A stale wstETH price during a fast move means either their
++healthy position is liquidated against a price that no longer exists, or an underwater
++position cannot be liquidated and the treasury eats the loss. On the USDC feed the same
++staleness reprices everyone's debt at once.
++
++**Fix.**
++
++```solidity
++function getPrice(address token) external view returns (uint256) {
++    IAggregatorV3 feed = feeds[token];
++    if (address(feed) == address(0)) revert FeedNotSet(token);
++
++    (uint80 roundId, int256 answer, , uint256 updatedAt, uint80 answeredInRound) = feed.latestRoundData();
++    if (answer <= 0) revert BadPrice(token);
++    if (updatedAt == 0 || answeredInRound < roundId) revert IncompleteRound(token);
++    if (block.timestamp - updatedAt > staleAfter[token]) revert StalePrice(token);
++
++    uint8 d = feed.decimals();
++    if (d > 18) revert UnsupportedFeedDecimals(token);
++    return uint256(answer) * 10 ** (18 - d);
++}
++```
++
++Set `staleAfter` per feed from that feed's published heartbeat plus a margin — do not use one
++global constant, the wstETH and USDC feeds have different heartbeats.
++
++---
++
++## H-2 — wstETH is priced from a stETH/USD feed
++
++**Severity:** High · **Contract:** `PriceOracle` (configuration) · **Function:** `getPrice`,
++consumed by `collateralValueUsd` and `_liquidate`
++
++The README's own deployment table says it plainly:
++
++| First listed collateral | wstETH `0x5979D7b546E38E414F7E9822514be443A4800529` |
++| Feed set for wstETH | stETH / USD `0x07C5b924399cc23c24a95c8743DE4006a32b7f2a` |
++
++wstETH is not stETH. It is the non-rebasing wrapper: one wstETH is worth
++`stEthPerToken` stETH, a value that starts at 1.0 at launch and only ever increases as
++staking rewards accrue. It is currently in the region of 1.2 and climbing. `getPrice` returns
++the stETH price and `collateralValueUsd` multiplies it straight into a wstETH balance, so
++every wstETH deposit is booked at roughly **80% of its real value**, with the gap widening
++every day the contract stays deployed.
++
++**What the unlucky user gets.** Their collateral is systematically undercounted by ~20%. They
++can borrow ~20% less than the advertised LTV, and — the part that costs them money — they are
++liquidated ~20% earlier than the parameters promise. Stacked on top of C-3, a user who
++believes they are at a safe 1.9× is booked at 1.5×, truncates to 1, and is liquidated on
++deposit. The protocol also has no mechanism to notice: the position looks legitimately
++unhealthy to every keeper and every observer.
++
++Note this is not conservative-and-therefore-safe. It is wrong in the direction that
++transfers value from depositors to liquidators, continuously.
++
++**Fix.** Two options, in order of preference:
++
++1. Use a wstETH/USD feed directly if one is live on Arbitrum for your risk parameters.
++2. Compose: read the wstETH/stETH exchange rate (either Chainlink's rate feed, or
++   `IWstETH(wstETH).stEthPerToken()` on the L1 token — on Arbitrum use the Chainlink
++   `wstETH/stETH` exchange-rate feed, not a bridged call) and multiply the stETH/USD answer
++   by it. Validate the rate the same way as any other feed: bounded, non-zero, monotonic
++   within tolerance.
++
++**This is a class, not an instance.** The README's shortlist is weETH, ezETH and USDT.
++weETH and ezETH are both exchange-rate-bearing wrappers with exactly the same trap — pricing
++either off a plain ETH/USD feed reproduces this bug at a larger scale, and ezETH additionally
++carries restaking slashing risk that a spot feed does not express. Before listing any of
++them, write down for each token: what the feed measures, what the collateral is, and the
++conversion between them. Make that a required field in `listCollateral`'s review checklist.
++
++---
++
++## H-3 — No Arbitrum sequencer-uptime check
++
++**Severity:** High · **Contract:** `PriceOracle` · **Function:** `getPrice`
++
++The deployment target is Arbitrum One. Chainlink's L2 integration guidance requires
++consumers to gate price reads on the L2 Sequencer Uptime Feed
++(`0xFdB631F5EE196F0ed6FAa767959853A9F217697D` on Arbitrum One), plus a grace period after
++recovery. `getPrice` does neither.
++
++**What the unlucky user gets.** The Arbitrum sequencer has gone down for hours at a time more
++than once. During an outage users cannot submit transactions through the sequencer to top up
++collateral or repay, but prices continue moving on L1 and elsewhere. The moment the sequencer
++comes back, the feed catches up in one step and a queue of liquidators — who have had the
++whole outage to prepare — executes against positions their owners had no opportunity to
++defend. Users are liquidated for a price move they were physically prevented from responding
++to.
++
++**Fix.** Read the uptime feed before every price, revert if the sequencer is down, and
++enforce a grace period (typically ~1 hour) after it returns before allowing liquidations:
++
++```solidity
++(, int256 up, uint256 startedAt, , ) = sequencerUptimeFeed.latestRoundData();
++if (up != 0) revert SequencerDown();
++if (block.timestamp - startedAt < GRACE_PERIOD) revert GracePeriod();
++```
++
++Apply the grace period to the liquidation path specifically — borrowers should still be able
++to repay and deposit during it.
++
++---
++
++## H-4 — `borrowWithSig` signatures have no nonce and no deadline
++
++**Severity:** High · **Contract:** `LendingMarket` · **Function:** `borrowWithSig` (L162–168)
++
++```solidity
++bytes32 BORROW_TYPEHASH = keccak256("Borrow(address borrower,uint256 amount)");
++...
++if (ecrecover(digest, v, r, s) != borrower) revert BadSignature();
++_borrow(borrower, amount);
++```
++
++The signed struct contains only `(borrower, amount)`. There is no nonce, no deadline, no
++consumed-signature mapping.
++
++**What the attacker gets.**
++
++- **Unlimited replay.** A signature the borrower produced once — intending a single
++  $10k borrow — is a permanent, bearer instrument authorising a $10k borrow *every time the
++  borrower has the capacity for one*. Anyone who has ever seen it (it is in calldata on a
++  public chain forever) can resubmit it. Each replay pushes the borrower closer to
++  liquidation and adds interest they did not ask for. An attacker replays it repeatedly until
++  the position sits fractionally above `WAD`, then waits for the smallest adverse tick and
++  liquidates for the 5% bonus. The victim's only defence is to never leave borrowing capacity
++  unused.
++- **No expiry.** A signature issued during a quiet market is still valid a year later in a
++  crisis, at a completely different risk profile.
++- **`ecrecover` returns `address(0)` on malformed input.** The check is `!= borrower`, so a
++  garbage signature passed with `borrower == address(0)` reaches `_borrow(address(0), amount)`.
++  In practice USDC reverts on transfer to the zero address, so this stops there rather than
++  burning funds — but it is a missing guard, not a safe design, and it will not be safe for
++  every future debt asset.
++- **Malleability.** No EIP-2 `s`-range or `v ∈ {27,28}` check, so every signature has a twin.
++  Irrelevant while replay is unlimited anyway; relevant the moment you add a
++  used-signature mapping and forget the range check alongside it.
++
++**Fix.** Put a nonce and a deadline in the typehash, check both, and use OpenZeppelin's
++`ECDSA.recover` (which reverts on `address(0)` and rejects malleable `s`):
++
++```solidity
++bytes32 constant BORROW_TYPEHASH =
++    keccak256("Borrow(address borrower,uint256 amount,uint256 nonce,uint256 deadline)");
++
++function borrowWithSig(address borrower, uint256 amount, uint256 deadline, uint8 v, bytes32 r, bytes32 s) external {
++    if (block.timestamp > deadline) revert SignatureExpired();
++    bytes32 structHash = keccak256(abi.encode(BORROW_TYPEHASH, borrower, amount, nonces[borrower]++, deadline));
++    bytes32 digest = keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash));
++    if (ECDSA.recover(digest, v, r, s) != borrower) revert BadSignature();
++    _borrow(borrower, amount);
++}
++```
++
++Adding `nonces` is an append-only storage addition, which the README says is permitted.
++
++---
++
++## H-5 — `borrow(0)` grows the `borrowers` array for free, permanently DoS-ing `liquidateAll`
++
++**Severity:** High · **Contract:** `LendingMarket` · **Functions:** `_borrow` (L197–207),
++`liquidateAll` (L190–195)
++
++```solidity
++function _borrow(address borrower, uint256 amount) internal {
++    accrueInterest();
++    if (principalOf[borrower] == 0) borrowers.push(borrower);
++    principalOf[borrower] += amount * WAD / borrowIndex;
++    ...
++}
++```
++
++`borrowers` is append-only — nothing ever removes an entry, not `repay`, not `_liquidate`.
++Worse, the push is guarded on `principalOf[borrower] == 0`, which is *not* the same as "this
++address is new". Two ways it stays zero:
++
++- `borrow(0)` — `principalOf += 0`, health factor is `type(uint256).max` because debt is zero,
++  and `debtAsset.transfer(borrower, 0)` succeeds on USDC. The push executes and the guard is
++  still satisfied on the next call.
++- `borrow(1)` once `borrowIndex > 1e18` (i.e. any time after launch) — `1 * 1e18 / 1.04e18`
++  truncates to `0`. Same outcome, and it also hands over 1 wei of USDC each time (see L-2).
++
++Either way a single address can append itself to `borrowers` an unbounded number of times, at
++the cost of one array push per call, in a tight loop inside one transaction.
++
++**What the attacker gets.** `liquidateAll()` iterates `borrowers` and calls `healthFactor` on
++each — and `healthFactor` is not cheap: it loops `collateralTokens`, and makes an external
++oracle call plus a `decimals()` call per token per borrower. An attacker spends a few dollars
++of Arbitrum gas inflating `borrowers` to a length whose traversal exceeds the block gas limit,
++and `liquidateAll()` reverts with out-of-gas *forever*. There is no pagination, no removal
++function, and no way to reset the array without an upgrade.
++
++The README describes `liquidateAll` as the keeper's tool "after a large price move" — so this
++disables the protocol's primary defence at precisely the moment it matters, and the attacker
++can arm it weeks in advance for the price of lunch. Legitimate usage reaches the same wall
++more slowly: normal repay-then-reborrow cycles duplicate entries too.
++
++**Fix.** Three changes, all needed:
++
++1. Guard registration on membership, not balance: `if (!isBorrower[borrower]) { isBorrower[borrower] = true; borrowers.push(borrower); }`.
++2. Reject dust: `if (amount == 0) revert ZeroAmount();` and enforce a minimum borrow size so
++   `amount * WAD / borrowIndex` can never truncate to zero (see also L-2, L-6).
++3. **Delete `liquidateAll` entirely.** An unbounded loop over user-controlled state in a
++   permissionless function is not fixable by tuning; it is the wrong shape. Keepers should
++   compute the underwater set off-chain and call `liquidate(user)` per position, or
++   `liquidateBatch(address[] calldata users)` with a caller-supplied list. That is strictly
++   more gas-efficient and cannot be griefed.
++
++---
++
++## H-6 — `CollateralVault.withdraw` transfers before updating state
++
++**Severity:** High · **Contract:** `CollateralVault` · **Function:** `withdraw` (L44–53)
++
++```solidity
++uint256 balance = balanceOf[msg.sender][token];
++if (balance < amount) revert InsufficientBalance();
++
++IERC20(token).transfer(msg.sender, amount);          // <-- external call
++balanceOf[msg.sender][token] = balance - amount;     // <-- state written after
++ILendingMarket(market).requireHealthy(msg.sender);
++```
++
++Textbook checks-effects-interactions violation. `balance` is cached before the external call
++and written back after it, so a reentrant `withdraw` sees the original balance and passes the
++same check again. The health check at the end runs only on the outermost frame's unwind, by
++which point the tokens are gone.
++
++**What the attacker gets.** Full drain of that token from the vault — not just their own
++deposit, but every user's, since the vault pools balances in one contract. They deposit
++`X`, re-enter `n` times, and withdraw `n × X`.
++
++**Conditional on:** a collateral token that yields control during `transfer` — ERC-777, a
++token with a transfer hook, or any upgradeable token whose implementation later gains one.
++wstETH at launch has no hooks, so this is not exploitable on day one. It becomes exploitable
++the first time governance lists something exotic, and the README says the DAO has explicitly
++asked for "a path to yield-bearing and rebasing collateral". By then this code is holding real
++money and the fix requires an upgrade under pressure.
++
++Fix it now — it is two swapped lines and it removes the whole question from future listing
++reviews.
++
++**Fix.** Write state first, and add a reentrancy guard as defence in depth:
++
++```solidity
++function withdraw(address token, uint256 amount) external nonReentrant {
++    uint256 balance = balanceOf[msg.sender][token];
++    if (balance < amount) revert InsufficientBalance();
++
++    balanceOf[msg.sender][token] = balance - amount;
++    ILendingMarket(market).requireHealthy(msg.sender);
++    IERC20(token).safeTransfer(msg.sender, amount);
++
++    emit Withdrawn(msg.sender, token, amount);
++}
++```
++
++Moving `requireHealthy` above the transfer as well means the solvency check is complete before
++any value leaves, which is the property you actually want.
++
++---
++
++## H-7 — ERC20 return values are never checked
++
++**Severity:** High · **Contracts:** `LendingMarket` (L177, L204, L213), `CollateralVault` (L38, L48, L57)
++
++Every token movement in the codebase ignores the returned `bool`:
++
++```solidity
++debtAsset.transferFrom(msg.sender, address(this), amount);   // LendingMarket.repay
++debtAsset.transfer(borrower, amount);                        // LendingMarket._borrow
++debtAsset.transferFrom(msg.sender, address(this), debt);     // LendingMarket._liquidate
++IERC20(token).transferFrom(msg.sender, address(this), amount); // CollateralVault.deposit
++IERC20(token).transfer(msg.sender, amount);                  // CollateralVault.withdraw
++IERC20(token).transfer(to, amount);                          // CollateralVault.seize
++```
++
++**What the unlucky user gets.** Two distinct failure modes:
++
++- **Silent-failure tokens** (return `false` instead of reverting). `CollateralVault.deposit`
++  credits `balanceOf[msg.sender][token] += amount` after a transfer that never happened — the
++  attacker gets free collateral and borrows against it, and the loss lands on whoever
++  withdraws last. `_liquidate` marks the debt cleared and seizes collateral without receiving
++  the repayment.
++- **Non-standard tokens that return nothing.** USDT is on the README's shortlist and its
++  canonical implementation has no return value at all. The `IERC20` interface here declares
++  `returns (bool)`, so Solidity's ABI decoder expects 32 bytes of returndata and reverts when
++  it gets zero. Every USDT transfer will revert on the day it is listed — a live-DoS
++  introduced by a routine governance action.
++
++Arbitrum-native USDC (`0xaf88…5831`) reverts on failure and returns `true`, so the launch
++configuration happens to be safe. That is luck, not design, and it expires the moment the
++shortlist gets listed.
++
++**Fix.** Use OpenZeppelin `SafeERC20` (`safeTransfer` / `safeTransferFrom`) everywhere. It
++handles both the missing-return and the false-return cases. Pair it with the balance-delta
++measurement in M-2 so `deposit` credits what actually arrived.
++
++---
++
++## H-8 — Liquidation has no close factor and can strand bad debt
++
++**Severity:** High · **Contract:** `LendingMarket` · **Function:** `_liquidate` (L209–234)
++
++```solidity
++uint256 debt = debtOf(user);
++debtAsset.transferFrom(msg.sender, address(this), debt);   // liquidator pays 100% of debt
++principalOf[user] = 0;
++
++uint256 seizeUsd = debt * oracle.getPrice(address(debtAsset)) / 10 ** debtAsset.decimals();
++seizeUsd = seizeUsd * (BPS + liquidationBonus) / BPS;
++
++for (...) { ... vault.seize(user, token, msg.sender, takeUsd * unit / price); seizeUsd -= takeUsd; }
++```
++
++Two problems in the same function.
++
++**No close factor.** The liquidator must repay the borrower's *entire* debt, and the position
++is always fully closed. A borrower one basis point below the threshold — often because of C-3
++rather than any real risk — loses their whole position and pays the full 5% bonus on all of
++it. Mature markets cap a single liquidation at 50% of debt precisely so a marginal position
++gets nudged back to health rather than wiped. Beyond the user harm, the all-or-nothing design
++means positions larger than any single liquidator's USDC balance simply cannot be liquidated
++at all, so the biggest and most dangerous positions are the ones most likely to go unhandled.
++
++**The liquidator eats the shortfall.** `takeUsd = min(valueUsd, seizeUsd)`, so seizure is
++capped by what the borrower actually has. If the position is underwater — collateral worth
++less than `debt × 1.05` — the liquidator still pays 100% of `debt` and receives less than
++that in collateral. `seizeUsd` is left non-zero when the loop exits and the remainder is
++silently discarded; no event, no `badDebt` accumulator, nothing.
++
++**What this costs.** Rational liquidators simulate first and refuse any position where the
++seizure does not cover the repayment. Those positions are exactly the ones that need
++liquidating. They sit there accruing interest against collateral that keeps falling, the
++treasury absorbs the entire loss, and because there is no supply side in v1 that loss is the
++treasury's seed capital. In a fast wstETH drawdown — a stETH depeg, a slashing event — this
++turns a recoverable 10% shortfall into a permanent one.
++
++**Fix.**
++
++1. Add a close factor: cap a single liquidation at `debt * CLOSE_FACTOR / BPS` (50% is
++   standard), with a full-close carve-out below a dust threshold so tiny positions do not
++   become unliquidatable.
++2. Let the liquidator pass `repayAmount` and a `minCollateralOut`, and revert if the seizure
++   falls short — do not silently hand them a loss (see also L-7).
++3. When collateral is exhausted with `seizeUsd > 0`, recognise the shortfall explicitly:
++   accumulate it into a `badDebt` state variable and emit an event, so the treasury can see
++   insolvency accruing instead of discovering it later.
++4. Consider scaling the bonus down as health approaches `WAD`, so marginal liquidations are
++   not maximally punitive.
++
++---
++
++## H-9 — Interest is measured in blocks × 12 seconds on Arbitrum
++
++**Severity:** High · **Contract:** `LendingMarket` · **Function:** `accrueInterest` (L117–126)
++
++```solidity
++uint256 constant SECONDS_PER_BLOCK = 12;
++...
++uint256 blocksElapsed = block.number - lastAccrualBlock;
++uint256 secondsElapsed = blocksElapsed * SECONDS_PER_BLOCK;
++uint256 growth = borrowIndex * borrowRate * secondsElapsed / (BPS * 365 days);
++```
++
++On Arbitrum, `block.number` does not return the L2 block height — it returns an approximation
++of the **L1** block number, which the sequencer advances in lumps as it observes L1 and which
++can stall or jump. Hardcoding 12 seconds per block is an assumption about Ethereum mainnet
++that Arbitrum only approximately honours, and only when everything upstream is healthy.
++
++**What this costs.** Interest accrual drifts from wall-clock time in both directions. When the
++L1 view lags, borrowers get free interest-free time — a griefer can time repayments into the
++lag. When it catches up in a jump, interest lands in a discontinuous step and positions can
++cross the liquidation line without any price movement, liquidating users who were watching
++their health factor and saw no reason to act. It also silently mis-states the advertised 400
++bps to every borrower.
++
++Note `SECONDS_PER_BLOCK` is `internal constant` — correcting it later requires an upgrade, and
++because the value is embedded in the accrued index there is no clean way to retroactively fix
++a drift once it has compounded.
++
++**Fix.** Use `block.timestamp`, which on Arbitrum tracks real time closely and is not subject
++to the L1-view lag:
++
++```solidity
++uint256 public lastAccrualTime;
++
++function accrueInterest() public {
++    uint256 elapsed = block.timestamp - lastAccrualTime;
++    if (elapsed == 0) return;
++    borrowIndex += borrowIndex * borrowRate * elapsed / (BPS * 365 days);
++    lastAccrualTime = block.timestamp;
++}
++```
++
++Storage is append-only per the README, so add `lastAccrualTime` as a new slot rather than
++repurposing `lastAccrualBlock`, and initialise it in the upgrade. If you genuinely need L2
++block height for something else, `ArbSys(0x64).arbBlockNumber()` is the correct source — but
++for interest, time is what you want. See also L-4 on the accrual's dependence on call
++frequency.
++
++---
++
++# Medium
++
++## M-1 — `initialize` is front-runnable and the implementation is left uninitialised
++
++**Contract:** `LendingMarket` · **Function:** `initialize` (L56–82)
++
++`initialize` is `external` with no access control, guarded only by the `initialized` flag.
++`MarketProxy`'s constructor delegatecalls `initData`, so if deployment passes the init call
++there, the proxy is initialised atomically and is safe. If any deployment path omits
++`initData` — a scripted deploy, a redeploy, a migration — the proxy sits uninitialised and the
++first caller becomes `owner`, sets the oracle, and owns the market.
++
++Separately, the **implementation contract itself is never initialised**, so anyone can call
++`initialize` on it directly and become its owner. That is normally low-impact, but it is only
++low-impact here because `upgradeTo` is already unguarded (C-1); once C-1 is fixed this becomes
++the remaining hole in the same wall.
++
++**Fix.** Add an `initializer` modifier and disable initialisers on the implementation in its
++constructor (`_disableInitializers()` if you move to OpenZeppelin's `Initializable`).
++Make `initData` non-optional in `MarketProxy`'s constructor — revert if `initData.length == 0`.
++Add zero-address validation on all four parameters (see L-9).
++
++## M-2 — `deposit` credits the requested amount, not the amount received
++
++**Contract:** `CollateralVault` · **Function:** `deposit` (L35–42)
++
++`balanceOf[msg.sender][token] += amount` assumes the transfer delivered exactly `amount`.
++Fee-on-transfer tokens deliver less, and the vault over-credits the depositor — they borrow
++against collateral that is not there, and the shortfall is socialised onto other depositors
++because the vault pools balances.
++
++Rebasing tokens are worse and the README explicitly puts them on the roadmap. With a positive
++rebase, the vault's real balance grows but no user's `balanceOf` entry does, so the surplus is
++unattributed and claimable by whoever withdraws in the right order. With a negative rebase
++(stETH slashing), recorded balances exceed real holdings and the last withdrawers get nothing
++— and `seize` reverts on underflow, so liquidations of those positions fail entirely.
++
++**Fix.** Measure the delta:
++
++```solidity
++uint256 before = IERC20(token).balanceOf(address(this));
++IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
++uint256 received = IERC20(token).balanceOf(address(this)) - before;
++balanceOf[msg.sender][token] += received;
++```
++
++That handles fee-on-transfer. Rebasing needs a different design — either a share-based
++accounting layer, or a hard rule that only non-rebasing wrappers are ever listed (wstETH, not
++stETH). Given the DAO's stated ask, write that decision down before the next listing round
++rather than discovering it in production.
++
++## M-3 — `listCollateral` performs no validation
++
++**Contract:** `LendingMarket` · **Function:** `listCollateral` (L107–114)
++
++The function pushes a token into `collateralTokens` and enables it in the vault without
++checking that a price feed exists for it, that it exposes `decimals()`, or that it is a
++contract at all. And there is no delisting path — `isCollateral` is only ever set to `true`,
++and nothing removes from `collateralTokens`.
++
++**Impact.** List a token before setting its feed and every user who deposits it has a
++`collateralValueUsd` that reverts on `FeedNotSet` — which means their `healthFactor` reverts,
++which means they cannot withdraw, cannot borrow, cannot repay, and **cannot be liquidated**.
++The same happens for any token whose `decimals()` call reverts. Because `_liquidate` and
++`collateralValueUsd` loop over all listed tokens, one bad listing can wedge every user holding
++it, with recovery only via upgrade. The lack of a delisting path means a token that later
++becomes compromised cannot be removed from the risk surface.
++
++**Fix.** Validate before pushing — require `token.code.length > 0`, require
++`oracle.getPrice(token)` to return non-zero, cache `decimals()` at listing time (see M-4), and
++cap the number of listed tokens. Add a `delistCollateral` that stops new deposits while still
++allowing withdrawal and seizure of existing balances.
++
++## M-4 — Unbounded token loop inside every health check
++
++**Contract:** `LendingMarket` · **Function:** `collateralValueUsd` (L132–139), also `_liquidate`
++
++`collateralValueUsd` iterates every listed token and, for each with a non-zero balance, makes
++two external calls: `oracle.getPrice(token)` and `IERC20(token).decimals()`. `healthFactor`
++calls it, and `healthFactor` is on the path of `borrow`, `withdraw`, `liquidate` and every
++iteration of `liquidateAll`.
++
++Cost grows linearly with the collateral list, which the README says will grow to at least four
++tokens and then further. Combined with H-5 this is the multiplier that makes `liquidateAll`
++cheap to brick. Independently, it means gas for ordinary users rises every time governance
++lists anything, and a token whose `decimals()` or feed starts reverting takes down health
++checks for every holder.
++
++**Fix.** Cache `decimals()` in a mapping at listing time — it never changes and does not
++warrant an external call per health check. Track a per-user list of *deposited* tokens so the
++loop covers only what the user actually holds, rather than the global list. Cap the total
++number of listed collaterals.
++
++## M-5 — `upgradeTo` does not check the target is a contract
++
++**Contract:** `LendingMarket` · **Function:** `upgradeTo` (L84–89)
++
++Beyond the missing access control in C-1: `sstore` accepts any address. Set the
++implementation to an EOA or an empty address and `MarketProxy`'s fallback delegatecalls into
++code-less account — which **succeeds** with empty returndata. Every call to the market then
++silently returns nothing instead of reverting. `borrow` appears to work and transfers no
++tokens; `repay` appears to work and clears no debt; the vault's `requireHealthy` call succeeds
++unconditionally, so `withdraw` lets everyone drain their collateral regardless of debt. And
++since the upgrade entry point itself now resolves to nothing, the proxy cannot be repaired.
++Permanent bricking plus an open withdrawal path.
++
++**Fix.** `if (newImplementation.code.length == 0) revert NotAContract();` before the `sstore`,
++and ideally verify the target exposes a known sentinel (`proxiableUUID()`) as UUPS does.
++
++## M-6 — No parameter bounds, no timelock, single-EOA ownership
++
++**Contract:** `LendingMarket` · **Functions:** `setBorrowRate` (L101), `setLiquidationThreshold` (L96),
++`setOracle` (L91), `upgradeTo` (L84); `PriceOracle.setFeed` (L33)
++
++Once C-1/C-2/C-4 are fixed, all of these become owner-only — which concentrates total control
++in one key. `setBorrowRate` accepts any `uint256` (a compromised owner sets 1,000,000 bps and
++liquidates the entire book on the next accrual). `setLiquidationThreshold` accepts any value
++including 0. `PriceOracle.transferOwnership` is single-step, so one typo permanently orphans
++the oracle. Nothing is timelocked, so users get no notice of a change that makes their
++position liquidatable.
++
++**Fix.** Bound every parameter at the setter (`borrowRate <= MAX_RATE`,
++`0 < liquidationThreshold <= BPS`). Put the owner behind a multisig, and route
++`setOracle` / `upgradeTo` / threshold decreases through a timelock. Use two-step ownership
++transfer (`Ownable2Step`) on both contracts. Document in the README which parameters are
++timelocked and for how long — users are taking that risk whether or not it is written down.
++
++## M-7 — `repay` transfers before updating state
++
++**Contract:** `LendingMarket` · **Function:** `repay` (L170–181)
++
++```solidity
++debtAsset.transferFrom(msg.sender, address(this), amount);
++principalOf[onBehalfOf] -= amount * WAD / borrowIndex;
++```
++
++Same CEI violation as H-6, on the debt asset rather than collateral. Not exploitable with
++Arbitrum-native USDC, which has no callbacks — but `debtAsset` is a stored variable and this
++is the pattern, not the instance. Swap the two lines. `_liquidate` (L213–214) has the
++identical ordering and the same fix.
++
++## M-8 — No pause or emergency stop
++
++**Contract:** protocol-wide
++
++There is no circuit breaker anywhere. When a feed misbehaves, a collateral token is
++compromised, or an exploit is in progress, the only lever is an upgrade — which is slow,
++requires the owner key to be reachable, and (once M-6's timelock lands) will be slower still.
++
++**Fix.** Add a `Pausable` guard on `borrow`, `borrowWithSig` and `deposit` at minimum. Do
++**not** pause `repay` or `withdraw` for healthy users — pausing exits traps users and turns an
++incident into a run. Consider a separate liquidation pause for the sequencer grace period in
++H-3.
++
++---
++
++# Low / Informational
++
++**L-1 — Debt can never be fully repaid (`repay`, L178).** `debt = floor(P × I / W)` then
++`P -= floor(debt × W / I)` leaves up to 1 unit of scaled principal behind. The borrower always
++carries dust debt and can never see a zero balance. Round the repayment amount up when the
++caller is clearing the full position, or zero `principalOf` outright when `amount == debt`.
++
++**L-2 — Sub-index borrows record zero principal (`_borrow`, L201).** Once `borrowIndex > 1e18`,
++`amount * WAD / borrowIndex` truncates to zero for `amount == 1`, so 1 wei of USDC is borrowed
++with no debt recorded. The direct value leak is negligible (gas costs far exceed 1e-6 USDC),
++but it is the mechanism behind H-5's free array growth. Enforce a minimum borrow amount and
++revert if the computed principal delta is zero.
++
++**L-3 — `10 ** (18 - feed.decimals())` underflows for feeds with more than 18 decimals
++(`PriceOracle.getPrice`, L44).** Reverts rather than misprices, so the impact is a DoS on that
++token only. Chainlink USD feeds are 8 decimals so the launch config is fine. Add the explicit
++`if (d > 18) revert` from H-1's fix.
++
++**L-4 — Accrual is permissionless and frequency-dependent (`accrueInterest`, L117).** `growth`
++is proportional to the current `borrowIndex`, so the index compounds once per call. Anyone can
++call `accrueInterest()` in a loop to compound more often and push borrowers toward
++liquidation. At 400 bps the maximum achievable difference between discrete and continuous
++compounding is under 0.1%/year, so this is not economically meaningful today — but it scales
++with `borrowRate`, so revisit if rates ever go materially higher.
++
++**L-5 — ETH sent to the proxy is unrecoverable (`MarketProxy.receive`, L38).** The proxy
++accepts ETH and `LendingMarket` has no sweep function. Remove `receive()` and make `fallback()`
++non-payable — the market has no use for ETH.
++
++**L-6 — No minimum position size.** Dust positions cost more in gas to liquidate than the
++bonus is worth, so they are never liquidated and accumulate as bad debt. Enforce a minimum
++borrow (a few hundred USDC) and require positions to be fully closed rather than left below it.
++
++**L-7 — Liquidators have no slippage protection (`_liquidate`).** The liquidator commits to
++repaying `debtOf(user)` as computed at execution time and receives collateral at whatever price
++the oracle reports in the same transaction, with no minimum-out parameter. A price move between
++submission and inclusion can turn a profitable liquidation into a loss. Add `maxRepay` and
++`minCollateralOut` arguments — this is folded into H-8's fix.
++
++**L-8 — No test suite.** The README says the suite "lands with the audit fixes". Nearly every
++finding above is a single unit test: an access-control test on each external function would
++have caught C-1, C-2 and C-4; one boundary assertion on `healthFactor` would have caught C-3.
++Land the tests **with** the fixes, not after, and add invariant tests for
++"sum of user balances == vault token balance", "no healthy position is liquidatable" and
++"total debt never decreases without a repayment".
++
++**L-9 — No zero-address validation in `initialize` (L56).** `owner_`, `oracle_`, `vault_` and
++`debtAsset_` are all accepted unchecked. A zero `owner_` permanently locks every owner-gated
++function; a zero `oracle_` bricks all health checks. Cheap to add, unrecoverable if missed.
++
++**L-10 — Liquidation seizes in listing order (`_liquidate`, L219).** The liquidator always
++receives whatever is first in `collateralTokens`, with no ability to choose. Predictable and
++unfair across collateral types, and it drains the earliest-listed collateral
++disproportionately. Let the liquidator specify which collateral to seize.
++
++---
++
++## Notes and limits
++
++- **Not verified:** deployment ordering. `CollateralVault.market` is `immutable`, so the vault
++  must be constructed with the **proxy** address, not the implementation's — but the proxy's
++  constructor needs the vault address in `initData`. That is circular unless you
++  counterfactually compute one address (CREATE2) or deploy the vault second and pass it in via
++  `initialize`. There are no deployment scripts in the repo, so I could not check which path
++  you intend. Confirm before launch: getting this wrong makes `seize` permanently revert, which
++  means no liquidations at all.
++- **Not verified:** the on-chain identity of the feed addresses in the README. I took the
++  README's own labels at face value — H-2 rests on the table saying "Feed set for wstETH:
++  stETH / USD", which is a configuration error regardless of which contract sits at that
++  address. Verify each feed's `description()` on Arbitrum before deployment and record the
++  expected string in a deployment test.
++- **Out of scope:** the treasury's off-chain seeding process, keeper infrastructure, and the
++  economic soundness of the 8000/500/400 bps parameter set against wstETH volatility. The
++  parameters are plausible but a risk analysis is a separate exercise from this code review.
++- **`forge build` was not run** — the repo has no `lib/` and no dependencies vendored, so the
++  audit is a source-level review only.
+
+# Untracked files and status
+ A AUDIT-REPORT.md
