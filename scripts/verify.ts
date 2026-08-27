@@ -1,42 +1,29 @@
-import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { cp, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import yaml from "js-yaml";
+import { buildEvidence, snapshotOutput, writeDiff } from "../lib/evidence.js";
 import { judgeExpectations } from "../lib/judge.js";
 import { isRecord, loadTaskSpec, loadYamlFile, parseArgs, requireString } from "../lib/task.js";
-import type { Executor, ExpectStatus, JudgeSpec, ResultRecord, Variant } from "../lib/types.js";
+import type { Executor, ExecutorRecord, ExpectStatus, JudgeSpec, ResultRecord, Variant } from "../lib/types.js";
+import { pruneEmptyParent, readWorkspacePath } from "../lib/workspace.js";
 
 const ROOT = process.cwd();
-// Where setup installs the skill. Evidence that reaches the judge must exclude these, or the
-// judge reads the skill itself and learns which variant produced the run. Both evidence paths
-// (snapshot and diff) derive their exclusions from this list, so adding an executor's bridge
-// dir here covers both; a dir listed in one path and missed in the other silently corrupts a
-// benchmark, which is how the skill first leaked into run.diff.
-const SKILL_INSTALL_DIRS = [".agents", ".claude"];
-// Generated/vendored dirs a scaffolded repo (e.g. create-eth) leaves behind. Evidence
-// captures source the run produced, not gigabytes of node_modules or build output. Missing
-// one of these does not mislead the judge the way a missed SKILL_INSTALL_DIRS entry does,
-// but it is not free either: the diff path has no size cap of its own, so a run that
-// installs dependencies can push the evidence past the judge's input limit and lose the run.
-const GENERATED_DIRS = [
-  "node_modules", "lib", ".git", ".next", ".yarn", "dist", "build",
-  "out", "cache", "broadcast", "coverage", ".turbo", ".husky", ".vscode",
-  "target",
-];
-const SKIP_DIRS = new Set([...SKILL_INSTALL_DIRS, ...GENERATED_DIRS]);
-const MAX_SNAPSHOT_FILE_BYTES = 256 * 1024;
 const EXECUTORS = new Set<Executor>(["claude", "codex"]);
 const VARIANTS = new Set<Variant>(["no_skill", "with_skill"]);
-const VERIFY_ARGS = new Set(["run", "judge-agent", "judge-model"]);
+const VERIFY_ARGS = new Set(["run", "judge-agent", "judge-model", "grade-failed-run", "keep-workspace"]);
 
 // The judge is a fresh, blind process, never the orchestrator's own contaminated
-// context. Point it at the model you want doing the grading: pass --judge-agent
-// and --judge-model to grade with the orchestrator's model. With neither, it falls
-// back to the agent that performed the run, and the record marks that self_judged.
-const resolveJudge = (args: Record<string, string | boolean>, executor: Executor): JudgeSpec => {
-  const agent = args["judge-agent"] === undefined ? executor : parseAgent(requireString(args["judge-agent"], "--judge-agent"));
+// context. --judge-agent is required rather than defaulting to the run's executor:
+// the default was silent, and a batch graded by a forgotten flag looks exactly like a
+// batch graded on purpose. Say who grades, every time.
+const resolveJudge = (args: Record<string, string | boolean>): JudgeSpec => {
+  if (args["judge-agent"] === undefined) {
+    throw new Error("missing --judge-agent: name the agent doing the grading (claude or codex)");
+  }
+
+  const agent = parseAgent(requireString(args["judge-agent"], "--judge-agent"));
   const model = args["judge-model"] === undefined ? null : requireString(args["judge-model"], "--judge-model");
 
   return { agent, model };
@@ -99,129 +86,41 @@ const loadResultRecord = (resultPath: string): ResultRecord => {
   };
 };
 
-const walkFiles = async (dir: string) => {
-  const entries: string[] = [];
-  const pending = [dir];
+// Grading a run whose executor is still working reads a half-written workspace, scores it,
+// and then the workspace gets deleted out from under a live process. run-executor writes
+// this record; no record or no finished timestamp means there is nothing to grade yet.
+const loadExecutorRecord = (runDir: string): ExecutorRecord => {
+  const recordPath = path.join(runDir, "executor.yaml");
 
-  while (pending.length > 0) {
-    const current = pending.pop() as string;
-    const childNames = await readdir(current, { withFileTypes: true });
-
-    for (const child of childNames) {
-      const fullPath = path.join(current, child.name);
-
-      if (child.isDirectory()) {
-        if (!SKIP_DIRS.has(child.name)) {
-          pending.push(fullPath);
-        }
-      } else if (child.isFile()) {
-        entries.push(fullPath);
-      }
-    }
+  if (!existsSync(recordPath)) {
+    throw new Error(`no executor record at ${recordPath}; run yarn run-executor --run ${runDir} first`);
   }
 
-  return entries;
+  const loaded = loadYamlFile(recordPath);
+
+  if (loaded.finished === null || loaded.finished === undefined) {
+    throw new Error(
+      `executor has not finished (${recordPath}). Wait for it; if it was killed, the run is dead — delete ${runDir} and set up a new one.`,
+    );
+  }
+
+  return {
+    executor: parseExecutor(requireString(loaded.executor, "executor")),
+    model: loaded.model === null || loaded.model === undefined ? null : requireString(loaded.model, "model"),
+    started: requireString(loaded.started, "started"),
+    finished: requireString(loaded.finished, "finished"),
+    exit: typeof loaded.exit === "number" ? loaded.exit : null,
+  };
 };
 
-// A bare :(exclude)<dir> only matches at the workspace root, while walkFiles skips by
-// directory name at any depth, so each dir needs the glob form too or a nested
-// packages/app/node_modules reaches the judge.
-// Both forms are glob-magic on purpose. A literal `:(exclude)out` names an existing path, and
-// git refuses the whole `add` when a pathspec names a path the repo's own .gitignore covers —
-// which foundry's scaffold does for out/ and cache/. The glob form excludes the same paths
-// without naming them, so the add succeeds and the generated trees still stay out.
-const excludePathspec = (dir: string) => [`:(exclude,glob)**/${dir}`, `:(exclude,glob)**/${dir}/**`];
+const readBaselineSha = (runDir: string) => {
+  const baselinePath = path.join(runDir, "baseline.sha");
 
-const rootCommit = (workspacePath: string) => {
-  try {
-    const roots = execFileSync("git", ["-C", workspacePath, "rev-list", "--max-parents=0", "HEAD"], {
-      encoding: "utf8",
-      stdio: "pipe",
-    })
-      .trim()
-      .split("\n")
-      .filter(line => line.length > 0);
-
-    // A run that grafted in unrelated history can leave several roots; the last one listed is
-    // the oldest, which is setup's baseline.
-    return roots.at(-1) ?? null;
-  } catch {
-    return null;
-  }
-};
-
-const writeDiff = async (workspacePath: string, diffPath: string) => {
-  const pathspec = [".", ...[...SKILL_INSTALL_DIRS, ...GENERATED_DIRS].flatMap(excludePathspec)];
-
-  // Intent-to-add so new (untracked) files show their content in the diff, not just a
-  // filename in status — the judge needs to see files the run created. Untracked files are
-  // not gitignored by default, and a repo the run created itself carries whatever .gitignore
-  // its scaffolder wrote (foundry's omits node_modules), so the pathspec is what actually
-  // keeps the installed skill and generated trees out of the judge's evidence.
-  execFileSync("git", ["-C", workspacePath, "add", "-N", "--", ...pathspec], { encoding: "utf8" });
-
-  // Diff against setup's baseline commit, not the index. A bare `git diff` compares the worktree
-  // to the index, so a run that commits its own work leaves nothing to see and gets graded on an
-  // empty file. The baseline is the workspace repo's root commit, which setup creates empty, so
-  // everything the run produced is in the diff whether it committed or not. Runs from before the
-  // workspace had a repo of its own fall back to the old behaviour.
-  const baseline = rootCommit(workspacePath);
-  const diffArgs = baseline === null ? ["diff"] : ["diff", baseline];
-  const diff = execFileSync("git", ["-C", workspacePath, ...diffArgs, "--", ...pathspec], { encoding: "utf8" });
-  const status = execFileSync("git", ["-C", workspacePath, "status", "--porcelain", "--", ...pathspec], { encoding: "utf8" });
-  const content = `${diff}${diff.endsWith("\n") || diff.length === 0 ? "" : "\n"}\n# Untracked files and status\n${status}`;
-
-  await writeFile(diffPath, content);
-};
-
-const snapshotOutput = async (workspacePath: string, outputPath: string) => {
-  await rm(outputPath, { recursive: true, force: true });
-
-  for (const file of await walkFiles(workspacePath)) {
-    const relativePath = path.relative(workspacePath, file);
-    const segments = relativePath.split(path.sep);
-
-    if (relativePath === "TASK.md" || segments.some(segment => SKIP_DIRS.has(segment))) {
-      continue;
-    }
-
-    // Backstop: a scaffold leaves big generated source too (lockfiles, bundled releases).
-    // Grading reads answer/source files; anything this large is not that.
-    if ((await stat(file)).size > MAX_SNAPSHOT_FILE_BYTES) {
-      continue;
-    }
-
-    // Skip binary assets (favicons, fonts, images). The judge reads evidence as text, and a
-    // NUL byte breaks the prompt arg; nothing gradeable lives in a binary anyway.
-    if (readFileSync(file).includes(0)) {
-      continue;
-    }
-
-    const target = path.join(outputPath, relativePath);
-
-    await mkdir(path.dirname(target), { recursive: true });
-    await cp(file, target);
-  }
-};
-
-const buildEvidence = async (runDir: string) => {
-  const sections: string[] = [];
-  const diffPath = path.join(runDir, "run.diff");
-  const outputPath = path.join(runDir, "output");
-
-  if (existsSync(diffPath)) {
-    sections.push(["# run.diff", readFileSync(diffPath, "utf8")].join("\n"));
+  if (!existsSync(baselinePath)) {
+    throw new Error(`no baseline.sha in ${runDir}; the workspace was not seeded by yarn setup`);
   }
 
-  if (existsSync(outputPath)) {
-    for (const file of await walkFiles(outputPath)) {
-      const relativePath = path.relative(outputPath, file);
-
-      sections.push([`# output/${relativePath}`, readFileSync(file, "utf8")].join("\n"));
-    }
-  }
-
-  return sections.join("\n\n");
+  return readFileSync(baselinePath, "utf8").trim();
 };
 
 const summarize = (expects: Record<string, ExpectStatus>) => {
@@ -254,16 +153,37 @@ const main = async () => {
     }
 
     const result = loadResultRecord(resultPath);
-    const taskSpec = loadTaskSpec(path.join(ROOT, "tasks", `${result.task}.yaml`));
-    const workspacePath = path.join(runDir, "workspace");
+    const judgeSpec = resolveJudge(args);
+    const executorRecord = loadExecutorRecord(runDir);
 
-    if (existsSync(path.join(workspacePath, ".git"))) {
-      await writeDiff(workspacePath, path.join(runDir, "run.diff"));
-    } else {
-      await snapshotOutput(workspacePath, path.join(runDir, "output"));
+    if (executorRecord.executor !== result.executor) {
+      throw new Error(`executor.yaml ran ${executorRecord.executor}, result.yaml says ${result.executor}`);
     }
 
-    const judgeSpec = resolveJudge(args, result.executor);
+    // A CLI that was missing, crashed or was killed leaves evidence a judge reads as a bad
+    // answer, and the run then records as a model failure. That is the same
+    // harness-failure-stored-as-a-zero that --judge-agent exists to rule out, so grading a
+    // bad exit has to be a stated choice.
+    if (executorRecord.exit !== 0 && args["grade-failed-run"] === undefined) {
+      throw new Error(
+        `executor exited ${executorRecord.exit ?? "unknown"}; that is a harness failure, not a score. `
+          + `Delete ${runDir} and set up a new run, or pass --grade-failed-run to grade what it left behind anyway.`,
+      );
+    }
+
+    const taskSpec = loadTaskSpec(path.join(ROOT, "tasks", `${result.task}.yaml`));
+    const workspacePath = readWorkspacePath(runDir);
+
+    // Evidence shape follows the task shape, not whatever the workspace happens to
+    // contain: repo-shaped runs are graded on what changed since the baseline, question-
+    // shaped runs on the files themselves. Every workspace is a git repo now, so keying
+    // this off `.git` would quietly move every quiz run onto the diff path.
+    if (taskSpec.template === undefined) {
+      await snapshotOutput(workspacePath, path.join(runDir, "output"));
+    } else {
+      await writeDiff(workspacePath, path.join(runDir, "run.diff"), readBaselineSha(runDir));
+    }
+
     const verdict = judgeExpectations(taskSpec.input, taskSpec.expect, await buildEvidence(runDir), judgeSpec);
 
     if (!verdict.ok) {
@@ -280,13 +200,36 @@ const main = async () => {
       variant: result.variant,
       skill_version: result.skill_version,
       created: result.created,
+      executor_model: executorRecord.model,
+      executor_exit: executorRecord.exit ?? undefined,
       judge: { ...judgeSpec, self_judged: judgeSpec.agent === result.executor },
       expects: verdict.expects,
       pass,
     };
 
     await writeFile(resultPath, yaml.dump(gradedResult, { lineWidth: -1 }));
+
     summarize(verdict.expects);
+
+    // After the summary, and never fatal. Workspaces sit outside the repo now, so nothing
+    // cleans them up with the run dir and a benchmark leaves tens of gigabytes behind — but
+    // the grade is already written, and result.yaml carrying `pass` means the regrade guard
+    // will refuse to run this run again. A failed rm (EBUSY, a read-only mount, an open handle)
+    // must not be the reason a graded run never reports.
+    // `!== undefined` rather than `=== true`: parseArgs takes the next token as the value, so
+    // `--keep-workspace true` yields the string "true", and reading that as "delete it" would
+    // irreversibly discard the workspace the user asked to keep.
+    if (args["keep-workspace"] !== undefined) {
+      console.log(`workspace kept at ${workspacePath}`);
+    } else {
+      try {
+        await rm(workspacePath, { recursive: true, force: true });
+        pruneEmptyParent(workspacePath);
+      } catch (error) {
+        console.warn(`verify: graded, but could not remove ${workspacePath}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+
     process.exit(pass ? 0 : 2);
   } catch (error) {
     console.error(`verify: ${error instanceof Error ? error.message : String(error)}`);
