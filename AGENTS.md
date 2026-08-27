@@ -77,6 +77,18 @@ yarn verify --run artifacts/<id>/<run-id> --judge-agent claude --judge-model <yo
 
 Omit `--judge-model` to let that agent's CLI pick its own default. Keep one judge for the length of a benchmark. A grader that changes between runs makes `with_skill` and `no_skill` incomparable.
 
+### Revising expect lines: regrade, do not re-run
+
+When you change a task's `expect:` lines after runs exist, the question is whether the new wording grades the same answers differently. Re-running executors answers a different question, because it changes the grading surface and draws fresh samples at once.
+
+```bash
+yarn verify --run artifacts/<id>/<run-id> --regrade --judge-agent claude --judge-model <model>
+```
+
+`--regrade` re-judges a run's stored evidence (`run.diff`, `output/`) against the task spec as it stands now. It never re-executes, never touches the source run dir, and writes `<run-id>-regrade-<n>/result.yaml` with `regrade_of` naming the run it re-read. Grade every run of the task, not the failures only — a wording change that flips a fail to a pass usually flips something the other way too. Hold the judge fixed at whatever graded the run originally; changing the wording and the judge together tells you nothing about either. A regrade is a second reading of one run, never a second run: never add it to a pass tally beside its source.
+
+The evidence a regrade re-reads is committed — `run.diff` for template-seeded runs, a force-added `output/` for the question-shaped ones — so it works from any clone that has the run dir. Where `output/` was left ignored, which is the default for a bare task that snapshots a whole scaffold, the evidence exists only on the machine that made the run: regrade there, and commit the records.
+
 ## Isolation
 
 Tooling resolves context by walking *up* the filesystem, and every such walk used to end in this repo. Three things stop it.
@@ -157,7 +169,7 @@ category: stale-knowledge
 symptom: "Computes USD cost from a remembered ETH price instead of checking one."
 expected_pattern: "Fetch ETH/USD live (Chainlink feed, CoinGecko) before quoting dollars."
 skill_section: "What You Probably Got Wrong"   # the section that should prevent this, or "none" for a gap
-status: open                   # open | fixed | wontfix
+status: open                   # open | fixed | wontfix | retracted (a regrade showed it was the expect lines, not the run)
 ```
 
 When the same mistake has been measured on more than one stack, `frequency` takes a stack

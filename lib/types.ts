@@ -43,6 +43,10 @@ export type ResultRecord = {
   variant: Variant;
   skill_version: string | null;
   created: string;
+  // Set only on a regrade: the run whose stored evidence was re-judged. The executor never
+  // ran again, so this record is a second reading of one run, not a second run — never
+  // count it alongside its source in a pass tally.
+  regrade_of?: string;
   executor_model?: string | null;
   executor_exit?: number;
   judge?: JudgeRecord;
