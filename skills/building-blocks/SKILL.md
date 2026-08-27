@@ -1,6 +1,6 @@
 ---
 name: building-blocks
-description: Verify and compose current DeFi integrations on Ethereum and L2s. Use when selecting or integrating DEX pools, lending markets, yield venues, gauges, reward systems, or multiple protocols in one flow.
+description: Use when selecting or integrating DEX pools, lending markets, yield venues, gauges, reward systems, or multiple protocols in one flow on Ethereum or an L2 — including vault and harvest strategies, and build requests naming Aerodrome, Velodrome, Uniswap, Aave, Curve, GMX or Pendle. Not for contract address lookup (`addresses`) or for choosing a chain (`l2s`).
 ---
 
 # Verify DeFi Integrations

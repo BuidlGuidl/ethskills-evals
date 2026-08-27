@@ -1,6 +1,6 @@
 # eval: building-blocks-goal-002, shipped trigger (claude/opus-5)
 
-**Skill:** `skills/building-blocks` at `d6887a8` — the 128-word trigger this PR merges
+**Skill:** `skills/building-blocks` at `d6887a8` — the 128-word trigger, benchmarked before the `description` rewrite this PR also carries (see integrity notes)
 
 **Task:** `building-blocks-goal-002` · **Executor:** claude, `claude-opus-5` · **Judge:** claude, `claude-opus-5` · **Runs:** 3 per variant
 **Date:** 2026-08-20 → 2026-08-21 · **Trigger:** content-only
@@ -29,7 +29,7 @@ Same split the candidate produced. Read the control's single full pass with the 
 
 ## The trigger fires unprompted
 
-All three `with_skill` runs invoked the skill on their own, and the `Skill` tool call is in each session log. This was the specific doubt raised in review: the benchmarked `description` named Uniswap, Aerodrome, Aave, GMX and Pendle, the shipped one names no protocol, and the task input names no DEX. It still fired 3/3. The earlier round could not answer this — two of its three skilled runs mentioned nothing about the skill, and a final-message transcript cannot show a tool call either way.
+All three `with_skill` runs invoked the skill on their own, and the `Skill` tool call is in each session log. This was the specific doubt raised in review: the 467-word candidate's `description` named Uniswap, Aerodrome, Aave, GMX and Pendle, the 128-word text benchmarked here names no protocol, and the task input names no DEX. It still fired 3/3 — the category words (`DEX pools`, `yield venues`, `gauges`) carried it against a prompt saying only "yield vault on Base", "DEX liquidity" and "harvest()". The earlier round could not answer this — two of its three skilled runs mentioned nothing about the skill, and a final-message transcript cannot show a tool call either way.
 
 ## What separated the arms
 
@@ -61,6 +61,7 @@ That matters for the reduction. The 2026-08-18 report concluded the protocol fac
 
 - **Every run commits the evidence it was graded on.** `run.diff` (17–30 files, 1,969–3,301 lines) plus a full session transcript with tool calls, build output and telemetry. The candidate round committed neither, which is why none of its verdicts could be re-checked.
 - **`skill_version` reads `9c0c1a5` on one run and `5a084e3` on two.** Both are harness commits made during the benchmark. `skills/building-blocks/SKILL.md` is byte-identical across `d6887a8`, `f553102`, `9c0c1a5` and `5a084e3` (sha256 `0793d0fd8…`), so one skill text produced all three skilled runs.
+- **The `description` was rewritten after these runs, under #91.** The graded text is `d6887a8` (128 words, sha256 `0793d0fd8…`); what merges is 153 words, sha256 `ce51e6c98…`. The body is byte-identical — only the `description` changed, to meet #91's trigger-not-summary bar: it drops a first sentence that restated the body, re-adds protocol names as routing keywords, and adds a "not for" clause pointing at `addresses` and `l2s`. The change is additive to the matched surface: the clause that did the matching — "selecting or integrating DEX pools, lending markets, yield venues, gauges, reward systems, or multiple protocols in one flow" — is carried over verbatim, and everything else is added around it. So the 3/3 is taken to hold, but it was not re-measured. The negative clause is untested by construction: these runs had no sibling ethskills loaded (`skills: ["building-blocks", …]` is otherwise all operator-local skills), so this benchmark cannot speak to routing against `addresses` or `l2s`.
 - **The harness changed between the two rounds.** Workspaces now carry their own git repo and `writeDiff` diffs against the baseline commit recorded at setup (#66). The candidate round's numbers were produced under the old harness; the two tables are not interchangeable.
 - **One run was discarded for reading the orchestrator's memory.** Before the harness fix, a workspace under `artifacts/` had no repo of its own, so anything resolving a project by walking up to the nearest `.git` resolved it to this repo and the executor inherited the orchestrator's memory directory. The discarded run read four memory files — including a Base archive-RPC endpoint with a pinned fork block, and the USDC storage slot for funding test accounts — and wrote two more back, one of which stated `expect_3`'s ground truth outright. Fixed on main by #66 (`seedWorkspaceRepo`), which supersedes the `9c0c1a5` version this branch ran under; every graded run here is confirmed to have touched neither that directory, nor `tasks/`, nor a sibling run.
 - **The candidate round cannot be cleared or convicted on this.** The two DeFi memory files were created 2026-08-18 17:00 and 21:14, after all six of those runs finished (latest 2026-08-18T00:08Z), so they could not have been read. The mechanism was live throughout, and final-message transcripts make it unprovable either way.
