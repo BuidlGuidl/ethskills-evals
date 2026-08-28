@@ -25,6 +25,8 @@ Estimate the actual operation when possible. Otherwise state and justify the gas
 cost_usd = gas_used × gas_price_gwei × 1e-9 × eth_usd
 ```
 
+`cast base-fee` and `cast gas-price` print wei, not gwei — divide by 1e9. Check the converted figure back against the raw reading; a dropped or extra factor of 1e9 is the most common way a correctly measured chain still yields a stale-looking cost.
+
 Choose from the measured workload:
 
 - Keep mainnet viable for low-frequency, high-value actions unless another requirement favors an L2.
