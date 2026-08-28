@@ -18,10 +18,22 @@ export type JudgeSpec = {
   model: string | null;
 };
 
-// self_judged: the agent that performed the run also graded it. Not fatal, but a
-// model is a weak judge of its own mistakes — say so in the report.
+// self_judged: the same agent CLI performed and graded the run. The judge process is
+// still fresh and blind, and a single-stack benchmark is self-judged by design — but a
+// model is a weak judge of its own mistakes, so the report says so.
 export type JudgeRecord = JudgeSpec & {
   self_judged: boolean;
+};
+
+// Written by run-executor, read by verify: the harness spawned the executor, so it knows
+// which model ran and whether the process actually finished. A missing or unfinished
+// record is what stops verify from grading a workspace an executor is still writing to.
+export type ExecutorRecord = {
+  executor: Executor;
+  model: string | null;
+  started: string;
+  finished: string | null;
+  exit: number | null;
 };
 
 export type ResultRecord = {
@@ -31,6 +43,12 @@ export type ResultRecord = {
   variant: Variant;
   skill_version: string | null;
   created: string;
+  // Set only on a regrade: the run whose stored evidence was re-judged. The executor never
+  // ran again, so this record is a second reading of one run, not a second run — never
+  // count it alongside its source in a pass tally.
+  regrade_of?: string;
+  executor_model?: string | null;
+  executor_exit?: number;
   judge?: JudgeRecord;
   expects?: Record<string, ExpectStatus>;
   pass?: boolean;

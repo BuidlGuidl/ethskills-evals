@@ -1,0 +1,460 @@
+diff --git a/packages/nextjs/app/payouts/page.tsx b/packages/nextjs/app/payouts/page.tsx
+index 13764ef..b20400d 100644
+--- a/packages/nextjs/app/payouts/page.tsx
++++ b/packages/nextjs/app/payouts/page.tsx
+@@ -1,16 +1,18 @@
+ "use client";
+ 
+ import { useState } from "react";
++import { Address } from "@scaffold-ui/components";
+ import type { NextPage } from "next";
+-import { formatUnits, parseUnits } from "viem";
+-import { useAccount, useWriteContract } from "wagmi";
++import { formatUnits, isAddress, parseUnits } from "viem";
++import { useAccount } from "wagmi";
+ import deployedContracts from "~~/contracts/deployedContracts";
+-import { useScaffoldEventHistory, useScaffoldReadContract } from "~~/hooks/scaffold-eth";
++import { useScaffoldEventHistory, useScaffoldReadContract, useScaffoldWriteContract } from "~~/hooks/scaffold-eth";
++import { notification } from "~~/utils/scaffold-eth";
+ 
+-const PAYOUTS = deployedContracts[8453].Payouts;
+-const USDC = deployedContracts[8453].USDC;
++const PAYOUTS_ADDRESS = deployedContracts[8453].Payouts.address;
+ 
+-const shorten = (addr?: string) => (addr ? `${addr.slice(0, 6)}...${addr.slice(-4)}` : "");
++// USDC uses 6 decimals
++const USDC_DECIMALS = 6;
+ 
+ const PayoutsPage: NextPage = () => {
+   const { address: connectedAddress, isConnected } = useAccount();
+@@ -18,117 +20,135 @@ const PayoutsPage: NextPage = () => {
+   const [amount, setAmount] = useState("");
+   const [memo, setMemo] = useState("");
+ 
+-  const { writeContractAsync, isPending } = useWriteContract();
+-
+-  const { data: usdcBalance } = useScaffoldReadContract({
++  const { data: usdcBalance, refetch: refetchBalance } = useScaffoldReadContract({
+     contractName: "USDC",
+     functionName: "balanceOf",
+     args: [connectedAddress],
+   });
+ 
++  const { data: allowance, refetch: refetchAllowance } = useScaffoldReadContract({
++    contractName: "USDC",
++    functionName: "allowance",
++    args: [connectedAddress, PAYOUTS_ADDRESS],
++  });
++
++  const { writeContractAsync: approveUsdc, isMining: isApproving } = useScaffoldWriteContract({ contractName: "USDC" });
++  const { writeContractAsync: sendPayout, isMining: isPaying } = useScaffoldWriteContract({ contractName: "Payouts" });
++
+   const { data: payouts } = useScaffoldEventHistory({
+     contractName: "Payouts",
+     eventName: "Paid",
+-    fromBlock: 0n,
+     watch: true,
+   });
+ 
++  // parseUnits throws on malformed input (e.g. "1.2.3"), so guard it
++  let parsedAmount: bigint | undefined;
++  try {
++    parsedAmount = amount ? parseUnits(amount, USDC_DECIMALS) : undefined;
++  } catch {
++    parsedAmount = undefined;
++  }
++
++  const hasValidAmount = parsedAmount !== undefined && parsedAmount > 0n;
++  const needsApproval = hasValidAmount && allowance !== undefined && allowance < parsedAmount!;
++
+   const handleApprove = async () => {
+-    try {
+-      await writeContractAsync({
+-        address: USDC.address,
+-        abi: USDC.abi,
+-        functionName: "approve",
+-        args: [PAYOUTS.address, parseUnits(amount || "0", 6)],
+-      });
+-    } catch (e) {
+-      console.error(e);
++    if (!hasValidAmount) {
++      notification.error("Enter a valid amount to approve.");
++      return;
+     }
++    await approveUsdc({ functionName: "approve", args: [PAYOUTS_ADDRESS, parsedAmount] });
++    await refetchAllowance();
+   };
+ 
+   const handlePay = async () => {
+-    try {
+-      await writeContractAsync({
+-        address: PAYOUTS.address,
+-        abi: PAYOUTS.abi,
+-        functionName: "pay",
+-        args: [recipient as `0x${string}`, parseUnits(amount || "0", 6), memo],
+-      });
+-      setAmount("");
+-      setMemo("");
+-    } catch (e) {
+-      console.error(e);
++    if (!isAddress(recipient)) {
++      notification.error("Enter a valid recipient address.");
++      return;
+     }
++    if (!hasValidAmount) {
++      notification.error("Enter a valid amount.");
++      return;
++    }
++    if (usdcBalance !== undefined && parsedAmount! > usdcBalance) {
++      notification.error("Amount exceeds your USDC balance.");
++      return;
++    }
++    await sendPayout({ functionName: "pay", args: [recipient, parsedAmount, memo] });
++    await Promise.all([refetchBalance(), refetchAllowance()]);
++    setAmount("");
++    setMemo("");
+   };
+ 
+   return (
+-    <div className="min-h-screen bg-black text-white">
+-      <div className="max-w-xl mx-auto pt-10 px-4 pb-16">
+-        <h1 className="text-3xl font-bold mb-1">USDC Payouts</h1>
+-        <p className="text-sm opacity-70 mb-6">Send a USDC payout to any teammate or contributor on Base.</p>
+-
+-        {!isConnected ? (
+-          <p className="mt-4">Please connect your wallet to send a payout.</p>
+-        ) : (
+-          <>
+-            <p className="mb-4">
+-              Your balance: {usdcBalance !== undefined ? formatUnits(usdcBalance, 6) : "0"} USDC
+-            </p>
+-
+-            <input
+-              type="text"
+-              placeholder="0x... recipient address"
+-              className="input input-bordered w-full mb-3"
+-              value={recipient}
+-              onChange={e => setRecipient(e.target.value)}
+-            />
+-            <input
+-              type="number"
+-              placeholder="Amount (USDC)"
+-              className="input input-bordered w-full mb-3"
+-              value={amount}
+-              onChange={e => setAmount(e.target.value)}
+-            />
+-            <textarea
+-              placeholder="What is this payout for? (optional)"
+-              className="textarea textarea-bordered w-full mb-4"
+-              value={memo}
+-              onChange={e => setMemo(e.target.value)}
+-            />
+-
+-            <div className="flex gap-3">
+-              <button
+-                className={`btn btn-primary ${isPending ? "loading" : ""}`}
+-                disabled={isPending}
+-                onClick={handleApprove}
+-              >
+-                Approve
+-              </button>
+-              <button
+-                className={`btn btn-secondary ${isPending ? "loading" : ""}`}
+-                disabled={isPending}
+-                onClick={handlePay}
+-              >
+-                Send Payout
+-              </button>
+-            </div>
+-          </>
+-        )}
+-
+-        <h2 className="text-xl font-semibold mt-10 mb-3">Latest payouts</h2>
+-        <div className="flex flex-col gap-2">
+-          {(payouts ?? []).map((payout, i) => (
+-            <div key={i} className="border border-gray-700 rounded p-3">
+-              <span className="font-mono">{shorten(payout.args.from)}</span>
+-              {" paid "}
+-              <span className="font-mono">{shorten(payout.args.to)}</span>
+-              {" "}
+-              {payout.args.amount !== undefined ? formatUnits(payout.args.amount, 6) : "0"} USDC
+-              {payout.args.memo ? <span className="block opacity-70 mt-1">“{payout.args.memo}”</span> : null}
++    <div className="max-w-xl mx-auto pt-10 px-4 pb-16">
++      <h1 className="text-3xl font-bold mb-1">USDC Payouts</h1>
++      <p className="text-sm opacity-70 mb-6">Send a USDC payout to any teammate or contributor on Base.</p>
++
++      {!isConnected ? (
++        <p className="mt-4">Please connect your wallet to send a payout.</p>
++      ) : (
++        <>
++          <p className="mb-4">
++            Your balance: {usdcBalance !== undefined ? formatUnits(usdcBalance, USDC_DECIMALS) : "0"} USDC
++          </p>
++
++          <input
++            type="text"
++            placeholder="0x... recipient address"
++            className="input input-bordered w-full mb-3"
++            value={recipient}
++            onChange={e => setRecipient(e.target.value)}
++          />
++          <input
++            type="number"
++            min="0"
++            placeholder="Amount (USDC)"
++            className="input input-bordered w-full mb-3"
++            value={amount}
++            onChange={e => setAmount(e.target.value)}
++          />
++          <textarea
++            placeholder="What is this payout for? (optional)"
++            className="textarea textarea-bordered w-full mb-4"
++            value={memo}
++            onChange={e => setMemo(e.target.value)}
++          />
++
++          <div className="flex gap-3">
++            <button className="btn btn-primary" disabled={isApproving || !needsApproval} onClick={handleApprove}>
++              {isApproving ? <span className="loading loading-spinner loading-sm" /> : "Approve"}
++            </button>
++            <button
++              className="btn btn-secondary"
++              disabled={isPaying || needsApproval || !hasValidAmount}
++              onClick={handlePay}
++            >
++              {isPaying ? <span className="loading loading-spinner loading-sm" /> : "Send Payout"}
++            </button>
++          </div>
++          {needsApproval && (
++            <p className="text-sm opacity-70 mt-2">Approve USDC spending before sending this payout.</p>
++          )}
++        </>
++      )}
++
++      <h2 className="text-xl font-semibold mt-10 mb-3">Latest payouts</h2>
++      <div className="flex flex-col gap-2">
++        {(payouts ?? []).map(payout => (
++          <div key={`${payout.transactionHash}-${payout.logIndex}`} className="card bg-base-200 p-3">
++            <div className="flex flex-wrap items-center gap-1">
++              <Address address={payout.args.from} size="xs" onlyEnsOrAddress />
++              <span className="opacity-70">paid</span>
++              <Address address={payout.args.to} size="xs" onlyEnsOrAddress />
++              <span className="font-semibold">
++                {payout.args.amount !== undefined ? formatUnits(payout.args.amount, USDC_DECIMALS) : "0"} USDC
++              </span>
+             </div>
+-          ))}
+-          {(payouts ?? []).length === 0 && <p className="opacity-60">No payouts yet.</p>}
+-        </div>
++            {payout.args.memo ? <span className="block opacity-70 mt-1">“{payout.args.memo}”</span> : null}
++          </div>
++        ))}
++        {(payouts ?? []).length === 0 && <p className="opacity-60">No payouts yet.</p>}
+       </div>
+     </div>
+   );
+diff --git a/packages/nextjs/contracts/deployedContracts.ts b/packages/nextjs/contracts/deployedContracts.ts
+index 0be2434..2815225 100644
+--- a/packages/nextjs/contracts/deployedContracts.ts
++++ b/packages/nextjs/contracts/deployedContracts.ts
+@@ -47,93 +47,6 @@ const deployedContracts = {
+       inheritedFunctions: {},
+       deployedOnBlock: 33712450,
+     },
+-    USDC: {
+-      address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+-      abi: [
+-        {
+-          anonymous: false,
+-          inputs: [
+-            { indexed: true, internalType: "address", name: "owner", type: "address" },
+-            { indexed: true, internalType: "address", name: "spender", type: "address" },
+-            { indexed: false, internalType: "uint256", name: "value", type: "uint256" },
+-          ],
+-          name: "Approval",
+-          type: "event",
+-        },
+-        {
+-          anonymous: false,
+-          inputs: [
+-            { indexed: true, internalType: "address", name: "from", type: "address" },
+-            { indexed: true, internalType: "address", name: "to", type: "address" },
+-            { indexed: false, internalType: "uint256", name: "value", type: "uint256" },
+-          ],
+-          name: "Transfer",
+-          type: "event",
+-        },
+-        {
+-          inputs: [
+-            { internalType: "address", name: "owner", type: "address" },
+-            { internalType: "address", name: "spender", type: "address" },
+-          ],
+-          name: "allowance",
+-          outputs: [{ internalType: "uint256", name: "", type: "uint256" }],
+-          stateMutability: "view",
+-          type: "function",
+-        },
+-        {
+-          inputs: [
+-            { internalType: "address", name: "spender", type: "address" },
+-            { internalType: "uint256", name: "amount", type: "uint256" },
+-          ],
+-          name: "approve",
+-          outputs: [{ internalType: "bool", name: "", type: "bool" }],
+-          stateMutability: "nonpayable",
+-          type: "function",
+-        },
+-        {
+-          inputs: [{ internalType: "address", name: "account", type: "address" }],
+-          name: "balanceOf",
+-          outputs: [{ internalType: "uint256", name: "", type: "uint256" }],
+-          stateMutability: "view",
+-          type: "function",
+-        },
+-        {
+-          inputs: [],
+-          name: "decimals",
+-          outputs: [{ internalType: "uint8", name: "", type: "uint8" }],
+-          stateMutability: "view",
+-          type: "function",
+-        },
+-        {
+-          inputs: [],
+-          name: "symbol",
+-          outputs: [{ internalType: "string", name: "", type: "string" }],
+-          stateMutability: "view",
+-          type: "function",
+-        },
+-        {
+-          inputs: [
+-            { internalType: "address", name: "to", type: "address" },
+-            { internalType: "uint256", name: "amount", type: "uint256" },
+-          ],
+-          name: "transfer",
+-          outputs: [{ internalType: "bool", name: "", type: "bool" }],
+-          stateMutability: "nonpayable",
+-          type: "function",
+-        },
+-        {
+-          inputs: [
+-            { internalType: "address", name: "from", type: "address" },
+-            { internalType: "address", name: "to", type: "address" },
+-            { internalType: "uint256", name: "amount", type: "uint256" },
+-          ],
+-          name: "transferFrom",
+-          outputs: [{ internalType: "bool", name: "", type: "bool" }],
+-          stateMutability: "nonpayable",
+-          type: "function",
+-        },
+-      ],
+-    },
+   },
+ } as const;
+ 
+diff --git a/packages/nextjs/contracts/externalContracts.ts b/packages/nextjs/contracts/externalContracts.ts
+index ab6daa8..8a9045c 100644
+--- a/packages/nextjs/contracts/externalContracts.ts
++++ b/packages/nextjs/contracts/externalContracts.ts
+@@ -11,6 +11,96 @@ import { GenericContractsDeclaration } from "~~/utils/scaffold-eth/contract";
+  *   },
+  * } as const;
+  */
+-const externalContracts = {} as const;
++const externalContracts = {
++  8453: {
++    USDC: {
++      address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
++      abi: [
++        {
++          anonymous: false,
++          inputs: [
++            { indexed: true, internalType: "address", name: "owner", type: "address" },
++            { indexed: true, internalType: "address", name: "spender", type: "address" },
++            { indexed: false, internalType: "uint256", name: "value", type: "uint256" },
++          ],
++          name: "Approval",
++          type: "event",
++        },
++        {
++          anonymous: false,
++          inputs: [
++            { indexed: true, internalType: "address", name: "from", type: "address" },
++            { indexed: true, internalType: "address", name: "to", type: "address" },
++            { indexed: false, internalType: "uint256", name: "value", type: "uint256" },
++          ],
++          name: "Transfer",
++          type: "event",
++        },
++        {
++          inputs: [
++            { internalType: "address", name: "owner", type: "address" },
++            { internalType: "address", name: "spender", type: "address" },
++          ],
++          name: "allowance",
++          outputs: [{ internalType: "uint256", name: "", type: "uint256" }],
++          stateMutability: "view",
++          type: "function",
++        },
++        {
++          inputs: [
++            { internalType: "address", name: "spender", type: "address" },
++            { internalType: "uint256", name: "amount", type: "uint256" },
++          ],
++          name: "approve",
++          outputs: [{ internalType: "bool", name: "", type: "bool" }],
++          stateMutability: "nonpayable",
++          type: "function",
++        },
++        {
++          inputs: [{ internalType: "address", name: "account", type: "address" }],
++          name: "balanceOf",
++          outputs: [{ internalType: "uint256", name: "", type: "uint256" }],
++          stateMutability: "view",
++          type: "function",
++        },
++        {
++          inputs: [],
++          name: "decimals",
++          outputs: [{ internalType: "uint8", name: "", type: "uint8" }],
++          stateMutability: "view",
++          type: "function",
++        },
++        {
++          inputs: [],
++          name: "symbol",
++          outputs: [{ internalType: "string", name: "", type: "string" }],
++          stateMutability: "view",
++          type: "function",
++        },
++        {
++          inputs: [
++            { internalType: "address", name: "to", type: "address" },
++            { internalType: "uint256", name: "amount", type: "uint256" },
++          ],
++          name: "transfer",
++          outputs: [{ internalType: "bool", name: "", type: "bool" }],
++          stateMutability: "nonpayable",
++          type: "function",
++        },
++        {
++          inputs: [
++            { internalType: "address", name: "from", type: "address" },
++            { internalType: "address", name: "to", type: "address" },
++            { internalType: "uint256", name: "amount", type: "uint256" },
++          ],
++          name: "transferFrom",
++          outputs: [{ internalType: "bool", name: "", type: "bool" }],
++          stateMutability: "nonpayable",
++          type: "function",
++        },
++      ],
++    },
++  },
++} as const;
+ 
+ export default externalContracts satisfies GenericContractsDeclaration;
+
+# Untracked files and status
+ M packages/nextjs/app/payouts/page.tsx
+ M packages/nextjs/contracts/deployedContracts.ts
+ M packages/nextjs/contracts/externalContracts.ts
