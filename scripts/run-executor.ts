@@ -188,7 +188,12 @@ const main = async () => {
 
   await writeRecord(recordPath, { ...record, finished: new Date().toISOString(), exit, usage });
 
-  console.log(`executor exited ${exit} in ${usage.duration_s}s${usage.cost_usd === null ? "" : ` ($${usage.cost_usd})`}${usage.total_tokens === null ? "" : `, ${usage.total_tokens} tokens`}; transcript at ${path.join(runDir, "transcript.md")}`);
+  // buildUsage always measures the clock, so duration_s is a number here; cost is claude's
+  // own float and prints as 1.7752330000000003 unless it is rounded to the cent.
+  const price = usage.cost_usd === null ? "" : ` ($${usage.cost_usd.toFixed(2)})`;
+  const tokens = usage.total_tokens === null ? "" : `, ${usage.total_tokens} tokens`;
+
+  console.log(`executor exited ${exit} in ${usage.duration_s}s${price}${tokens}; transcript at ${path.join(runDir, "transcript.md")}`);
   process.exit(exit === 0 ? 0 : 2);
 };
 

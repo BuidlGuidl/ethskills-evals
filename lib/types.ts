@@ -28,12 +28,17 @@ export type JudgeRecord = JudgeSpec & {
 // What a run cost, so a benchmark can report more than pass counts. duration_s is the
 // harness's own wall clock and means the same thing on both stacks; everything else is
 // what the executor chose to report, hence the nulls — claude gives turns, dollars and
-// an input/output split, codex gives a token total and nothing else.
+// a four-way token split, codex gives a token total and nothing else. On claude the two
+// cache fields carry almost the whole run: input_tokens alone is the uncached remainder,
+// a double-digit number, and total_tokens is the sum of all four. The totals mean
+// different things on the two stacks and are only comparable variant-to-variant within one.
 export type RunUsage = {
-  duration_s: number;
+  duration_s: number | null;
   turns: number | null;
   cost_usd: number | null;
   input_tokens: number | null;
+  cache_creation_input_tokens: number | null;
+  cache_read_input_tokens: number | null;
   output_tokens: number | null;
   total_tokens: number | null;
 };
