@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { codexEnv } from "./codex-home.js";
 import type { Executor, ExpectStatus, JudgeSpec } from "./types.js";
 
 export type JudgeResult =
@@ -102,7 +103,10 @@ const runClaudeJudge = (prompt: string, model: string | null): Spawned => {
 // repo-shaped evidence off argv (E2BIG). `--disable shell_snapshot` for the same reason
 // the executor gets it (see scripts/run-executor.ts): the operator's rc files must not
 // ride into a graded process, and one unparseable line in the snapshot leaves the judge
-// with no shell to check its evidence in. No network flag here on purpose — the judge
+// with no shell to check its evidence in. CODEX_HOME is redirected for the same reason it
+// is on the executor — a global codex skill about the task's subject must not reach the
+// grader either — which is also why the model arrives resolved (verify does it, so
+// result.yaml names the model that graded). No network flag here on purpose: the judge
 // grades from the evidence in its prompt, so read-only's default deny is correct.
 const runCodexJudge = (prompt: string, model: string | null): Spawned => {
   const dir = mkdtempSync(path.join(tmpdir(), "skill-eval-judge-"));
@@ -119,6 +123,7 @@ const runCodexJudge = (prompt: string, model: string | null): Spawned => {
     const result = spawnSync("codex", args, {
       input: prompt,
       encoding: "utf8",
+      env: codexEnv(),
       timeout: JUDGE_TIMEOUT_MS,
       maxBuffer: MAX_OUTPUT_BYTES,
     });

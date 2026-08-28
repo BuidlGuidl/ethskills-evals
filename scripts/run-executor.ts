@@ -5,6 +5,7 @@ import path from "node:path";
 import process from "node:process";
 import { finished } from "node:stream/promises";
 import yaml from "js-yaml";
+import { codexEnv, resolveCodexModel } from "../lib/codex-home.js";
 import { loadYamlFile, parseArgs, requireString } from "../lib/task.js";
 import { buildTranscript } from "../lib/transcript.js";
 import type { Executor, ExecutorRecord } from "../lib/types.js";
@@ -23,8 +24,8 @@ const parseExecutor = (value: string): Executor => {
 };
 
 // `--setting-sources project` is load-bearing for claude: user-level config crowds the
-// skill listing and skills stop triggering. For codex the model comes from
-// ~/.codex/config.toml unless -m overrides it, and two flags are load-bearing:
+// skill listing and skills stop triggering. codex gets the same isolation from a redirected
+// CODEX_HOME (lib/codex-home.ts) plus two load-bearing flags:
 // `sandbox_workspace_write.network_access=true` (workspace-write blocks network by
 // default, so without it every live-data task fails for the wrong reason) and
 // `--disable shell_snapshot` (see the block above the codex args). Both take the prompt
@@ -62,6 +63,8 @@ const buildCommand = (executor: Executor, model: string | null) => {
   // --setting-sources governs settings-file discovery only. claude snapshots the operator's
   // interactive shell into its own Bash tool exactly as codex does, and has no equivalent
   // flag, so that half of this exposure is still open.
+  //
+  // The rest of ~/.codex is handled by CODEX_HOME below, not by a flag.
   const args = ["exec", "--disable", "shell_snapshot", "-s", "workspace-write", "-c", "sandbox_workspace_write.network_access=true"];
 
   if (model) {
@@ -79,7 +82,7 @@ const writeRecord = async (recordPath: string, record: ExecutorRecord) =>
 const main = async () => {
   const args = parseArgs(RUN_ARGS);
   const runDir = path.resolve(ROOT, requireString(args.run, "--run"));
-  const model = args.model === undefined ? null : requireString(args.model, "--model");
+  const requestedModel = args.model === undefined ? null : requireString(args.model, "--model");
   const resultPath = path.join(runDir, "result.yaml");
   const recordPath = path.join(runDir, "executor.yaml");
 
@@ -107,6 +110,10 @@ const main = async () => {
 
   const executor = parseExecutor(requireString(result.executor, "executor"));
   const prompt = await readFile(path.join(workspacePath, "TASK.md"), "utf8");
+  // codex reads no config.toml now that CODEX_HOME is redirected, so the operator's
+  // configured model is resolved here and passed on argv — where executor.yaml can record it.
+  const model = executor === "codex" ? resolveCodexModel(requestedModel) : requestedModel;
+  const env = executor === "codex" ? codexEnv() : process.env;
   const { file, args: commandArgs } = buildCommand(executor, model);
   const record: ExecutorRecord = {
     executor,
@@ -131,7 +138,7 @@ const main = async () => {
 
   console.log(`${executor}${model ? ` (${model})` : ""} → ${workspacePath}`);
 
-  const child = spawn(file, commandArgs, { cwd: workspacePath, stdio: ["pipe", "pipe", "pipe"] });
+  const child = spawn(file, commandArgs, { cwd: workspacePath, env, stdio: ["pipe", "pipe", "pipe"] });
 
   child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");

@@ -3,7 +3,9 @@ import { rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import yaml from "js-yaml";
+import { resolveCodexModel } from "../lib/codex-home.js";
 import { buildEvidence, snapshotOutput, writeDiff } from "../lib/evidence.js";
+import { detectBrokenShell } from "../lib/executor-health.js";
 import { judgeExpectations } from "../lib/judge.js";
 import { isRecord, loadTaskSpec, loadYamlFile, parseArgs, requireString } from "../lib/task.js";
 import type { Executor, ExecutorRecord, ExpectStatus, JudgeSpec, ResultRecord, Variant } from "../lib/types.js";
@@ -24,7 +26,11 @@ const resolveJudge = (args: Record<string, string | boolean>): JudgeSpec => {
   }
 
   const agent = parseAgent(requireString(args["judge-agent"], "--judge-agent"));
-  const model = args["judge-model"] === undefined ? null : requireString(args["judge-model"], "--judge-model");
+  const requested = args["judge-model"] === undefined ? null : requireString(args["judge-model"], "--judge-model");
+  // codex judges under a redirected CODEX_HOME, so nothing supplies the operator's configured
+  // model unless the harness passes it. Resolved here rather than inside the runner so that
+  // result.yaml records the model that actually graded, not a null the CLI silently filled in.
+  const model = agent === "codex" ? resolveCodexModel(requested) : requested;
 
   return { agent, model };
 };
@@ -167,6 +173,21 @@ const main = async () => {
     if (executorRecord.exit !== 0 && args["grade-failed-run"] === undefined) {
       throw new Error(
         `executor exited ${executorRecord.exit ?? "unknown"}; that is a harness failure, not a score. `
+          + `Delete ${runDir} and set up a new run, or pass --grade-failed-run to grade what it left behind anyway.`,
+      );
+    }
+
+    // The same guard one level deeper, because the exit code does not cover the case that
+    // matters most: a run whose shell was dead exits 0, and its transcript reads as a model
+    // that chose not to look at anything. Graded, it records as a skill that did not help on
+    // a machine where the skill was never read. Refusing takes the same stated override as a
+    // bad exit — this is a harness failure either way, and the operator says so out loud.
+    const brokenShell = detectBrokenShell(runDir);
+
+    if (brokenShell !== null && args["grade-failed-run"] === undefined) {
+      throw new Error(
+        `${brokenShell.cause}; it still exited 0, so nothing but the capture shows it. `
+          + `${brokenShell.capturePath}: "${brokenShell.evidence}". ${brokenShell.remedy}. `
           + `Delete ${runDir} and set up a new run, or pass --grade-failed-run to grade what it left behind anyway.`,
       );
     }
