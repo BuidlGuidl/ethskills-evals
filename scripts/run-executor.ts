@@ -24,9 +24,11 @@ const parseExecutor = (value: string): Executor => {
 
 // `--setting-sources project` is load-bearing for claude: user-level config crowds the
 // skill listing and skills stop triggering. For codex the model comes from
-// ~/.codex/config.toml unless -m overrides it, and the network flag is load-bearing too:
-// workspace-write blocks network by default, so without it every live-data task fails for
-// the wrong reason. Both take the prompt on stdin — TASK.md can outgrow the argv limit.
+// ~/.codex/config.toml unless -m overrides it, and two flags are load-bearing:
+// `sandbox_workspace_write.network_access=true` (workspace-write blocks network by
+// default, so without it every live-data task fails for the wrong reason) and
+// `--disable shell_snapshot` (see the block above the codex args). Both take the prompt
+// on stdin — TASK.md can outgrow the argv limit.
 const buildCommand = (executor: Executor, model: string | null) => {
   if (executor === "claude") {
     const args = ["-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN", "claude", "-p"];
@@ -46,14 +48,20 @@ const buildCommand = (executor: Executor, model: string | null) => {
     return { file: "env", args };
   }
 
-  // --disable shell_snapshot for the same reason claude gets --setting-sources project: the
-  // executor's shell must not be the operator's. codex otherwise snapshots the interactive
-  // shell's functions and aliases and sources that into every command, so whatever is in the
-  // operator's rc files rides into the run — and a single unparseable line in it takes the
-  // whole shell down. Seen on 2026-08-27: a snapshot that failed to re-parse ("syntax error
-  // near unexpected token `('", from extglob patterns `declare -f` dumps without the shopt
-  // that made them legal) left a with_skill run unable to read its own installed skill, which
-  // grades as a skill that did not help rather than as a broken run.
+  // --disable shell_snapshot keeps the operator's interactive shell out of the run. codex
+  // otherwise snapshots that shell's functions and aliases and sources the snapshot into
+  // every command, so whatever is in the operator's rc files rides into the run — and a
+  // single unparseable line in it takes the whole shell down. Seen on 2026-08-27: a snapshot
+  // that failed to re-parse ("syntax error near unexpected token `('", from extglob patterns
+  // `declare -f` dumps without the shopt that made them legal) left a with_skill run unable
+  // to read its own installed skill, which grades as a skill that did not help rather than
+  // as a broken run.
+  //
+  // Same rule as claude's --setting-sources project — the executor's environment is the
+  // benchmark's, not the operator's — but not the same mechanism, and not the same coverage:
+  // --setting-sources governs settings-file discovery only. claude snapshots the operator's
+  // interactive shell into its own Bash tool exactly as codex does, and has no equivalent
+  // flag, so that half of this exposure is still open.
   const args = ["exec", "--disable", "shell_snapshot", "-s", "workspace-write", "-c", "sandbox_workspace_write.network_access=true"];
 
   if (model) {

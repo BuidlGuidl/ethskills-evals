@@ -99,11 +99,15 @@ const runClaudeJudge = (prompt: string, model: string | null): Spawned => {
 // `codex exec` interleaves session logging with the answer on stdout, so take the
 // final message from --output-last-message instead. read-only: the judge reads
 // evidence, it never edits a workspace. `-` for the prompt reads it from stdin, keeping
-// repo-shaped evidence off argv (E2BIG).
+// repo-shaped evidence off argv (E2BIG). `--disable shell_snapshot` for the same reason
+// the executor gets it (see scripts/run-executor.ts): the operator's rc files must not
+// ride into a graded process, and one unparseable line in the snapshot leaves the judge
+// with no shell to check its evidence in. No network flag here on purpose — the judge
+// grades from the evidence in its prompt, so read-only's default deny is correct.
 const runCodexJudge = (prompt: string, model: string | null): Spawned => {
   const dir = mkdtempSync(path.join(tmpdir(), "skill-eval-judge-"));
   const messagePath = path.join(dir, "last-message.txt");
-  const args = ["exec", "-s", "read-only", "--skip-git-repo-check", "--ephemeral", "-o", messagePath];
+  const args = ["exec", "--disable", "shell_snapshot", "-s", "read-only", "--skip-git-repo-check", "--ephemeral", "-o", messagePath];
 
   if (model) {
     args.push("-m", model);
