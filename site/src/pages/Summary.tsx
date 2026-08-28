@@ -38,7 +38,9 @@ const Summary = () => {
               <th scope="row">
                 <Link to={`/skill/${row.name}`}>{row.name}</Link>
               </th>
-              <td className="num">{row.tasks}</td>
+              <td className="num">
+                <Link to={`/tasks#${row.name}`}>{row.tasks}</Link>
+              </td>
               <td className="num">{row.runs}</td>
               <td className="num">{formatCell(row.noSkill)}</td>
               <td className="num">{formatCell(row.withSkill)}</td>
