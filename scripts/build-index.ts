@@ -229,12 +229,18 @@ const main = async () => {
     return addedCache.get(`${runDir}/result.yaml`) ?? null;
   };
 
+  // Pinned to the commit that recorded the run, because a task's expect lines get rewritten
+  // afterwards and the run was not graded on the rewrite. Falling back to the file as it
+  // stands is right for a run that is not committed yet and wrong for every other reason
+  // the commit could be missing — so the fallback says so, and --strict refuses it. Reading
+  // today's expect lines onto an old run is what would make two incomparable columns look
+  // like a comparison, which is the one thing this file exists to prevent.
   const rubricFor = (taskId: string, runId: string) => {
     const key = `${taskId}/${runId}`;
     const cached = derived.run_rubrics[key];
 
     if (cached) {
-      return cached;
+      return { rubric: cached, pinned: true };
     }
 
     const commit = addingCommit(`artifacts/${taskId}/${runId}`);
@@ -246,11 +252,11 @@ const main = async () => {
         : null;
     const rubric = raw === null ? null : rubricOf(raw);
 
-    if (rubric) {
+    if (rubric !== null && commit !== null) {
       derived.run_rubrics[key] = rubric;
     }
 
-    return rubric;
+    return { rubric, pinned: commit !== null };
   };
 
   // Three ways to learn which text a run saw, cheapest first. Runs made since setup started
@@ -330,10 +336,14 @@ const main = async () => {
       const loaded = loadYamlFile(resultPath);
       const skill = taskSkill.get(taskId) ?? null;
       const skillVersion = typeof loaded.skill_version === "string" ? loaded.skill_version : null;
-      const rubric = rubricFor(taskId, runId);
+      const { rubric, pinned } = rubricFor(taskId, runId);
 
       if (rubric === null) {
         warnings.push(`${runDir}: no readable task rubric; comparisons disabled for this run`);
+      } else if (!pinned) {
+        warnings.push(
+          `${runDir}: rubric read from tasks/${taskId}.yaml as it stands now, not from the revision this run was graded on`,
+        );
       }
 
       let skillContent: string | null = null;
