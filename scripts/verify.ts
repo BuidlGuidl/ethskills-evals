@@ -85,6 +85,10 @@ const loadResultRecord = (resultPath: string): ResultRecord => {
     variant: parseVariant(requireString(loaded.variant, "variant")),
     skill_version: loaded.skill_version === null ? null : requireString(loaded.skill_version, "skill_version"),
     input_sha: loaded.input_sha === undefined ? undefined : requireString(loaded.input_sha, "input_sha"),
+    skill_content:
+      loaded.skill_content === undefined || loaded.skill_content === null
+        ? null
+        : requireString(loaded.skill_content, "skill_content"),
     created: requireString(loaded.created, "created"),
     executor_model: loaded.executor_model === undefined || loaded.executor_model === null
       ? null
@@ -341,6 +345,7 @@ const main = async () => {
       variant: result.variant,
       skill_version: result.skill_version,
       ...(result.input_sha === undefined ? {} : { input_sha: result.input_sha }),
+      skill_content: result.skill_content,
       created: result.created,
       ...(regrade ? { regrade_of: result.run, regrade_reason: regradeReason as string, regraded_at: new Date().toISOString() } : {}),
       executor_model: executorRecord === null ? result.executor_model ?? null : executorRecord.model,

@@ -5,6 +5,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import yaml from "js-yaml";
+import { normalizeSkillText, skillContentId } from "../lib/skill.js";
 import { isRecord, loadTaskSpec, loadYamlFile, parseArgs, requireString } from "../lib/task.js";
 
 // Builds the json the results site reads: site/public/index.json, one file, regenerated
@@ -34,7 +35,7 @@ import { isRecord, loadTaskSpec, loadYamlFile, parseArgs, requireString } from "
 
 const ROOT = process.cwd();
 const REPO = "BuidlGuidl/ethskills-evals";
-const INDEX_ARGS = new Set(["out", "cache", "no-prs", "no-git"]);
+const INDEX_ARGS = new Set(["out", "cache", "no-prs", "no-git", "strict"]);
 const DEFAULT_OUT = path.join("site", "public", "index.json");
 const DEFAULT_CACHE = path.join("site", "derived.json");
 
@@ -109,10 +110,6 @@ const fetchPullRequests = (): PullRequest[] | null => {
 };
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex").slice(0, 12);
-
-// git output arrives trimmed and a file on disk does not, so the same SKILL.md hashed
-// from both sides came out as two versions differing by one newline.
-const normalizeSkill = (text: string) => `${text.replace(/\s+$/, "")}\n`;
 
 const countLines = (text: string) => text.replace(/\n$/, "").split("\n").length;
 const countWords = (text: string) => text.split(/\s+/).filter(Boolean).length;
@@ -256,11 +253,21 @@ const main = async () => {
     return rubric;
   };
 
-  const skillContentFor = (skill: string, sha: string) => {
+  // Three ways to learn which text a run saw, cheapest first. Runs made since setup started
+  // recording it say so themselves and need nothing else; older ones are recovered from git
+  // and cached, which is the whole reason derived.json is committed.
+  const contentIdFor = (skill: string, sha: string, recorded: string | null) => {
     const key = `${skill}@${sha}`;
+
+    if (recorded !== null) {
+      derived.skill_versions[key] = recorded;
+
+      return recorded;
+    }
+
     const cached = derived.skill_versions[key];
 
-    if (cached && derived.skill_texts[cached]) {
+    if (cached) {
       return cached;
     }
 
@@ -270,13 +277,42 @@ const main = async () => {
       return null;
     }
 
-    const text = normalizeSkill(raw);
-    const id = hash(text);
+    const id = skillContentId(raw);
 
     derived.skill_versions[key] = id;
-    derived.skill_texts[id] = text;
+    derived.skill_texts[id] = normalizeSkillText(raw);
 
     return id;
+  };
+
+  // The id alone is not enough — the site puts the two texts side by side. A run made on the
+  // file as it stands needs no history at all; only an older version has to come from git.
+  const textFor = (skill: string, id: string, sha: string) => {
+    if (derived.skill_texts[id]) {
+      return derived.skill_texts[id];
+    }
+
+    const currentPath = path.join(ROOT, "skills", skill, "SKILL.md");
+
+    if (existsSync(currentPath)) {
+      const current = normalizeSkillText(readFileSync(currentPath, "utf8"));
+
+      if (skillContentId(current) === id) {
+        derived.skill_texts[id] = current;
+
+        return current;
+      }
+    }
+
+    const raw = gitOrNull("show", `${sha}:skills/${skill}/SKILL.md`);
+
+    if (raw === null) {
+      return null;
+    }
+
+    derived.skill_texts[id] = normalizeSkillText(raw);
+
+    return derived.skill_texts[id];
   };
 
   const runs: Record<string, unknown>[] = [];
@@ -303,10 +339,14 @@ const main = async () => {
       let skillContent: string | null = null;
 
       if (skill && skillVersion) {
-        skillContent = skillContentFor(skill, skillVersion);
+        const recorded = typeof loaded.skill_content === "string" ? loaded.skill_content : null;
+
+        skillContent = contentIdFor(skill, skillVersion, recorded);
 
         if (skillContent === null) {
           warnings.push(`${runDir}: skills/${skill}/SKILL.md unreachable at ${skillVersion} and not cached`);
+        } else if (textFor(skill, skillContent, skillVersion) === null) {
+          warnings.push(`${runDir}: run records skill version ${skillContent}, but its SKILL.md text is neither cached nor reachable`);
         } else {
           const key = `${skill}:${skillContent}`;
           const entry = seen.get(key);
@@ -322,7 +362,7 @@ const main = async () => {
       }
 
       const commitKey = `${taskId}/${runId}`;
-      let commit = derived.run_commits[commitKey] ?? null;
+      let commit: string | null = derived.run_commits[commitKey] ?? null;
 
       if (commit === null) {
         commit = addingCommit(runDir);
@@ -400,7 +440,7 @@ const main = async () => {
       .map(entry => ({ ...entry, text: derived.skill_texts[entry.id] ?? "" }));
 
     const currentPath = path.join(ROOT, "skills", name, "SKILL.md");
-    const currentText = existsSync(currentPath) ? normalizeSkill(readFileSync(currentPath, "utf8")) : null;
+    const currentText = existsSync(currentPath) ? normalizeSkillText(readFileSync(currentPath, "utf8")) : null;
     const currentId = currentText === null ? null : hash(currentText);
 
     if (currentText !== null && currentId !== null && !versions.some(entry => entry.id === currentId)) {
@@ -410,7 +450,7 @@ const main = async () => {
         const lastTouched = gitOrNull("log", "-1", "--format=%h", "--", `skills/${name}/SKILL.md`);
         const committed = lastTouched ? gitOrNull("show", `${lastTouched}:skills/${name}/SKILL.md`) : null;
 
-        if (lastTouched && committed !== null && normalizeSkill(committed) === currentText) {
+        if (lastTouched && committed !== null && normalizeSkillText(committed) === currentText) {
           sha = lastTouched;
           derived.skill_commits[currentId] = sha;
         }
@@ -520,6 +560,18 @@ const main = async () => {
 
   for (const warning of warnings) {
     process.stderr.write(`warning: ${warning}\n`);
+  }
+
+  // The deploy build runs --strict. A warning there means a run lost the skill version or the
+  // task revision it was measured against, and the site would quietly drop it from a column
+  // instead of showing a wrong number — a green deploy hiding a hole. Fail where someone
+  // is looking.
+  if (args.strict !== undefined && warnings.length > 0) {
+    process.stderr.write(
+      `\n${warnings.length} unresolved fact(s). Run \`yarn build-index\` on a full clone and commit ` +
+        `${path.relative(ROOT, cachePath)}; history that is not cached is not available to the deploy build.\n`,
+    );
+    process.exit(1);
   }
 
   const ungraded = runs.filter(run => run.pass === null).length;
