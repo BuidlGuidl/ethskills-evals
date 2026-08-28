@@ -1,6 +1,6 @@
 ---
 name: ship
-description: Plan and ship a minimal Ethereum dApp from architecture through deployment. Use before or during a build to decide the onchain boundary, contract surface, state-transition callers, target chain, and production handoff.
+description: Use when scoping a dApp or MVP before the code exists — deciding what belongs onchain versus in a database, how many custom contracts to write, whether a leaderboard or reputation score is stored or derived, who calls each state-changing function and why they pay gas, and which single chain to launch on. Not for SE2 build mechanics (`orchestration`), IPFS/Vercel deploys (`frontend-playbook`), or the pre-launch audit (`qa`).
 ---
 
 # Ship a dApp
