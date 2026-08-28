@@ -229,9 +229,11 @@ const main = async () => {
 
     if (existsSync(path.join(workspacePath, ".git"))) {
       await writeDiff(workspacePath, path.join(runDir, "run.diff"));
-    } else {
-      await snapshotOutput(workspacePath, path.join(runDir, "output"));
     }
+
+    // Preserve final answer/source files even for repository-shaped workspaces.
+    // The diff records edits relative to the seed; output makes grading replayable.
+    await snapshotOutput(workspacePath, path.join(runDir, "output"));
 
     const judgeSpec = resolveJudge(args, result.executor);
     const verdict = judgeExpectations(taskSpec.input, taskSpec.expect, await buildEvidence(runDir), judgeSpec);

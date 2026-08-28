@@ -89,6 +89,20 @@ const installSkill = async (sourceDir: string, skillName: string, executor: Exec
   }
 };
 
+// Runs live below artifacts/, inside the eval repository. A nested repository
+// boundary prevents executor diagnostics such as `git status` from walking up
+// and revealing task specs, sibling variants, or unrelated working-tree edits.
+const initializeWorkspaceRepository = (workspacePath: string) => {
+  execFileSync("git", ["init", "--quiet", workspacePath]);
+  execFileSync("git", ["-C", workspacePath, "add", "."]);
+  execFileSync("git", [
+    "-C", workspacePath,
+    "-c", "user.name=eval-harness",
+    "-c", "user.email=eval-harness@invalid",
+    "commit", "--quiet", "-m", "workspace seed",
+  ]);
+};
+
 const walkFiles = async (dir: string) => {
   const entries: string[] = [];
   const pending = [dir];
@@ -164,6 +178,7 @@ const main = async () => {
       }
 
       await guardAgainstLeaks(workspacePath, taskPath, runDir);
+      initializeWorkspaceRepository(workspacePath);
 
       const result: ResultRecord = {
         task: spec.id,

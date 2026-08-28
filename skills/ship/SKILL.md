@@ -1,6 +1,6 @@
 ---
 name: ship
-description: Use when scoping a dApp or MVP before the code exists — deciding what belongs onchain versus in a database, how many custom contracts to write, whether a leaderboard or reputation score is stored or derived, who calls each state-changing function and why they pay gas, and which single chain to launch on. Not for SE2 build mechanics (`orchestration`), IPFS/Vercel deploys (`frontend-playbook`), or the pre-launch audit (`qa`).
+description: "Scope a dApp or MVP and make it ready to build and release: decide the onchain boundary, minimal contract surface, state-transition callers and incentives, one launch chain, and the deployment runbook. Use before implementation or when a build lacks these decisions. Route detailed implementation, deployment, and audit work to their focused skills."
 ---
 
 # Ship a dApp
@@ -23,9 +23,13 @@ leaderboard, or paginated ranking in contract storage merely to serve a browse
 screen. Recording counters that settlement already needs is fine.
 
 Prefer existing audited protocols and primitives. Most MVPs need zero to two
-custom contracts; more than three is a signal to reduce scope. Do not add a
+custom contracts, and three is the upper bound before reducing scope. Do not add a
 factory, escrow, router, or fee-splitter unless its separate trust boundary is
 required by the product.
+
+When integrating a deployed protocol, use a verified address from the relevant
+chain's official documentation or the `addresses` skill. Never invent or infer
+an address: a wrong address can send approvals or funds to an attacker.
 
 ## State transitions
 
@@ -69,5 +73,9 @@ the path end to end. Do not leave the network or deployment procedure as TBD.
 - A fresh reviewer checks the finished vertical slice before launch.
 
 Fetch another focused skill only when the plan reaches that phase and needs its
-details—for example `security`, `testing`, `frontend-ux`, `frontend-playbook`,
-or `qa`. Stop when the requested vertical slice and its runbook are complete.
+details—for example `addresses`, `l2s`, `gas`, `security`, `testing`,
+`frontend-ux`, `frontend-playbook`, or `qa`. Skills are available at
+`https://ethskills.com/<skill>/SKILL.md`. `ship` owns the product and release
+decisions; use `frontend-playbook` for detailed hosting/deployment mechanics and
+`qa` for the independent pre-launch review. Stop when the requested vertical
+slice and its runbook are complete.
