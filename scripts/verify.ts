@@ -235,8 +235,11 @@ const main = async () => {
     // The diff records edits relative to the seed; output makes grading replayable.
     await snapshotOutput(workspacePath, path.join(runDir, "output"));
 
+    const evidence = await buildEvidence(runDir);
+    await rm(workspacePath, { recursive: true, force: true });
+
     const judgeSpec = resolveJudge(args, result.executor);
-    const verdict = judgeExpectations(taskSpec.input, taskSpec.expect, await buildEvidence(runDir), judgeSpec);
+    const verdict = judgeExpectations(taskSpec.input, taskSpec.expect, evidence, judgeSpec);
 
     if (!verdict.ok) {
       throw new Error(`judge failed: ${verdict.error}`);
