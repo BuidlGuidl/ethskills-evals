@@ -36,6 +36,8 @@ ethskills-evals/
 ├─ scripts/run-executor.ts       spawns the executor on the task, records what it did
 ├─ scripts/verify.ts             assembles the evidence, spawns the judge
 ├─ scripts/clean-workspaces.ts   reclaims workspaces the loop could not delete itself
+├─ scripts/build-index.ts        rolls tasks, skill versions, runs, reports and eval PR
+│                                write-ups into one json for the results site
 ├─ lib/judge.ts                  the blind judge: evidence in, graded expects out
 ├─ lib/evidence.ts               what the judge reads: the diff, or a snapshot of the files
 ├─ lib/transcript.ts             one transcript format across executors
@@ -45,6 +47,9 @@ ethskills-evals/
 │                                question-shaped snapshots and workspace.path gitignored
 │                                (workspaces live outside the repo, under ~/.cache/)
 ├─ mistakes/                     mistake records mined from failures
+├─ site/                         the results site: its own yarn project, deployed from this repo.
+│                                site/derived.json is committed (the bits that exist only in git
+│                                history); site/public/index.json is generated and gitignored
 ├─ reports/                      markdown comparisons per benchmark
 └─ templates/                    workspace seeds (gitignored; tasks record how to regenerate)
 
@@ -79,3 +84,26 @@ yarn verify --run artifacts/<id>/<run-id> --judge-agent claude --judge-model <mo
 Workspaces live outside the repo, under `~/.cache/ethskills-evals` or wherever `EVAL_WORKSPACE_ROOT` points — export it for the whole benchmark, since all three commands read it. `verify` deletes the workspace it graded; `yarn clean-workspaces --delete` reclaims the rest, and an SE2 workspace is gigabytes.
 
 Repeat per variant and run count, then compare `result.yaml`s and write the report. You don't normally type these; the orchestrator does. `AGENTS.md` has the full loop, the intake conversation, and the mistake-record format.
+
+## The results site
+
+`site/` renders what the runs produced: pass counts per skill and task, the reduced skill
+against the original side by side, and every report and eval PR write-up. It is a separate
+yarn project, so `yarn install` at the root stays four packages wide.
+
+```bash
+yarn build-index          # writes site/public/index.json from artifacts/, tasks/, skills/, reports/ and the eval PRs
+cd site && yarn install && yarn dev
+```
+
+`build-index` also refreshes `site/derived.json`, which is committed. That file holds the
+only facts that are not in the records: which `SKILL.md` text each run actually saw, and
+which revision of a task's `expect:` lines it was graded against. Both come out of git
+history, and history is not durable enough to depend on — a `skill_version` sha can live
+only on a branch that gets squash-merged and deleted, and the deploy host clones a single
+branch shallowly. Resolve once here, commit the answer, and the site builds without git.
+That is what `yarn build-index --no-git` checks: it must produce the same file.
+
+Commit `site/derived.json` whenever a benchmark adds runs on a new skill version or a task's
+`expect:` lines change. Without it those runs lose the version they were measured against,
+and the site says so rather than guessing.
