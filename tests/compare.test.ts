@@ -53,6 +53,8 @@ const run = (task: string, content: string | null, rubric: string, pass: boolean
   judge: null,
   skill_version: content,
   skill_content: content,
+  regrade_of: null,
+  superseded_by: null,
   rubric,
   rubric_expects: 1,
   transcript_url: null,
@@ -127,4 +129,31 @@ test("shareRubric needs an overlap, not merely two populated cells", () => {
   assert.equal(shareRubric({ passed: 1, total: 1, rubrics: ["a"] }, { passed: 1, total: 1, rubrics: ["b"] }), false);
   assert.equal(shareRubric({ passed: 1, total: 1, rubrics: ["a", "b"] }, { passed: 1, total: 1, rubrics: ["b"] }), true);
   assert.equal(shareRubric(null, { passed: 1, total: 1, rubrics: ["b"] }), false);
+});
+
+test("a regrade replaces the run it re-read instead of being counted beside it", () => {
+  const source = { ...run("addresses-quiz-002", "small", "rubric-old", false), run: "r1", superseded_by: "r1-regrade-1" };
+  const regrade = { ...run("addresses-quiz-002", "small", "rubric-new", true), run: "r1-regrade-1", regrade_of: "r1" };
+
+  assert.deepEqual(tally([source, regrade]), { passed: 1, total: 1, rubrics: ["rubric-new"] });
+});
+
+test("a superseded run still counts where its regrade is not in the set", () => {
+  const source = { ...run("addresses-quiz-002", "small", "rubric-old", false), run: "r1", superseded_by: "r1-regrade-1" };
+
+  assert.deepEqual(tally([source]), { passed: 0, total: 1, rubrics: ["rubric-old"] });
+});
+
+test("a run read three times counts once, as its newest reading", () => {
+  const source = { ...run("addresses-quiz-002", "small", "rubric-old", false), run: "r1", superseded_by: "r1-regrade-1" };
+  const first = {
+    ...run("addresses-quiz-002", "small", "rubric-mid", false),
+    run: "r1-regrade-1",
+    regrade_of: "r1",
+    superseded_by: "r1-regrade-2",
+  };
+  const second = { ...run("addresses-quiz-002", "small", "rubric-new", true), run: "r1-regrade-2", regrade_of: "r1" };
+
+  assert.deepEqual(tally([source, first, second]), { passed: 1, total: 1, rubrics: ["rubric-new"] });
+  assert.deepEqual(tally([source, first]), { passed: 0, total: 1, rubrics: ["rubric-mid"] });
 });

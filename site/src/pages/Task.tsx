@@ -33,6 +33,13 @@ const Task = () => {
       </ol>
 
       <h2>Runs</h2>
+      {runs.some(entry => entry.regrade_of !== null) && (
+        <p className="note">
+          Some rows are regrades: the same run's stored evidence read a second time against rewritten{" "}
+          <code>expect:</code> lines. A regrade and the run it re-read are one run, so the tables count only the newer
+          reading — never both.
+        </p>
+      )}
       <table className="grid">
         <thead>
           <tr>
@@ -62,6 +69,12 @@ const Task = () => {
                 ) : (
                   <span className="tag bad">fail</span>
                 )}
+                {run.regrade_of !== null && (
+                  <span className="tag" title={`re-read of ${run.regrade_of}`}>
+                    regrade
+                  </span>
+                )}
+                {run.superseded_by !== null && <span className="tag idle">re-read later</span>}
               </td>
               <td className="mono small">
                 {run.expects

@@ -14,6 +14,10 @@ export type Run = {
   judge: { agent: string; model: string | null; self_judged: boolean } | null;
   skill_version: string | null;
   skill_content: string | null;
+  /** this record re-judges that run's stored evidence; it is a second reading, not a second run */
+  regrade_of: string | null;
+  /** a later regrade re-read this run; the two must never land in one tally */
+  superseded_by: string | null;
   rubric: string | null;
   rubric_expects: number | null;
   transcript_url: string | null;

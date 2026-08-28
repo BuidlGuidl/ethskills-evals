@@ -345,10 +345,46 @@ const main = async () => {
         judge: loaded.judge ?? null,
         skill_version: skillVersion,
         skill_content: skillContent,
+        regrade_of: typeof loaded.regrade_of === "string" ? loaded.regrade_of : null,
+        superseded_by: null as string | null,
         rubric: rubric?.id ?? null,
         rubric_expects: rubric?.expects ?? null,
         transcript_url: commit ? `https://github.com/${REPO}/blob/${commit}/${runDir}/transcript.md` : null,
       });
+    }
+  }
+
+  // A regrade re-judges one run's stored evidence against rewritten expect lines: a second
+  // reading, never a second run — and a run can be read more than twice (wallets-quiz-006
+  // regrades every run of the task twice). So each record points at the reading that
+  // replaced it, source -> regrade-1 -> regrade-2, and a tally drops any record whose
+  // successor is in the set. Every reading stays in the index: an older one is still the
+  // right answer for the rubric it was graded on.
+  const lineages = new Map<string, Record<string, unknown>[]>();
+
+  for (const run of runs) {
+    const source = typeof run.regrade_of === "string" ? run.regrade_of : String(run.run);
+
+    if (typeof run.regrade_of === "string" && !runs.some(other => other.task === run.task && other.run === run.regrade_of)) {
+      warnings.push(`artifacts/${String(run.task)}/${String(run.run)}: regrade_of names ${run.regrade_of}, which is not in the repo`);
+      continue;
+    }
+
+    const key = `${String(run.task)}/${source}`;
+    lineages.set(key, [...(lineages.get(key) ?? []), run]);
+  }
+
+  const reading = (run: Record<string, unknown>) => {
+    const numbered = /-regrade-(\d+)$/.exec(String(run.run));
+
+    return numbered === null ? 0 : Number(numbered[1]);
+  };
+
+  for (const lineage of lineages.values()) {
+    const ordered = [...lineage].sort((a, b) => reading(a) - reading(b));
+
+    for (let position = 0; position < ordered.length - 1; position++) {
+      ordered[position].superseded_by = String(ordered[position + 1].run);
     }
   }
 

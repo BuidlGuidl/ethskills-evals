@@ -9,7 +9,11 @@ import type { Index, Run, Skill, SkillVersion, Task } from "./types.js";
 export type Cell = { passed: number; total: number; rubrics: string[] };
 
 export const tally = (runs: Run[]): Cell | null => {
-  const graded = runs.filter(run => run.pass !== null);
+  // A regrade and the run it re-read are one run read twice. Whenever both are in the set
+  // being counted, the newer reading wins; a set holding only the source still counts it,
+  // which is what makes a per-rubric column come out right.
+  const present = new Set(runs.map(run => run.run));
+  const graded = runs.filter(run => run.pass !== null && !(run.superseded_by !== null && present.has(run.superseded_by)));
 
   if (graded.length === 0) {
     return null;
