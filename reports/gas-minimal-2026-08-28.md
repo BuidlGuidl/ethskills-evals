@@ -122,4 +122,65 @@ case for the proportionality guardrail the 2026-08-10 report floated — the ove
 | What mistakes repeated without the skill? | Unmeasured "L2 is cheaper" chain choice (goal-001, 3/3); stale gas and ETH figures — $5.48/transfer, 20 gwei, ETH $3,500 (quiz-001). |
 | What mistakes remained with the skill? | One wei→gwei conversion error producing a 1000× cost overstatement. |
 | What should change in the skill? | State that `cast` prints wei. Keep everything else minimal; nothing here argues for restoring removed reference material. |
-| What should change in the eval? | `gas-quiz-003` needs its scope fixed — two controls failed for answering Solana, which the prompt permits and `expect_2` forbids. |
+| What should change in the eval? | `gas-quiz-003` scope fixed in `017d9dc`; see the re-validation section below for the corrected numbers. |
+
+---
+
+# Re-validation at `017d9dc`
+
+Two changes landed after the benchmark above, and each invalidated part of it:
+
+- **`9ece856`** added the wei/gwei clause to the skill, so every `with_skill` result above
+  describes an older skill than the branch carries.
+- **`017d9dc`** scoped `gas-quiz-003` to the Ethereum ecosystem, so both of its arms needed
+  re-running.
+
+15 further runs: `gas-quiz-003` both variants, plus the `with_skill` arms of the other three tasks.
+The `no_skill` arms of those three stand unchanged — the skill cannot affect them and their criteria
+did not move.
+
+## Final results
+
+| Task | `no_skill` | `with_skill` |
+| --- | ---: | ---: |
+| `gas-goal-001` | 0/3 *(carried)* | **3/3** |
+| `gas-goal-002` | 0/3 *(carried)* | **3/3** |
+| `gas-quiz-001` | 0/3 *(carried)* | **3/3** |
+| `gas-quiz-003` | **1/3** | **3/3** |
+| **total** | **1/12** | **12/12** |
+
+## The scope fix did what it was meant to
+
+All three controls now recommend Base — an Ethereum L2 — instead of leaving the ecosystem. The two
+that failed did so on `expect_3`, the intended mechanism: they quoted mainnet at **$12.35** and
+**$12.75** per action while mainnet was at 0.053–0.064 gwei, where the same action costs cents.
+The one control that passed picked Base for traffic-profile reasons and simply never quoted a stale
+mainnet figure, so `expect_3` did not bite. That is a legitimate pass, and a 1/3 control rate is a
+more credible baseline than the 0/3 the unscoped prompt produced.
+
+## The wei clause is not yet validated
+
+`gas-quiz-003` `with_skill` went 2/3 → 3/3 and no run in this batch repeated the conversion error;
+every skilled run read mainnet at 0.053–0.064 gwei and Base at 0.005–0.006 gwei. But the original
+error appeared **once in twelve runs**, so its absence from twelve more is weak evidence. Only one
+run's output references the conversion at all. Treat the clause as plausible and cheap, not proven.
+
+## Cost, second batch
+
+| Task | `with_skill` |
+| --- | --- |
+| `gas-goal-001` | 40.5k tok |
+| `gas-goal-002` | 54.2k tok |
+| `gas-quiz-001` | 21.4k tok |
+| `gas-quiz-003` | 24.9k tok (vs 53.3k `no_skill`) |
+
+`gas-quiz-003` now shows the sharpest efficiency result in the set: the skill halves token use on a
+direct question, because the control researches from scratch what the skill states outright. The
+build-task overhead seen above is unchanged.
+
+## Standing caveats
+
+- One skill version, one executor model, three runs per cell. Three runs separate 0/3 from 3/3
+  reliably; they do not resolve 1/3 from 2/3.
+- The `output/` evidence for every run here is gitignored, as in all prior sets. It exists on disk
+  in the run directories and nothing protects it.
