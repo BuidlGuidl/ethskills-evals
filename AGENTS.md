@@ -89,6 +89,8 @@ yarn verify --run artifacts/<id>/<run-id> --regrade --judge-agent claude --judge
 
 The evidence a regrade re-reads is committed — `run.diff` for template-seeded runs, a force-added `output/` for the question-shaped ones — so it works from any clone that has the run dir. Where `output/` was left ignored, which is the default for a bare task that snapshots a whole scaffold, the evidence exists only on the machine that made the run: regrade there, and commit the records.
 
+**Rewording `input:` is not a wording change a regrade can absorb.** The judge is sent the task input as it stands now, so a regrade of a run made before the rewording shows the judge a question the executor was never asked, and grades old evidence against a new prompt. `setup` records `input_sha` on every run for exactly this: `--regrade` hard-fails when the current input hashes differently, and warns when the run predates the field and cannot be checked at all. A reworded input means a fresh baseline in both variants, never a regrade — and the old grades are not comparable to the new ones, which is a fact about the *input*, not about the expect lines.
+
 ## Isolation
 
 Tooling resolves context by walking *up* the filesystem, and every such walk used to end in this repo. Three things stop it.
@@ -113,8 +115,15 @@ template: templates/se-2         # optional; omit for a bare workspace (just TAS
 expect:                          # judged conditions, at least one
   - "..."
 runs: 3                          # per variant
+status: live                     # optional; live | retired. Absent means live.
 notes: free text                 # optional
 ```
+
+**Retiring a task is a field, not a sentence in `notes`.** `status: retired` keeps the spec and
+every artifact under it — the record of what it once graded stays readable — and makes `setup`
+refuse to build a workspace for it, so a task whose claim the skill no longer makes cannot quietly
+re-enter a benchmark table. Anything that lists tasks filters on this field; prose in `notes` is
+for *why*, and nothing reads it.
 
 Every workspace seed — generated scaffold or hand-authored ground truth — is committed under `templates/`; `templates/README.md` records what each one is and how to regenerate it. Commit sources only: dependencies (`node_modules/`, `lib/`) stay out, and `setup` copies the seed exactly as it stands on disk, so install them once per machine before the first run — the task notes carry the exact pinned commands and what a working install looks like (e.g. `forge test` → 39 passing). Unpinned installs silently rot the ground truth a benchmark rests on.
 
@@ -141,6 +150,7 @@ run: 2026-07-06T093000Z-claude-with-skill-1
 executor: claude
 variant: with_skill
 skill_version: 191dcc1         # git short sha of the skill source; null for no_skill
+input_sha: 4f2b9c1de803         # sha256 of the input this run was given; absent on pre-2026-08-28 runs
 created: 2026-07-06T09:30:00Z
 executor_model: claude-opus-5   # what actually ran; null when the CLI picked its default
 executor_exit: 0                # verify refuses anything else unless --grade-failed-run

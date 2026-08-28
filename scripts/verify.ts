@@ -5,7 +5,7 @@ import process from "node:process";
 import yaml from "js-yaml";
 import { buildEvidence, snapshotOutput, writeDiff } from "../lib/evidence.js";
 import { judgeExpectations } from "../lib/judge.js";
-import { isRecord, loadTaskSpec, loadYamlFile, parseArgs, requireString } from "../lib/task.js";
+import { inputSha, isRecord, loadTaskSpec, loadYamlFile, parseArgs, requireString } from "../lib/task.js";
 import type { Executor, ExecutorRecord, ExpectStatus, JudgeSpec, ResultRecord, Variant } from "../lib/types.js";
 import { pruneEmptyParent, readWorkspacePath } from "../lib/workspace.js";
 
@@ -80,6 +80,7 @@ const loadResultRecord = (resultPath: string): ResultRecord => {
     executor: parseExecutor(requireString(loaded.executor, "executor")),
     variant: parseVariant(requireString(loaded.variant, "variant")),
     skill_version: loaded.skill_version === null ? null : requireString(loaded.skill_version, "skill_version"),
+    input_sha: loaded.input_sha === undefined ? undefined : requireString(loaded.input_sha, "input_sha"),
     created: requireString(loaded.created, "created"),
     expects: loaded.expects === undefined ? undefined : readExpects(loaded.expects),
     pass: loaded.pass === undefined ? undefined : Boolean(loaded.pass),
@@ -223,6 +224,28 @@ const main = async () => {
       throw new Error(`no stored evidence in ${runDir}; a regrade re-reads run.diff or output/, and neither is there`);
     }
 
+    // A regrade asks what the current expect lines make of this run. It sends the judge the
+    // task input as it stands now, so an input that has been reworded since the run shows the
+    // judge a question the executor was never asked — grading old evidence against a new
+    // prompt. That is not a second reading of the run, it is a mismatch, and it is silent.
+    if (regrade) {
+      const currentSha = inputSha(taskSpec.input);
+
+      if (result.input_sha === undefined) {
+        console.warn(
+          `verify: ${result.run} predates input_sha, so the input it was given cannot be checked against `
+            + `tasks/${result.task}.yaml as it stands now. If the input has been reworded since, this regrade `
+            + "is grading old evidence against a new question — read the task notes before trusting it.",
+        );
+      } else if (result.input_sha !== currentSha) {
+        throw new Error(
+          `task input changed since ${result.run} ran (${result.input_sha} -> ${currentSha}). A regrade re-reads `
+            + "stored evidence against the current spec, so it would show the judge a prompt this run never saw. "
+            + "Re-run the task on the new input instead, or restore the input the run was given.",
+        );
+      }
+    }
+
     const verdict = judgeExpectations(taskSpec.input, taskSpec.expect, evidence, judgeSpec);
 
     if (!verdict.ok) {
@@ -241,6 +264,7 @@ const main = async () => {
       executor: result.executor,
       variant: result.variant,
       skill_version: result.skill_version,
+      ...(result.input_sha === undefined ? {} : { input_sha: result.input_sha }),
       created: result.created,
       ...(regrade ? { regrade_of: result.run } : {}),
       executor_model: executorRecord.model,
