@@ -1,5 +1,13 @@
 # skills/wallets — proposed reduction, and the task review that goes with it
 
+> **Superseded in part, 2026-08-28.** The re-run this document asks for has happened —
+> `reports/wallets-minimal-2026-08-27.md`, 44 runs, both arms measured same-day under one judge. It
+> did not come back the way this proposal expected. The premise below that "every task grades
+> 3/3 vs 3/3" was an artifact of stale unaided baselines: re-measured, **goal-004 is 3/3 vs 1/3 and
+> goal-002 is 3/3 vs 2/3**. The reduction itself survives — no graded check regressed under the cut
+> — but the argument for keeping the file no longer rests on cost. Read this document for what was
+> cut and why; read the report for what the evidence now says.
+
 **This is a proposal, not a benchmark.** No runs were executed for it. It reads the three
 wallets benchmarks already on `eval/wallets-opus-5` (PR
 [#33](https://github.com/BuidlGuidl/ethskills-evals/pull/33)) against issue
@@ -11,7 +19,9 @@ is a result.
 **Evidence base:** 10 tasks, 60 executor runs, three benchmarks, all `claude-opus-5`.
 `reports/wallets-2026-07-25.md` (42 runs, self-judged), `reports/wallets-goal-002-2026-08-05.md`
 (6 runs, codex judge), `reports/wallets-guardrails-2026-08-06.md` (12 runs, codex judge).
-**Every task grades 3/3 vs 3/3.** Skill vendored @ `191dcc1`, 169 lines / 1,107 words.
+**Every task grades 3/3 vs 3/3 except goal-004**, whose full-file benchmark is `with_skill` 2/3 vs
+`no_skill` 3/3 — the one failing wallets run on record is a `with_skill` one, on a strict reading of
+expect_3 (`reports/wallets-guardrails-2026-08-06.md`). It passes 3/3 under the reduced file. Skill vendored @ `191dcc1`, 169 lines / 1,107 words.
 
 ## What the evidence says, and what this branch does about it
 
