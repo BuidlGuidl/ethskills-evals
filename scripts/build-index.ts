@@ -517,7 +517,16 @@ const main = async () => {
     const fetched = fetchPullRequests();
 
     if (fetched === null) {
-      warnings.push("could not reach github for pull request write-ups; using whatever the cache already holds");
+      // Not a warning when the cache already holds them: the deploy host has no gh and no
+      // token, and --strict there must fail on missing facts, not on an offline build doing
+      // exactly what the cache exists for.
+      const held = Object.keys(derived.prs).length;
+
+      if (held === 0) {
+        warnings.push("no pull request write-ups: github is unreachable and the cache holds none");
+      } else {
+        process.stderr.write(`note: github unreachable; using the ${held} cached pull request write-ups\n`);
+      }
     } else {
       for (const pr of fetched) {
         derived.prs[String(pr.number)] = pr;

@@ -106,4 +106,6 @@ That is what `yarn build-index --no-git` checks: it must produce the same file.
 
 Commit `site/derived.json` whenever a benchmark adds runs on a new skill version or a task's
 `expect:` lines change. Without it those runs lose the version they were measured against,
-and the site says so rather than guessing.
+and the site says so rather than guessing. Two guards make forgetting loud rather than
+silent: `.github/workflows/checks.yml` fails the pull request when the cache is out of
+date, and the deploy runs `--strict`, which refuses to build on an unresolved fact.
