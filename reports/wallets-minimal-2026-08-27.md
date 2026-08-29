@@ -1,5 +1,11 @@
 # skills/wallets (reduced) — eval report
 
+> **Superseded on goal-004, 2026-08-29.** That task has been raised to n=7 per variant with the two
+> variants interleaved: **`with_skill` 6/7 vs `no_skill` 1/7, Fisher exact p = 0.029**, the first
+> significant separation in this suite. See `reports/wallets-goal-004-n7-2026-08-29.md`. The n=3
+> figures below (3/3 vs 1/3) and the "n=3 does not resolve this task" caveat are superseded for
+> goal-004 only; everything else in this report stands.
+
 **Skill:** `skills/wallets` reduced on this branch — 169 lines / 1,107 words → **26 / 500**.
 The 23 `with_skill` runs carry four `skill_version` shas — `fc979fe` ×12, `1119b32` ×6, `b9bb393`
 ×3, `2750ecf` ×2 — because the branch kept moving while the runs went out. **Three of the four are
