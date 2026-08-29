@@ -1,10 +1,5 @@
 export type Variant = "no_skill" | "with_skill";
 export type Executor = "claude" | "codex";
-// A retired task keeps its spec and its artifacts — the record of what it once graded stays
-// readable — but `setup` refuses to build a workspace for it, so a stale prior cannot quietly
-// re-enter a benchmark table. Anything that lists tasks should filter on this rather than on
-// prose in `notes`.
-export type TaskStatus = "live" | "retired";
 
 export type TaskSpec = {
   id: string;
@@ -13,7 +8,6 @@ export type TaskSpec = {
   template?: string;
   expect: string[];
   runs: number;
-  status: TaskStatus;
   notes?: string;
 };
 
@@ -48,9 +42,6 @@ export type ResultRecord = {
   executor: Executor;
   variant: Variant;
   skill_version: string | null;
-  // sha256 of the task input the executor was given, so a regrade can tell whether the spec
-  // still asks the question this run answered. Absent on runs made before the field existed.
-  input_sha?: string;
   created: string;
   // Set only on a regrade: the run whose stored evidence was re-judged. The executor never
   // ran again, so this record is a second reading of one run, not a second run — never
