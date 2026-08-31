@@ -36,6 +36,21 @@ export type ExecutorRecord = {
   exit: number | null;
 };
 
+// A regrade replaces a run's grade in place, which is the one thing in this repo that is
+// not append-only — so every replacement leaves the grade it superseded behind, with the
+// expect_sha it was made against. Without that trail a rubric edit silently rewrites
+// history and the old numbers become unrecoverable rather than merely superseded.
+export type Regrade = {
+  at: string;
+  reason: string;
+  judge: JudgeRecord;
+  superseded: {
+    expect_sha: string | null;
+    expects: Record<string, ExpectStatus>;
+    pass: boolean;
+  };
+};
+
 export type ResultRecord = {
   task: string;
   run: string;
@@ -46,6 +61,11 @@ export type ResultRecord = {
   executor_model?: string | null;
   executor_exit?: number;
   judge?: JudgeRecord;
+  // Fingerprint of the expect list this grade was made against. Two runs of one task are
+  // comparable only when it matches; an edit to any expect line changes it, which is what
+  // makes a stale grade detectable instead of merely wrong.
+  expect_sha?: string;
   expects?: Record<string, ExpectStatus>;
   pass?: boolean;
+  regrades?: Regrade[];
 };
