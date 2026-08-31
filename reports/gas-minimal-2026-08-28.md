@@ -1,6 +1,17 @@
 # eval: minimal gas skill, description rewritten (codex executor / claude judge)
 
-**Skill:** `skills/gas` at `8b199ff` (36 lines, 256 words)
+> **SUPERSEDED 2026-08-31 by `reports/gas-minimal-2026-08-31.md`.** In review of PR #57
+> `gas-goal-001` was found to have no expect line requiring a measurement, and
+> `gas-goal-002`'s `expect_5` could only fail a plan that showed its components. Both
+> rubrics were fixed and every run with committed evidence was regraded. **The
+> `gas-goal-001` numbers in this file are wrong** — they were produced by a rubric that
+> scored a run 4/4 for measuring nothing. The 08-31 report carries the corrected table.
+> Everything below is kept as written, so the regrade can be checked against what it
+> replaced.
+
+**Skill:** the first half measures `skills/gas` at `8b199ff` (36 lines, 265 words); the
+re-validation half below measures `017d9dc` (38 lines, 308 words), which adds the wei
+clause. An earlier draft of this header gave one revision and one word count for both.
 
 **Tasks:** `gas-goal-001`, `gas-goal-002`, `gas-quiz-001`, `gas-quiz-003`
 **Executor:** codex `gpt-5.6-terra` · **Judge:** claude `claude-opus-5` · **Runs:** 3 per variant per task (24 total)
@@ -32,6 +43,11 @@ Three things had changed since the last gas benchmark, and each invalidated part
 | `gas-quiz-003` | **0/3** | **2/3** |
 | **total** | **0/12** | **11/12** |
 
+**This is the first of two tables in this file and it is superseded twice over** — by the
+re-validation below, which re-ran `gas-quiz-003` after its scope fix, and then by the
+2026-08-31 regrade. It is kept because the re-validation carries three of its four
+`no_skill` arms forward. Do not read it as the result.
+
 The criteria fix is confirmed: `gas-goal-001` `with_skill` moved 0/3 → 3/3 with no change to the
 skill body between the two runs. The old `expect_3` was failing correct work.
 
@@ -45,8 +61,16 @@ cost as the justification, without measuring anything and without conceding main
 - "low fees make per-job contracts practical"
 
 None quoted an inflated number — they simply never checked, and the chain choice fell out of an
-unexamined prior. That is precisely the behavior the skill's one instruction targets. All three
-skilled runs measured mainnet and Base live, quoted cents-range figures, and kept mainnet viable.
+unexamined prior. That is precisely the behavior the skill's one instruction targets.
+
+**CORRECTED 2026-08-31.** This paragraph originally ended "All three skilled runs measured
+mainnet and Base live, quoted cents-range figures, and kept mainnet viable." That is false,
+and the artifacts in this repo show it. `2026-08-27T233445Z-codex-with-skill-2` contains no
+`cast base-fee`, no `cast gas-price`, no `gwei` figure, no `curl`, and no ETH price across
+7,213 transcript lines: it read `SKILL.md` and went straight to `forge`. It still scored
+4/4, because no expect line required a reading. `2026-08-27T233109Z-codex-with-skill-1` did
+measure, then divided by 1e6 instead of 1e9 and ruled mainnet out at $503 to deploy. One of
+the three matches the sentence. See `mistakes/gas/gas-chain-picked-without-measuring.yaml`.
 
 ## gas-goal-002 — 3/3 with the skill, 0/3 without
 
@@ -120,9 +144,9 @@ case for the proportionality guardrail the 2026-08-10 report floated — the ove
 | Did it reduce time/tokens? | Split: higher on goals (+46%, +64%), lower on quizzes (−37%, −13%). |
 | Did it create negative deltas? | No correctness regression. Token cost rises on build tasks only. |
 | What mistakes repeated without the skill? | Unmeasured "L2 is cheaper" chain choice (goal-001, 3/3); stale gas and ETH figures — $5.48/transfer, 20 gwei, ETH $3,500 (quiz-001). |
-| What mistakes remained with the skill? | One wei→gwei conversion error producing a 1000× cost overstatement. |
+| What mistakes remained with the skill? | One wei→gwei conversion error producing a 1000× cost overstatement. *(2026-08-31: also `gas-chain-picked-without-measuring`, 2 of these 9 skilled runs, which the rubric of the day could not see.)* |
 | What should change in the skill? | State that `cast` prints wei. Keep everything else minimal; nothing here argues for restoring removed reference material. |
-| What should change in the eval? | `gas-quiz-003` scope fixed in `017d9dc`; see the re-validation section below for the corrected numbers. |
+| What should change in the eval? | `gas-quiz-003` scope fixed in `017d9dc`; see the re-validation section below. *(2026-08-31: this row missed the two real eval defects — `gas-goal-001` required no measurement and `gas-goal-002`'s `expect_5` rewarded omitting the fee breakdown. Both fixed and regraded.)* |
 
 ---
 
@@ -148,6 +172,9 @@ did not move.
 | `gas-quiz-001` | 0/3 *(carried)* | **3/3** |
 | `gas-quiz-003` | **1/3** | **3/3** |
 | **total** | **1/12** | **12/12** |
+
+**Superseded 2026-08-31.** `gas-goal-001`'s 3/3 here was produced by a rubric with no
+measurement requirement; see the banner at the top of this file and the 08-31 report.
 
 ## The scope fix did what it was meant to
 
