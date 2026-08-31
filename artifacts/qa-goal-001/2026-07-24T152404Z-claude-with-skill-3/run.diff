@@ -1,0 +1,265 @@
+diff --git a/REVIEW.md b/REVIEW.md
+new file mode 100644
+index 0000000..ee5b2a9
+--- /dev/null
++++ b/REVIEW.md
+@@ -0,0 +1,256 @@
++# Pre-Ship Review — USDC Payouts dApp (Base)
++
++Scope: frontend (`packages/nextjs`) and its configuration. Static code review;
++addresses cross-checked against `deployedContracts.ts`. Contract-verification
++status on Basescan could not be confirmed programmatically (no API key) — see
++SB-6. Report only; no code was changed.
++
++Severity legend: **ship-blocking** = do not ship until fixed. **should-fix** =
++fix before real users, not a hard blocker.
++
++---
++
++## Ship-blocking
++
++### SB-1 — No Connect Wallet button; plain text instead
++`app/payouts/page.tsx:70-71`
++```tsx
++{!isConnected ? (
++  <p className="mt-4">Please connect your wallet to send a payout.</p>
++) : ( ... )}
++```
++A disconnected user sees a sentence, not a way to connect. The whole payout flow
++is unreachable.
++**Fix:** render the connect CTA in that slot:
++```tsx
++import { RainbowKitCustomConnectButton } from "~~/components/scaffold-eth";
++...
++{!isConnected ? <RainbowKitCustomConnectButton /> : ( ... )}
++```
++
++### SB-2 — Uses raw wagmi `useWriteContract`, not `useScaffoldWriteContract`
++`app/payouts/page.tsx:6,21`
++```tsx
++import { useAccount, useWriteContract } from "wagmi";
++const { writeContractAsync, isPending } = useWriteContract();
++```
++`isPending` from wagmi flips back to `false` the moment the wallet returns a tx
++hash — i.e. before the tx is mined. Every gating decision below (button
++disable, allowance refetch) is built on a signal that fires too early.
++**Fix:** use the scaffold hook, which waits for block confirmation and gives
++readable errors:
++```tsx
++const { writeContractAsync, isPending } = useScaffoldWriteContract({ contractName: "Payouts" });
++// separate hook instance for the USDC approve
++```
++
++### SB-3 — No network check; main CTA renders on the wrong chain
++`app/payouts/page.tsx` (entire action block)
++There is no comparison of the connected chain to Base (8453). On the wrong
++network the user still sees **Approve / Send Payout**, clicks, and eats a silent
++wagmi chain-mismatch error. The header `WrongNetworkDropdown` is not sufficient
++per SE-2 QA — the action button itself must become a switch button.
++**Fix:** branch the primary CTA on `useChainId() === targetNetwork.id`; on
++mismatch render a `useSwitchChain`-driven "Switch to Base" button in the same
++slot as Approve/Pay.
++
++### SB-4 — Approve and Send Payout shown simultaneously (no four-state flow)
++`app/payouts/page.tsx:99-114`
++Both buttons are always rendered side by side. There is no allowance read, so
++the UI never knows whether an approval is needed. Users will pay before
++approving (revert), or double-approve.
++**Fix:** read allowance
++(`useScaffoldReadContract` USDC `allowance(owner, PAYOUTS.address)`) and show
++exactly one primary button at a time: Connect → Switch network → Approve (when
++allowance < amount) → Send Payout. Re-check allowance after the approve tx
++confirms.
++
++### SB-5 — Double-submit not prevented; `disabled` only reads `isPending`
++`app/payouts/page.tsx:102,109`
++```tsx
++disabled={isPending}
++```
++Combined with SB-2, `isPending` drops at signature time, so the button
++re-enables while the tx is still unconfirmed — user can fire a second
++approve/pay. There is no `approvalSubmitting` (click→hash gap) and no
++`approveCooldown` (confirm→cache-refresh gap).
++**Fix:** two explicit states, both on the `disabled` prop:
++```tsx
++disabled={isPending || submitting || cooldown}
++```
++`submitting` set at top of handler, cleared in `finally {}`; `cooldown` set
++after the await resolves, cleared after a short delay + allowance refetch.
++
++### SB-6 — Confirm both contracts are verified on Basescan
++`contracts/deployedContracts.ts:9` (Payouts `0x7c3f2A9d41B85E60Cf14a14e2b9D073A55e0b6F2`),
++`:50` (USDC `0x8335…2913` — this is canonical Base USDC, already verified).
++Could not confirm the **Payouts** contract's verification from here.
++**Fix:** open the Payouts address on basescan.org; if the Contract tab shows
++bytecode only, run `yarn verify --network base`. Unverified = trust red flag for
++a money-moving app. Verify before ship.
++
++### SB-7 — SE-2 default branding still in place
++- Tab title: `app/layout.tsx:11` `title: 'Scaffold-ETH 2 App'`, and
++  `utils/scaffold-eth/getMetadata.ts:8` template `"%s | Scaffold-ETH 2"`. Every
++  tab reads "… | Scaffold-ETH 2".
++- Footer: `components/Footer.tsx:50-74` — "Fork me" → scaffold-eth/se-2, "Built
++  with ❤ at BuidlGuidl", Telegram "Support" link.
++- README: `README.md:1` — default "🏗 Scaffold-ETH 2" template, not this
++  project.
++- Home page: `app/page.tsx` still "Welcome to Scaffold-ETH 2" with
++  edit-`page.tsx` scaffold copy.
++
++**Fix:** set app name/description in `getMetadata` + `layout.tsx` and change the
++title template; strip BuidlGuidl/Fork-me/Support from the footer (replace with
++the project's own repo link or nothing); rewrite README for this dApp; replace
++the home page (or redirect `/` → `/payouts`).
++
++---
++
++## Should-fix
++
++### SF-1 — USDC registered in `deployedContracts.ts`, not `externalContracts.ts`
++`contracts/deployedContracts.ts:50`; `contracts/externalContracts.ts` is empty.
++`deployedContracts.ts` is auto-generated and **regenerated on every
++`yarn deploy`** — the manual USDC entry will be silently wiped, and every USDC
++read/approve on the payouts page breaks with no error. It works today only
++because no redeploy has happened.
++**Fix:** move the USDC `{ address, abi }` entry to `externalContracts.ts` under
++`8453` and never hand-edit `deployedContracts.ts`.
++
++### SF-2 — Hardcoded dark background bypasses the theme system
++`app/payouts/page.tsx:65`
++```tsx
++<div className="min-h-screen bg-black text-white">
++```
++Forces black regardless of the DaisyUI theme / `prefers-color-scheme`; the
++header `SwitchTheme` toggle does nothing on this page. Light-mode users get a
++black page (and `border-gray-700` on line 121 is likewise hardcoded).
++**Fix:** `className="min-h-screen bg-base-200 text-base-content"`, and use
++`border-base-300` for the payout cards.
++
++### SF-3 — Recipient uses a raw `<input type="text">` instead of `<AddressInput/>`
++`app/payouts/page.tsx:78-84`
++No ENS resolution, no validation, no blockie/paste handling. `recipient` is then
++cast `recipient as \`0x${string}\`` (line 55) and sent unvalidated — a typo
++sends USDC into a bad/black-hole address.
++**Fix:**
++```tsx
++import { AddressInput } from "@scaffold-ui/components";
++<AddressInput value={recipient} onChange={setRecipient} placeholder="0x… or ENS name" />
++```
++
++### SF-4 — DaisyUI `loading` class applied to the button itself
++`app/payouts/page.tsx:101,108`
++```tsx
++className={`btn btn-primary ${isPending ? "loading" : ""}`}
++```
++The `loading` class on a `btn` replaces the entire label with a full-size
++spinner — looks broken.
++**Fix:** drop `loading` from the class; put an inline spinner inside:
++```tsx
++<button className="btn btn-primary" disabled={...}>
++  {busy && <span className="loading loading-spinner loading-sm mr-2" />}
++  {busy ? "Approving…" : "Approve"}
++</button>
++```
++
++### SF-5 — Payouts contract address is displayed nowhere
++`app/payouts/page.tsx`
++Users can't see which contract they're approving/paying. For a money app that's
++a missing trust signal.
++**Fix:** show it with the `<Address/>` component (blockie, copy, explorer link):
++```tsx
++import { Address } from "@scaffold-ui/components";
++<Address address={PAYOUTS.address} />
++```
++
++### SF-6 — No USD values next to USDC amounts
++`app/payouts/page.tsx:75` (balance), `:126` (event list), `:85-91` (amount input)
++Amounts render as bare "… USDC". USDC ≈ $1 so the fix is trivial and the trust
++gain is real.
++**Fix:** show `(~$X.XX)` alongside each amount; for the input, an
++`IntegerInput`/USD-labelled field.
++
++### SF-7 — `pollingInterval` left at the SE-2 default of 30000
++`scaffold.config.ts:24`
++```ts
++pollingInterval: 30000,
++```
++30s update lag makes new payouts / balance changes feel broken on an L2.
++**Fix:** `pollingInterval: 3000`.
++
++### SF-8 — RPC config is all defaults; risk of public-RPC rate limiting in prod
++`scaffold.config.ts:29,32` and `services/web3/wagmiConfig.tsx:20`
++- `alchemyApiKey` falls back to the shared SE-2 `DEFAULT_ALCHEMY_API_KEY`.
++- `rpcOverrides` is empty (only the commented example).
++- `wagmiConfig` keeps a bare `http()` transport in the fallback list, which hits
++  Base's public RPC (`mainnet.base.org`, rate-limited).
++**Fix:** set `NEXT_PUBLIC_ALCHEMY_API_KEY` (or a Base `rpcOverrides` entry) and
++**confirm the env var is actually set on Vercel** (`vercel env ls`), not just
++referenced in code. Consider dropping the bare `http()` fallback so it doesn't
++silently hit public RPC.
++
++### SF-9 — Errors are swallowed to `console.error`; user sees nothing
++`app/payouts/page.tsx:44-46,59-61`
++```tsx
++} catch (e) { console.error(e); }
++```
++Revert reasons (insufficient allowance/balance, wrong chain, user rejection) are
++invisible to the user.
++**Fix:** use scaffold notifications + parser:
++```tsx
++import { notification } from "~~/utils/scaffold-eth";
++import { getParsedError } from "~~/utils/scaffold-eth";
++} catch (e) { notification.error(getParsedError(e)); }
++```
++(`useScaffoldWriteContract` from SB-2 also surfaces these automatically.)
++
++### SF-10 — Event history scans from genesis (`fromBlock: 0n`) on Base
++`app/payouts/page.tsx:32`
++Scanning Base from block 0 for the `Paid` event is slow and will get
++rate-limited; the "Latest payouts" list may hang or come back empty.
++**Fix:** start from the deploy block —
++`fromBlock: 33712450n` (Payouts `deployedOnBlock` in `deployedContracts.ts`).
++
++### SF-11 — Pill-shaped inputs: `--radius-field: 9999rem`
++`styles/globals.css:36,63` (both theme blocks)
++The default SE-2 value makes the recipient input, amount input, and the memo
++`<textarea>` fully pill-shaped and can clip content.
++**Fix:** set `--radius-field: 0.5rem;` in both `@plugin "daisyui/theme"` blocks
++(theme-level, not per-component).
++
++### SF-12 — Phantom wallet missing from the wallet list
++`services/web3/wagmiConnectors.tsx:20-28`
++List has MetaMask, WalletConnect, Ledger, Base Account, Rainbow, Safe — no
++Phantom. Many users can't connect.
++**Fix:** import and add `phantomWallet` to the `wallets` array.
++
++### SF-13 — No mobile wallet deep-linking on the transaction buttons
++`app/payouts/page.tsx` (Approve / Send Payout handlers)
++RainbowKit v2 does not auto-deep-link on mobile. After tapping Approve/Pay via
++WalletConnect the user is left on the dApp with nothing prompting them to sign.
++**Fix:** wrap each write in a `writeAndOpen` helper that fires the tx first, then
++`setTimeout(openWallet, 2000)`; detect the wallet from WC session data (not just
++`connector.id`); skip when `window.ethereum` exists (in-app browser). Apply to
++**both** approve and pay.
++
++### SF-14 — Confirm favicon and OG thumbnail are not SE-2 defaults
++`public/favicon.png`, `public/thumbnail.jpg` (referenced via `getMetadata.ts:13,53`)
++Both files exist but appear to be the shipped SE-2 assets. The OG image URL is
++built from `VERCEL_PROJECT_PRODUCTION_URL` (absolute in prod, OK) — but the
++image content and favicon should be this project's.
++**Fix:** replace both with project artwork; verify unfurl on the production URL.
++
++---
++
++## Minor / nits
++- `app/payouts/page.tsx:120` uses `key={i}` for the event list — prefer a stable
++  key (`${log.transactionHash}-${log.logIndex}`) to avoid render churn with
++  `watch: true`.
++- `amount` input is `type="number"` with no bounds/decimal guard; entering more
++  than 6 decimals makes `parseUnits(amount, 6)` throw inside the handler (caught
++  only by `console.error`). Guard/round before submit.
++- No empty-input guard: with empty `recipient`/`amount` the buttons still fire a
++  doomed tx (`parseUnits("0", …)` / invalid address). Disable the action until
++  inputs are valid.
+
+# Untracked files and status
+ A REVIEW.md

@@ -1,0 +1,174 @@
+diff --git a/answer.md b/answer.md
+new file mode 100644
+index 0000000..251e48f
+--- /dev/null
++++ b/answer.md
+@@ -0,0 +1,165 @@
++# USDC balance renders as nothing — the whole arc
++
++## TL;DR
++
++`USDC` was never registered in Scaffold-ETH's contract registry, so the
++hook read from an empty entry and quietly no-op'd. The teammate pasted it
++into the **wrong file** (`deployedContracts.ts`), which is machine-generated
++and gets rewritten on every `yarn deploy` — so the fix erased itself. USDC is
++a contract you *don't* deploy, so it belongs in **`externalContracts.ts`**,
++keyed by Base's chain id `8453`.
++
++---
++
++## 1. Why the hook returned `undefined` silently (no error, no request)
++
++`useScaffoldReadContract` does not read a contract directly. It first resolves
++the contract's `{ address, abi }` from Scaffold's registry:
++
++```
++useScaffoldReadContract  ->  useDeployedContractInfo("USDC")  ->  wagmi useReadContract
++```
++
++The registry is the merge of `deployedContracts.ts` + `externalContracts.ts`,
++looked up by the **target network's chain id**. When `"USDC"` isn't present
++under that chain id:
++
++- `useDeployedContractInfo` returns `data: undefined` (it just doesn't find the
++  key — it does **not** throw).
++- `useScaffoldReadContract` then calls wagmi's `useReadContract` with
++  `address: undefined` and `abi: undefined`.
++- wagmi **disables** the query when `address`/`abi` are missing (the query is
++  never `enabled`). So:
++  - no eth_call / RPC request is ever fired  → **network tab shows nothing**,
++  - no exception is thrown                    → **no runtime error**,
++  - `data` is simply never populated          → **`usdcBalance` stays `undefined`**.
++
++This is by design: Scaffold treats "contract not registered" as "nothing to
++read yet" rather than an error. The failure is a *missing registration*, not a
++bad call — which is exactly why it fails silently and why the network tab is a
++red herring.
++
++(A missing `connectedAddress` in `args` would disable the query the same way,
++but here the give-away is that registering USDC fixes it.)
++
++## 2. Why the teammate's fix worked all week, then self-destructed on deploy
++
++`packages/nextjs/contracts/deployedContracts.ts` is **auto-generated**. On
++`yarn deploy`, hardhat-deploy runs and a post-deploy codegen step
++(`generateTsAbis`) **overwrites the entire file** from the fresh deployment
++artifacts in `packages/hardhat/deployments/`.
++
++- Pasting a `USDC` entry there works immediately (the registry is just the
++  merged object, and the hand-added key is now in it) → "worked all week."
++- The next `yarn deploy` regenerates the file from deployment artifacts. USDC
++  is **not one of your deployed contracts** (it's Circle's token, already live
++  on Base — you never deployed it, there's no artifact for it), so it doesn't
++  make it into the regenerated file. The manual entry vanishes and the page
++  goes blank again.
++
++Rule of thumb: `deployedContracts.ts` is a build output. Never hand-edit it;
++anything you put there is temporary and dies at the next deploy.
++
++## 3. The correct registration
++
++Put third-party / already-deployed contracts (tokens, external protocols) in
++the file codegen never touches:
++
++**`packages/nextjs/contracts/externalContracts.ts`**
++
++Key it by chain id. **Base mainnet = `8453`**, and native (Circle) USDC on Base
++is `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` (6 decimals).
++
++```ts
++import { GenericContractsDeclaration } from "~~/utils/scaffold-eth/contract";
++
++const externalContracts = {
++  8453: {
++    USDC: {
++      address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
++      abi: [
++        {
++          type: "function",
++          name: "balanceOf",
++          stateMutability: "view",
++          inputs: [{ name: "account", type: "address" }],
++          outputs: [{ name: "", type: "uint256" }],
++        },
++        {
++          type: "function",
++          name: "decimals",
++          stateMutability: "view",
++          inputs: [],
++          outputs: [{ name: "", type: "uint8" }],
++        },
++        {
++          type: "function",
++          name: "symbol",
++          stateMutability: "view",
++          inputs: [],
++          outputs: [{ name: "", type: "string" }],
++        },
++        {
++          type: "function",
++          name: "transfer",
++          stateMutability: "nonpayable",
++          inputs: [
++            { name: "to", type: "address" },
++            { name: "amount", type: "uint256" },
++          ],
++          outputs: [{ name: "", type: "bool" }],
++        },
++        {
++          type: "function",
++          name: "approve",
++          stateMutability: "nonpayable",
++          inputs: [
++            { name: "spender", type: "address" },
++            { name: "amount", type: "uint256" },
++          ],
++          outputs: [{ name: "", type: "bool" }],
++        },
++        {
++          type: "event",
++          name: "Transfer",
++          inputs: [
++            { name: "from", type: "address", indexed: true },
++            { name: "to", type: "address", indexed: true },
++            { name: "value", type: "uint256", indexed: false },
++          ],
++          anonymous: false,
++        },
++      ],
++    },
++  },
++} as const;
++
++export default externalContracts satisfies GenericContractsDeclaration;
++```
++
++Notes:
++
++- `externalContracts.ts` is **not** regenerated by `yarn deploy` — it survives.
++  Scaffold merges it with `deployedContracts.ts`, so `contractName: "USDC"`
++  resolves for both read and write hooks.
++- `as const` matters: Scaffold derives TypeScript types (function names, arg
++  types) from the literal ABI, so it gives you autocomplete/type-safety and
++  keeps `satisfies GenericContractsDeclaration` happy. A minimal ABI (just
++  `balanceOf`) is enough to unblock `/payouts`; the extra entries above let you
++  format the amount (`decimals`) and do transfers later.
++- The **chain id must match your target network.** `useDeployedContractInfo`
++  looks up by `targetNetwork.id`, so `scaffold.config.ts` `targetNetworks` must
++  include `chains.base` (8453). If you also run on Base Sepolia (84532), add a
++  `84532` block with the testnet USDC address
++  (`0x036CbD53842c5426634e7929541eC2318f3dCF7e`).
++- Result is 6-decimals raw units — divide by 1e6 (e.g. `formatUnits(bal, 6)`)
++  for display.
++
++### If you must verify the exact hook/codegen behavior in this repo
++Grep the actual sources (paths in a hardhat-flavor Scaffold-ETH 2 app):
++- `packages/nextjs/hooks/scaffold-eth/useScaffoldReadContract.ts` — confirms the
++  `useDeployedContractInfo` → wagmi `useReadContract` chain and the `enabled` gate.
++- `packages/nextjs/hooks/scaffold-eth/useDeployedContractInfo.ts` — confirms the
++  chain-id keyed lookup and the `undefined` (non-throwing) return.
++- `packages/hardhat/deploy/` + the `generateTsAbis`/`00_generate_abis` script —
++  confirms `deployedContracts.ts` is overwritten on deploy.
+
+# Untracked files and status
+ A answer.md

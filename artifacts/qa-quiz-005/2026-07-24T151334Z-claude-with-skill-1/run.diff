@@ -1,0 +1,134 @@
+diff --git a/answer.md b/answer.md
+new file mode 100644
+index 0000000..cfcc19a
+--- /dev/null
++++ b/answer.md
+@@ -0,0 +1,125 @@
++# Why production requests land on `mainnet.base.org`
++
++## TL;DR
++
++`NEXT_PUBLIC_RPC_URL` is **inlined at build time**, not read at runtime. The
++production static bundle was built in an environment where that variable was
++**not set**, so `process.env.NEXT_PUBLIC_RPC_URL` was frozen into the client JS
++as `undefined`. With the override missing, SE-2's transport falls back to a bare
++`http()`, and viem's bare `http()` resolves to the chain's **default public RPC**
++— for Base that is `https://mainnet.base.org`. Hence the 429s. Dev machines have
++the variable in `.env.local`, so their build inlines the paid URL and never
++touches the public endpoint.
++
++---
++
++## The exact chain
++
++### 1. `scaffold.config.ts` reads the env var
++```ts
++rpcOverrides: {
++  [chains.base.id]: process.env.NEXT_PUBLIC_RPC_URL,
++},
++```
++This is not "read the RPC URL." It's "read the value of `process.env.NEXT_PUBLIC_RPC_URL`
++**at the moment the code is compiled**."
++
++### 2. Next.js inlines `NEXT_PUBLIC_*` at build time
++Any identifier `process.env.NEXT_PUBLIC_FOO` in code that ends up in the browser
++bundle is **textually substituted** by Next.js's webpack `DefinePlugin` during
++`next build`. It is not a runtime lookup. Two consequences:
++
++- Only `NEXT_PUBLIC_`-prefixed vars are exposed to the browser at all.
++- The value is **whatever was in the shell/`.env` when `next build` ran**, baked
++  in as a string literal. If the var is absent at build time, the substitution
++  is literally `undefined`.
++
++So after build, `rpcOverrides[base.id]` is a **constant** in the shipped JS —
++either `"https://paid-rpc..."` or `undefined`. Nothing on the server can change
++it later.
++
++### 3. Dev vs. production diverge here
++- **Dev machines**: `.env.local` (or `.env`) contains `NEXT_PUBLIC_RPC_URL=<paid>`.
++  `next dev`/`next build` inlines the paid URL → override present → paid RPC. No 429s.
++- **Production static build**: the deploy is a **static Next.js build on generic
++  hosting**. The var was almost certainly **not present in the build/CI
++  environment** (or was set only in the hosting platform's *runtime* env, which a
++  static build never reads). It inlines as `undefined`. Setting the variable in
++  the host's runtime dashboard does nothing — there is no server process
++  re-reading env for `NEXT_PUBLIC_*`; the value is already frozen in the static
++  chunks.
++
++### 4. `wagmiConfig.tsx` transport with the override missing
++```ts
++client({ chain }) {
++  let rpcFallbacks = [http()];                                   // <-- default
++
++  const rpcOverrideUrl = scaffoldConfig.rpcOverrides?.[chain.id];
++  if (rpcOverrideUrl) {
++    rpcFallbacks = [http(rpcOverrideUrl), http()];
++  } else {
++    // alchemy default-key branch, still ends with a bare http()
++  }
++
++  return createClient({ chain, transport: fallback(rpcFallbacks, { rank: false }), ... });
++}
++```
++With `rpcOverrideUrl === undefined`, the `if` is skipped and the base client
++keeps `rpcFallbacks = [http()]`.
++
++### 5. What a bare `http()` does
++`http(url?)` with **no URL** does not throw and does not disable the chain. viem
++falls back to `chain.rpcUrls.default.http[0]`. For viem's `base` chain that is
++**`https://mainnet.base.org`** — the public endpoint. Under production traffic
++that endpoint rate-limits → **429**.
++
++That is the whole loop: missing build-time var → `undefined` override →
++`http()` with no arg → viem's Base default public RPC → 429.
++
++---
++
++## The one operational check that settles whether the fix is real
++
++**Inspect the actual RPC host in the shipped artifact, not the config or the
++hosting dashboard.** Concretely, either:
++
++- Open the production site, DevTools → **Network**, and confirm the JSON-RPC
++  POSTs go to the **paid host**, not `mainnet.base.org`; or equivalently
++- `grep -r "mainnet.base.org\|<paid-rpc-host>" .next/static` (or the deployed
++  `_next/static` chunks) and confirm the **paid URL is baked in** and the public
++  one is not the one being called.
++
++Why this and nothing else: because the value is inlined at build time, the only
++proof that the fix works is that the **paid URL is present in the deployed client
++bundle / actual live requests**. Changing `.env`, setting the var in the host
++dashboard, or "it's set in CI now" prove nothing until you **rebuild and
++redeploy** and see the paid host in the bundle/Network tab. The fix is real iff
++the shipped JS calls the paid RPC.
++
++---
++
++## The second, transport-level trap (persists even after the env var is fixed)
++
++Look at the override branch itself:
++```ts
++rpcFallbacks = [http(rpcOverrideUrl), http()];
++//                                    ^^^^^^  bare http() = public RPC
++```
++Even once the paid URL is correctly inlined, the transport is a viem
++`fallback([ paid, public ])`. The **second entry is a bare `http()`**, i.e. the
++same public `mainnet.base.org`. viem's `fallback` transport routes to the next
++transport whenever the current one **errors** — including on timeouts, 5xx, and
++crucially **429 rate-limit responses**. So under load, or any hiccup on the paid
++endpoint, a share of requests **still spill onto the public RPC**, which can then
++429 in turn. The public endpoint is never removed from the routing set; it's
++demoted to failover, not eliminated.
++
++(Related, same root cause: SE-2 always appends `mainnet` to `enabledChains` for
++ENS/price lookups, and `rpcOverrides` only covers `base.id`. The mainnet client
++has no override, so its `rpcFallbacks` also ends in a bare `http()` → public
++mainnet RPC. Different host, same "bare `http()` = public" trap.)
++
++**To actually stop public-RPC traffic**, drop the trailing bare `http()` from the
++fallback array (or replace it with a second *paid/keyed* endpoint), and provide
++an override for every enabled chain — including the implicitly-added mainnet —
++rather than leaving a public endpoint in the transport at all.
+
+# Untracked files and status
+ A answer.md
