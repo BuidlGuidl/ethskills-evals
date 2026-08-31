@@ -25,6 +25,24 @@ export type JudgeRecord = JudgeSpec & {
   self_judged: boolean;
 };
 
+// What a run cost, so a benchmark can report more than pass counts. duration_s is the
+// harness's own wall clock and means the same thing on both stacks; everything else is
+// what the executor chose to report, hence the nulls — claude gives turns, dollars and
+// a four-way token split, codex gives a token total and nothing else. On claude the two
+// cache fields carry almost the whole run: input_tokens alone is the uncached remainder,
+// a double-digit number, and total_tokens is the sum of all four. The totals mean
+// different things on the two stacks and are only comparable variant-to-variant within one.
+export type RunUsage = {
+  duration_s: number | null;
+  turns: number | null;
+  cost_usd: number | null;
+  input_tokens: number | null;
+  cache_creation_input_tokens: number | null;
+  cache_read_input_tokens: number | null;
+  output_tokens: number | null;
+  total_tokens: number | null;
+};
+
 // Written by run-executor, read by verify: the harness spawned the executor, so it knows
 // which model ran and whether the process actually finished. A missing or unfinished
 // record is what stops verify from grading a workspace an executor is still writing to.
@@ -34,6 +52,7 @@ export type ExecutorRecord = {
   started: string;
   finished: string | null;
   exit: number | null;
+  usage?: RunUsage;
 };
 
 export type ResultRecord = {
@@ -49,6 +68,7 @@ export type ResultRecord = {
   regrade_of?: string;
   executor_model?: string | null;
   executor_exit?: number;
+  usage?: RunUsage;
   judge?: JudgeRecord;
   expects?: Record<string, ExpectStatus>;
   pass?: boolean;
