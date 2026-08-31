@@ -102,6 +102,7 @@ const loadResultRecord = (resultPath: string): ResultRecord => {
       : requireString(loaded.executor_model, "executor_model"),
     executor_exit: typeof loaded.executor_exit === "number" ? loaded.executor_exit : undefined,
     expect_sha: loaded.expect_sha === undefined ? undefined : requireString(loaded.expect_sha, "expect_sha"),
+    retracted: loaded.retracted === undefined ? undefined : requireString(loaded.retracted, "retracted"),
     expects: loaded.expects === undefined ? undefined : readExpects(loaded.expects),
     pass: loaded.pass === undefined ? undefined : Boolean(loaded.pass),
     regrades: readRegrades(loaded.regrades),
@@ -294,6 +295,10 @@ const main = async () => {
       expects: verdict.expects,
       pass,
     };
+
+    if (result.retracted !== undefined) {
+      gradedResult.retracted = result.retracted;
+    }
 
     if (regrading) {
       // The superseded grade is kept whole. A record that said only "this was regraded"

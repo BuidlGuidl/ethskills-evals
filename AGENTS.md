@@ -42,6 +42,31 @@ The skills under `skills/` are vendored at a pinned commit, and a task spec may 
 
 Runs are append-only. A re-run after a patch is a new run id, never an overwrite.
 
+**Editing an expect line is the one exception.** A rubric fix is not a new measurement, so
+re-running the executor to answer it pays for the wrong thing — and paying it is what makes
+editing a task's `input` look cheaper than editing its `expect`, which is the more
+destructive of the two. Re-judge the committed evidence instead:
+
+```bash
+yarn verify --run artifacts/<id>/<run-id> --judge-agent <agent> --judge-model <model> \
+  --regrade --reason "<what changed in the rubric and why>"
+```
+
+It refuses a run that was never graded, a graded run without the flag, a regrade with no
+stated reason, and — the one that decides whether any of this works — evidence git does not
+track. It never touches a workspace, and it appends the grade it superseded, whole, to
+`regrades:`. Regrade **every** run of the task, both variants, or the table mixes rubrics.
+
+Two fields exist to make that mixing visible rather than something a reader reconstructs
+from git log:
+
+- `expect_sha` fingerprints the expect list a grade was made against. Runs are comparable
+  only where it matches; a grade written before the field existed shows it as absent, which
+  means "unknown, probably an older rubric".
+- `retracted: <reason>` marks a grade that measures the harness rather than the model — a
+  killed CLI, or a deliverable that never reached the judge. Keep the record and exclude it
+  from the counts in the report, saying so; deleting it hides that the run happened.
+
 ## Hard rules
 
 1. **Never perform the task yourself.** Your context is contaminated by definition. Every run is a fresh executor. If you catch yourself editing files inside a workspace, stop, delete the run, start over.
@@ -187,7 +212,7 @@ Committed: task specs, vendored skills under test, workspace templates under `te
 
 This line said the opposite until 2026-08-20 — transcripts gitignored, `output/` committed — while `.gitignore` and all 210 committed runs did the reverse. Follow `.gitignore`; the transcript is what a reviewer re-derives a report's claims from, so it is the record that has to survive.
 
-`output/` stays ignored by default because a bare task has no template to diff against and `verify` snapshots the whole workspace into it: a quiz leaves one `answer.md` of a few KB, a goal that scaffolds leaves a tree (noir-goal-001: 176 files, 760K). Where that snapshot is the graded deliverable and small — the question-shaped runs — force-add it (`git add -f`) so a reader of the eval PR can re-check the judge on the material the judge saw.
+`output/` stays ignored by default because a bare task has no template to diff against and `verify` snapshots the whole workspace into it: a quiz leaves one `answer.md` of a few KB, a goal that scaffolds leaves a tree (noir-goal-001: 176 files, 760K). Where that snapshot is the graded deliverable and small, force-add it (`git add -f`) so a reader of the eval PR can re-check the judge on the material the judge saw. Read "small" generously — the nine gas-goal-001 runs are Foundry source trees and come to 40-72K each — and note that this is also the only thing that keeps a run regradeable: `verify` deletes the workspace, so uncommitted evidence means the grade can never be revisited by anyone, including you. If the snapshot is genuinely too big to commit, say so in the report, because the runs behind that table are then unauditable.
 
 ## Code style
 

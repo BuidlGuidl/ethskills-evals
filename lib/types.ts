@@ -68,4 +68,9 @@ export type ResultRecord = {
   expects?: Record<string, ExpectStatus>;
   pass?: boolean;
   regrades?: Regrade[];
+  // Set when the grade is an artifact of the harness rather than a measurement of the
+  // model — the case verify's non-zero-exit guard exists to catch, reached anyway by a
+  // run whose deliverable never made it into the evidence. The grade stays as written,
+  // because deleting it would hide that the run happened; reports exclude it and say so.
+  retracted?: string;
 };
