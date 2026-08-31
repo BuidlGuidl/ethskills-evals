@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { codexEnv } from "./codex-home.js";
+import { codexEnv, codexReasoningArgs, operatorCodexReasoningEffort } from "./codex-home.js";
 import type { Executor, ExpectStatus, JudgeSpec } from "./types.js";
 
 export type JudgeResult =
@@ -111,7 +111,18 @@ const runClaudeJudge = (prompt: string, model: string | null): Spawned => {
 const runCodexJudge = (prompt: string, model: string | null): Spawned => {
   const dir = mkdtempSync(path.join(tmpdir(), "skill-eval-judge-"));
   const messagePath = path.join(dir, "last-message.txt");
-  const args = ["exec", "--disable", "shell_snapshot", "-s", "read-only", "--skip-git-repo-check", "--ephemeral", "-o", messagePath];
+  // The operator's model_reasoning_effort rides along for the same reason the model does:
+  // the redirect means codex reads none of their config.toml, and a judge whose effort
+  // silently changed mid-benchmark grades the back half differently from the front half.
+  const args = [
+    "exec",
+    "--disable", "shell_snapshot",
+    "-s", "read-only",
+    "--skip-git-repo-check",
+    "--ephemeral",
+    ...codexReasoningArgs(operatorCodexReasoningEffort()),
+    "-o", messagePath,
+  ];
 
   if (model) {
     args.push("-m", model);

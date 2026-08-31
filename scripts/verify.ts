@@ -30,7 +30,7 @@ const resolveJudge = (args: Record<string, string | boolean>): JudgeSpec => {
   // codex judges under a redirected CODEX_HOME, so nothing supplies the operator's configured
   // model unless the harness passes it. Resolved here rather than inside the runner so that
   // result.yaml records the model that actually graded, not a null the CLI silently filled in.
-  const model = agent === "codex" ? resolveCodexModel(requested) : requested;
+  const model = agent === "codex" ? resolveCodexModel(requested, "--judge-model") : requested;
 
   return { agent, model };
 };
@@ -113,6 +113,10 @@ const loadExecutorRecord = (runDir: string): ExecutorRecord => {
   return {
     executor: parseExecutor(requireString(loaded.executor, "executor")),
     model: loaded.model === null || loaded.model === undefined ? null : requireString(loaded.model, "model"),
+    reasoning_effort:
+      loaded.reasoning_effort === null || loaded.reasoning_effort === undefined
+        ? null
+        : requireString(loaded.reasoning_effort, "reasoning_effort"),
     started: requireString(loaded.started, "started"),
     finished: requireString(loaded.finished, "finished"),
     exit: typeof loaded.exit === "number" ? loaded.exit : null,
@@ -182,7 +186,7 @@ const main = async () => {
     // that chose not to look at anything. Graded, it records as a skill that did not help on
     // a machine where the skill was never read. Refusing takes the same stated override as a
     // bad exit — this is a harness failure either way, and the operator says so out loud.
-    const brokenShell = detectBrokenShell(runDir);
+    const brokenShell = detectBrokenShell(runDir, executorRecord.executor);
 
     if (brokenShell !== null && args["grade-failed-run"] === undefined) {
       throw new Error(
@@ -190,6 +194,16 @@ const main = async () => {
           + `${brokenShell.capturePath}: "${brokenShell.evidence}". ${brokenShell.remedy}. `
           + `Delete ${runDir} and set up a new run, or pass --grade-failed-run to grade what it left behind anyway.`,
       );
+    }
+
+    // One flag turns off both refusals above, so a run that crashed *and* lost its shell
+    // grades on the strength of a single --grade-failed-run. A bad exit is at least visible
+    // in executor_exit afterwards; a dead shell exits 0 and leaves nothing, so the override
+    // has to write down what it overrode.
+    const harnessFailure = brokenShell === null ? undefined : brokenShell.cause;
+
+    if (harnessFailure !== undefined) {
+      console.warn(`verify: --grade-failed-run; grading anyway and recording harness_failure: ${harnessFailure}`);
     }
 
     const taskSpec = loadTaskSpec(path.join(ROOT, "tasks", `${result.task}.yaml`));
@@ -222,7 +236,9 @@ const main = async () => {
       skill_version: result.skill_version,
       created: result.created,
       executor_model: executorRecord.model,
+      executor_reasoning_effort: executorRecord.reasoning_effort ?? undefined,
       executor_exit: executorRecord.exit ?? undefined,
+      harness_failure: harnessFailure,
       judge: { ...judgeSpec, self_judged: judgeSpec.agent === result.executor },
       expects: verdict.expects,
       pass,

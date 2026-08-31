@@ -5,7 +5,8 @@ import path from "node:path";
 import process from "node:process";
 import { finished } from "node:stream/promises";
 import yaml from "js-yaml";
-import { codexEnv, resolveCodexModel } from "../lib/codex-home.js";
+import { codexEnv, codexReasoningArgs, operatorCodexReasoningEffort, resolveCodexModel } from "../lib/codex-home.js";
+import { detectBrokenShell } from "../lib/executor-health.js";
 import { loadYamlFile, parseArgs, requireString } from "../lib/task.js";
 import { buildTranscript } from "../lib/transcript.js";
 import type { Executor, ExecutorRecord } from "../lib/types.js";
@@ -30,7 +31,7 @@ const parseExecutor = (value: string): Executor => {
 // default, so without it every live-data task fails for the wrong reason) and
 // `--disable shell_snapshot` (see the block above the codex args). Both take the prompt
 // on stdin — TASK.md can outgrow the argv limit.
-const buildCommand = (executor: Executor, model: string | null) => {
+const buildCommand = (executor: Executor, model: string | null, reasoningEffort: string | null) => {
   if (executor === "claude") {
     const args = ["-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN", "claude", "-p"];
 
@@ -64,8 +65,22 @@ const buildCommand = (executor: Executor, model: string | null) => {
   // interactive shell into its own Bash tool exactly as codex does, and has no equivalent
   // flag, so that half of this exposure is still open.
   //
+  // --ephemeral because the redirected CODEX_HOME is one dir shared by every run on this
+  // machine. Without it codex writes each session into sessions/ and history.jsonl there,
+  // and a later no_skill run that finds this repo finds an earlier with_skill run's session
+  // log with the skill text in it — the same contamination the redirect exists to close,
+  // one level down. It does not stop codex's own caches and state dbs, which are the same
+  // for every operator and carry no run content.
+  //
   // The rest of ~/.codex is handled by CODEX_HOME below, not by a flag.
-  const args = ["exec", "--disable", "shell_snapshot", "-s", "workspace-write", "-c", "sandbox_workspace_write.network_access=true"];
+  const args = [
+    "exec",
+    "--disable", "shell_snapshot",
+    "--ephemeral",
+    "-s", "workspace-write",
+    "-c", "sandbox_workspace_write.network_access=true",
+    ...codexReasoningArgs(reasoningEffort),
+  ];
 
   if (model) {
     args.push("-m", model);
@@ -113,11 +128,16 @@ const main = async () => {
   // codex reads no config.toml now that CODEX_HOME is redirected, so the operator's
   // configured model is resolved here and passed on argv — where executor.yaml can record it.
   const model = executor === "codex" ? resolveCodexModel(requestedModel) : requestedModel;
+  // Same reasoning: it changes the answer, the redirect drops it, and a benchmark whose runs
+  // straddle the change has nothing in the record to say so. null means the operator set
+  // none and codex's own default ran.
+  const reasoningEffort = executor === "codex" ? operatorCodexReasoningEffort() : null;
   const env = executor === "codex" ? codexEnv() : process.env;
-  const { file, args: commandArgs } = buildCommand(executor, model);
+  const { file, args: commandArgs } = buildCommand(executor, model, reasoningEffort);
   const record: ExecutorRecord = {
     executor,
     model,
+    reasoning_effort: reasoningEffort,
     started: new Date().toISOString(),
     finished: null,
     exit: null,
@@ -205,6 +225,22 @@ const main = async () => {
   await writeRecord(recordPath, { ...record, finished: new Date().toISOString(), exit });
 
   console.log(`executor exited ${exit}; transcript at ${path.join(runDir, "transcript.md")}`);
+
+  // A dead shell exits 0, so reporting the exit code alone hands the orchestrator a green
+  // light and it launches the next run before verify ever looks. The stderr is already here
+  // — say so here, at the same non-zero exit the loop already knows to stop on. verify
+  // repeats the check because a run can also be executed by hand.
+  const brokenShell = detectBrokenShell(runDir, executor);
+
+  if (brokenShell !== null) {
+    console.error(
+      `run-executor: ${brokenShell.cause}, and it still exited ${exit}. `
+        + `${brokenShell.capturePath}: "${brokenShell.evidence}". ${brokenShell.remedy}. `
+        + `Delete ${runDir} and set up a new run.`,
+    );
+    process.exit(2);
+  }
+
   process.exit(exit === 0 ? 0 : 2);
 };
 
