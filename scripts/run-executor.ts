@@ -9,6 +9,7 @@ import { codexEnv, codexReasoningArgs, operatorCodexReasoningEffort, resolveCode
 import { detectBrokenShell } from "../lib/executor-health.js";
 import { loadYamlFile, parseArgs, requireString } from "../lib/task.js";
 import { buildTranscript } from "../lib/transcript.js";
+import { buildUsage } from "../lib/usage.js";
 import type { Executor, ExecutorRecord } from "../lib/types.js";
 import { readWorkspacePath } from "../lib/workspace.js";
 
@@ -134,11 +135,12 @@ const main = async () => {
   const reasoningEffort = executor === "codex" ? operatorCodexReasoningEffort() : null;
   const env = executor === "codex" ? codexEnv() : process.env;
   const { file, args: commandArgs } = buildCommand(executor, model, reasoningEffort);
+  const startedAt = Date.now();
   const record: ExecutorRecord = {
     executor,
     model,
     reasoning_effort: reasoningEffort,
-    started: new Date().toISOString(),
+    started: new Date(startedAt).toISOString(),
     finished: null,
     exit: null,
   };
@@ -222,9 +224,19 @@ const main = async () => {
     process.exit(2);
   }
 
-  await writeRecord(recordPath, { ...record, finished: new Date().toISOString(), exit });
+  // Usage is recorded only for a run that finished: an interrupted run returns above with
+  // finished null, and half a session's tokens against a whole session's work would read
+  // as a cheap run rather than a dead one.
+  const usage = buildUsage(executor, chunks.join(""), errors.join(""), Date.now() - startedAt);
 
-  console.log(`executor exited ${exit}; transcript at ${path.join(runDir, "transcript.md")}`);
+  await writeRecord(recordPath, { ...record, finished: new Date().toISOString(), exit, usage });
+
+  // buildUsage always measures the clock, so duration_s is a number here; cost is claude's
+  // own float and prints as 1.7752330000000003 unless it is rounded to the cent.
+  const price = usage.cost_usd === null ? "" : ` ($${usage.cost_usd.toFixed(2)})`;
+  const tokens = usage.total_tokens === null ? "" : `, ${usage.total_tokens} tokens`;
+
+  console.log(`executor exited ${exit} in ${usage.duration_s}s${price}${tokens}; transcript at ${path.join(runDir, "transcript.md")}`);
 
   // A dead shell exits 0, so reporting the exit code alone hands the orchestrator a green
   // light and it launches the next run before verify ever looks. The stderr is already here

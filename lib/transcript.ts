@@ -1,3 +1,4 @@
+import { claudeTokens } from "./usage.js";
 import type { Executor } from "./types.js";
 
 const MAX_TOOL_INPUT_CHARS = 200;
@@ -107,14 +108,18 @@ const renderClaude = (raw: string, stderr: string) => {
     }
 
     if (event.type === "result") {
-      const usage = (event.usage ?? {}) as Record<string, unknown>;
+      // Input is the three-way sum, not the `input_tokens` field: under prompt caching that
+      // field is the uncached remainder and reads as a run that was handed nothing.
+      const tokens = claudeTokens((event.usage ?? {}) as Record<string, unknown>);
+      const show = (value: number | null) => (value === null ? "?" : String(value));
 
       sections.push([
         "## run stats",
         `- turns: ${String(event.num_turns ?? "?")}`,
         `- duration: ${Math.round(Number(event.duration_ms ?? 0) / 1000)}s`,
         `- cost: $${String(event.total_cost_usd ?? "?")}`,
-        `- tokens in/out: ${String(usage.input_tokens ?? "?")}/${String(usage.output_tokens ?? "?")}`,
+        `- tokens in/out: ${show(tokens.inputTotal)}/${show(tokens.output)}`,
+        `- of which cache write/read: ${show(tokens.cacheCreation)}/${show(tokens.cacheRead)}`,
       ].join("\n"));
     }
   }
