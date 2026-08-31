@@ -99,7 +99,7 @@ figure is re-derivable from a committed transcript footer.
 
 | task | `no_skill` turns / duration / cost | range | `with_skill` turns / duration / cost | range | Δ cost |
 | --- | --- | --- | --- | --- | --- |
-| quiz-001 | 4 / 185s / $0.57 | $0.54–$0.57 | 6 / 137s / **$0.45** | $0.40–$0.57 | **−21%** |
+| quiz-001 | 4 / 185s / $0.57 | $0.54–$0.57 | 6 / 137s / $0.45 | $0.40–$0.57 | −21% ◊ |
 | quiz-002 | 4 / 146s / $0.43 | $0.36–$0.45 | 5 / 98s / **$0.32** | $0.32–$0.35 | **−26%** |
 | quiz-005 | 3 / 98s / **$0.32** | $0.31–$0.35 | 6 / 96s / $0.35 | $0.30–$0.46 | +9% |
 | quiz-006 | 4 / 184s / $0.52 | $0.47–$0.59 | 6 / 112s / **$0.38** | $0.37–$0.40 | **−27%** |
@@ -119,10 +119,12 @@ excluded `2750ecf` run (`…182949Z-with-skill-1`, 45 / 773s / $2.28). The row a
 n=3 — 53/33/44 turns, 475/394/603s, $2.29/$1.61/$2.45. Add `--runs` to see every run and check that
 subtraction yourself.
 
-◊ **The two goal-task medians whose ranges overlap almost completely.** goal-001's arms span
-$2.27–$6.10 and $1.71–$6.27; goal-002's, $2.11–$3.81 and $2.46–$6.34. Read those two rows as "no
-measured difference at n=3", not as a saving. The earlier version of this report put goal-001's
-saving at −42% and built a recommendation on it; against a baseline that actually exists it is −20%
+◊ **The three medians whose ranges overlap almost completely.** goal-001's arms span
+$2.27–$6.10 and $1.71–$6.27; goal-002's, $2.11–$3.81 and $2.46–$6.34; quiz-001's, $0.54–$0.57 and
+$0.40–$0.57 — the aided maximum ($0.5697) sits between the unaided minimum ($0.5403) and the
+unaided median ($0.5736), so the overlap covers nearly the whole unaided span. Read those three
+rows as "no measured difference at n=3", not as a saving. The earlier version of this report put
+goal-001's saving at −42% and built a recommendation on it; against a baseline that actually exists it is −20%
 inside a 3.7× spread, which is not a measurement.
 
 **Duration is not comparable on goal-002 and goal-004.** Their unaided runs were split across two
@@ -130,12 +132,16 @@ sessions — some 6-concurrent, some run alone after a usage limit — while eve
 concurrent. The quiz rows and goal-001 were run at matched concurrency (12-way against 12-way). Cost
 and turns are unaffected by concurrency throughout.
 
-**Where the cut is genuinely cheaper, it is on the quizzes: −21%, −26% and −27% on quiz-001,
-quiz-002 and quiz-006.** Those three ranges do not overlap, and they are the tasks whose claims the
-reduced file still states in full. quiz-005 is +9% and inside its own spread; goal-001 and goal-002
-are inside theirs; goal-004 is a wash. So the honest cost claim is **three quiz tasks, ~25%, on
-questions the skill answers in one sentence** — not the earlier "cheaper on four of seven, up to
-−42%", which rested on numbers this repo never had.
+**Where the cut is genuinely cheaper, it is on two quizzes: −26% on quiz-002 and −27% on
+quiz-006.** Those two ranges do not overlap, and they are tasks whose claims the reduced file still
+states in full. quiz-006 is the one clean separation ($0.4693 unaided minimum against $0.3962 aided
+maximum, a $0.073 gap); quiz-002 clears by $0.0114 ($0.3566 against $0.3452), which is non-overlap
+but a thin one at n=3. quiz-001's −21% median delta does **not** clear: its ranges overlap almost
+entirely and it is marked ◊ above with goal-001 and goal-002. quiz-005 is +9% and inside its own
+spread; goal-004 is a wash. So the honest cost claim is **two quiz tasks, ~25%, on questions the
+skill answers in one sentence** — not the earlier "cheaper on four of seven, up to −42%", which
+rested on numbers this repo never had, and not the three tasks an earlier draft of this paragraph
+claimed on ranges printed two lines above it.
 
 The cost story is also no longer the point. On goal-002 and goal-004 the skill is buying a **pass**,
 not a discount.
@@ -204,7 +210,7 @@ disagree with the August benchmark, so their direction is not settled.
 | Question | Answer |
 | --- | --- |
 | Did the skill improve pass rate? | **Yes, on two of seven tasks** — goal-004 3/3 vs 1/3, goal-002 3/3 vs 2/3, both measured same-day against a same-day unaided arm. Five tasks are 3/3 vs 3/3. This reverses the earlier version of this report, which said "No, and it never could here": that rested on unaided baselines three to five weeks old, and re-measuring them is what produced the failures. The direction is not settled — August's goal-004 ran the other way on the same checks — but the premise that the pass column is saturated does not survive. |
-| Did it reduce time/tokens? | **Yes, on three quiz tasks, by about a quarter:** quiz-001 −21%, quiz-002 −26%, quiz-006 −27%, with non-overlapping ranges. quiz-005 is +9% and inside its spread. goal-001 (−20%) and goal-002 (−16%) have arms whose ranges overlap almost entirely and should be read as no measured difference. goal-004 is a wash (+1%). The earlier "−42% on goal-001" was measured against a baseline this repo does not contain. |
+| Did it reduce time/tokens? | **Yes, on two quiz tasks, by about a quarter:** quiz-002 −26% and quiz-006 −27%, the only two with non-overlapping ranges (quiz-002's margin is thin, $0.0114). quiz-005 is +9% and inside its spread. quiz-001 (−21%), goal-001 (−20%) and goal-002 (−16%) have arms whose ranges overlap almost entirely and should be read as no measured difference. goal-004 is a wash (+1%). The earlier "−42% on goal-001" was measured against a baseline this repo does not contain. |
 | Did it create negative deltas? | Not under the cut. The only failing `with_skill` run in the whole wallets suite is goal-004's August `with-skill-1` on the **full** file (expect_3, `2026-08-06T215129Z`); all three reduced-file runs pass that check. quiz-005's +9% cost is inside its own range. |
 | What mistakes repeated without the skill? | `wallets-agent-keeps-unilateral-execution` is **not** what these show. The repeated unaided failure is narrower and new: stating the burned-key rule in the abstract while never identifying the key in front of you, so nothing in the delivered code refuses to sign with it. 2 of 3 goal-004 unaided runs. A mistake record is worth filing once the direction is confirmed against August's opposite result. |
 | What mistakes remained with the skill? | None across 21 counted `with_skill` runs. |
@@ -227,8 +233,8 @@ settled finding.
 
 By damianmarti's criterion on issue #1 — *if the skill helps reduce costs by a significant amount,
 it makes sense to keep a minimal skill file* — the cost evidence is real but modest: about a quarter
-off three quiz tasks, and no measured difference on the goal tasks. The stronger argument is now the
-one the suite was built to look for in the first place.
+off two quiz tasks, and no measured difference on the goal tasks or on quiz-001. The stronger
+argument is now the one the suite was built to look for in the first place.
 
 The methodological point rin-st raised on issue #1 stands and generalizes: this benchmark's
 resolution was the limit, not the skill. Two things fixed it here — grading the cost column as well
