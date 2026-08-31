@@ -29,7 +29,20 @@ const SKIP_DIRS = new Set([...SKILL_INSTALL_DIRS, ...GENERATED_DIRS]);
 const MAX_SNAPSHOT_FILE_BYTES = 256 * 1024;
 const EXECUTORS = new Set<Executor>(["claude", "codex"]);
 const VARIANTS = new Set<Variant>(["no_skill", "with_skill"]);
-const VERIFY_ARGS = new Set(["run", "judge-agent", "judge-model"]);
+const VERIFY_ARGS = new Set(["run", "judge-agent", "judge-model", "allow-skill-mention"]);
+// Excluding SKILL_INSTALL_DIRS from the evidence paths keeps the skill FILES out, but it
+// cannot keep the skill out of files the executor WROTE. A with_skill run that cites its
+// source in answer.md — "per .claude/skills/standards/SKILL.md" — hands the judge the
+// variant just as surely as a leaked directory would, and that is not hypothetical: 4 of 9
+// with_skill runs across the standards quizzes did it in #35, one printing the install path
+// verbatim. Task preambles were reworded per-task afterwards, which fixes the tasks edited
+// and nothing else. This list is the harness-level check, so the invariant this file's
+// header claims to own is actually enforced for every task, present and future.
+const SKILL_MENTION_PATTERNS: { label: string; pattern: RegExp }[] = [
+  { label: "skill install path", pattern: /\.(?:claude|agents)[\/\\]skills\b/i },
+  { label: "SKILL.md reference", pattern: /\bSKILL\.md\b/i },
+  { label: "skill self-reference", pattern: /\b(?:the|my|this|provided|installed|attached)\s+skill\b/i },
+];
 
 // The judge is a fresh, blind process, never the orchestrator's own contaminated
 // context. Point it at the model you want doing the grading: pass --judge-agent
@@ -194,6 +207,61 @@ const buildEvidence = async (runDir: string) => {
   return sections.join("\n\n");
 };
 
+// Reported as file:line so the operator can read the hit and judge it, rather than being told
+// only that something matched. Scans the assembled evidence because that is exactly the string
+// the judge receives — checking the source files instead would miss whatever the diff header
+// carries.
+const findSkillMentions = (evidence: string) => {
+  const hits: string[] = [];
+  let section = "evidence";
+
+  evidence.split("\n").forEach((line, index) => {
+    if (line.startsWith("# run.diff") || line.startsWith("# output/")) {
+      section = line.slice(2);
+    }
+
+    for (const { label, pattern } of SKILL_MENTION_PATTERNS) {
+      if (pattern.test(line)) {
+        hits.push(`  ${section}:${index + 1}  [${label}]  ${line.trim().slice(0, 160)}`);
+        return;
+      }
+    }
+  });
+
+  return hits;
+};
+
+// Aborts BEFORE the judge call rather than after: the executor run is already paid for and is
+// not lost, only its grading is deferred, so stopping here costs one cheap re-invocation while
+// grading on leaked evidence costs the comparison the whole repo exists to make. A mention is
+// not always a leak — a no_skill run can say "the skill" about something else, and a task may
+// legitimately be about skills — so this is a stop-and-look, cleared with --allow-skill-mention
+// once the operator has read the hits and recorded the call in the run's report.
+const guardJudgeBlindness = (evidence: string, allowSkillMention: boolean) => {
+  const hits = findSkillMentions(evidence);
+
+  if (hits.length === 0) {
+    return;
+  }
+
+  if (allowSkillMention) {
+    console.warn(`verify: ${hits.length} skill mention(s) in evidence, graded anyway per --allow-skill-mention:`);
+    console.warn(hits.join("\n"));
+    return;
+  }
+
+  throw new Error(
+    [
+      `judge blindness: evidence contains ${hits.length} skill mention(s), so the judge would learn the variant.`,
+      ...hits,
+      "",
+      "Read the hits. If a run genuinely leaked its variant, that run's grading is not comparable —",
+      "record it as a run incident rather than grading it. If the matches are incidental, re-run with",
+      "--allow-skill-mention to grade anyway; note the decision in the report either way.",
+    ].join("\n"),
+  );
+};
+
 const summarize = (expects: Record<string, ExpectStatus>) => {
   const rows = Object.entries(expects);
   const nameWidth = Math.max("check".length, ...rows.map(([name]) => name.length));
@@ -234,7 +302,11 @@ const main = async () => {
     }
 
     const judgeSpec = resolveJudge(args, result.executor);
-    const verdict = judgeExpectations(taskSpec.input, taskSpec.expect, await buildEvidence(runDir), judgeSpec);
+    const evidence = await buildEvidence(runDir);
+
+    guardJudgeBlindness(evidence, args["allow-skill-mention"] === true);
+
+    const verdict = judgeExpectations(taskSpec.input, taskSpec.expect, evidence, judgeSpec);
 
     if (!verdict.ok) {
       throw new Error(`judge failed: ${verdict.error}`);
