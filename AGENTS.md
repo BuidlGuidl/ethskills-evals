@@ -77,6 +77,18 @@ yarn verify --run artifacts/<id>/<run-id> --judge-agent claude --judge-model <yo
 
 Omit `--judge-model` to let that agent's CLI pick its own default. Keep one judge for the length of a benchmark. A grader that changes between runs makes `with_skill` and `no_skill` incomparable.
 
+### Revising expect lines: regrade, do not re-run
+
+When you change a task's `expect:` lines after runs exist, the question is whether the new wording grades the same answers differently. Re-running executors answers a different question, because it changes the grading surface and draws fresh samples at once.
+
+```bash
+yarn verify --run artifacts/<id>/<run-id> --regrade --judge-agent claude --judge-model <model>
+```
+
+`--regrade` re-judges a run's stored evidence (`run.diff`, `output/`) against the task spec as it stands now. It never re-executes, never touches the source run dir, and writes `<run-id>-regrade-<n>/result.yaml` with `regrade_of` naming the run it re-read. Grade every run of the task, not the failures only — a wording change that flips a fail to a pass usually flips something the other way too. Hold the judge fixed at whatever graded the run originally; changing the wording and the judge together tells you nothing about either. A regrade is a second reading of one run, never a second run: never add it to a pass tally beside its source.
+
+The evidence a regrade re-reads is committed — `run.diff` for template-seeded runs, a force-added `output/` for the question-shaped ones — so it works from any clone that has the run dir. Where `output/` was left ignored, which is the default for a bare task that snapshots a whole scaffold, the evidence exists only on the machine that made the run: regrade there, and commit the records.
+
 ## Isolation
 
 Tooling resolves context by walking *up* the filesystem, and every such walk used to end in this repo. Three things stop it.
@@ -128,25 +140,27 @@ task: gas-cost-estimate-001
 run: 2026-07-06T093000Z-claude-with-skill-1
 executor: claude
 variant: with_skill
-skill_version: 191dcc1         # git short sha of the skill source; null for no_skill
+skill_version: 191dcc1                # git short sha of the skill source; null for no_skill
 created: 2026-07-06T09:30:00Z
-executor_model: claude-opus-5   # what actually ran; null when the CLI picked its default
-executor_exit: 0                # verify refuses anything else unless --grade-failed-run
-usage:                         # what the run cost; absent on runs made before 2026-08-27
-  duration_s: 812              # the harness's own wall clock — the one figure both stacks share
-  turns: 34                    # claude only
-  cost_usd: 4.66               # claude only; codex exec reports no price
-  input_tokens: 51204          # claude only
-  output_tokens: 8133          # claude only
-  total_tokens: 59337          # both stacks; on codex this is all there is
-judge:                         # who graded this run
+executor_model: claude-opus-5         # what actually ran; null when the CLI picked its default
+executor_exit: 0                      # verify refuses anything else unless --grade-failed-run
+usage:                                # what the run cost; absent on runs made before 2026-08-27
+  duration_s: 812                     # the harness's own wall clock — the one figure both stacks share
+  turns: 34                           # claude only
+  cost_usd: 4.66                      # claude only; codex exec reports no price
+  input_tokens: 12                    # claude only; the UNCACHED remainder, double digits on a real run
+  cache_creation_input_tokens: 47453  # claude only; where a skill's own prompt lands
+  cache_read_input_tokens: 203362     # claude only; the context re-read on every turn
+  output_tokens: 31748                # claude only
+  total_tokens: 282575                # both stacks; the sum of the four above on claude, codex's own line on codex
+judge:                                # who graded this run
   agent: claude
-  model: claude-opus-4-8       # null when the agent's CLI picked its own default
-  self_judged: false           # true when judge and executor are the same agent
-expects:                       # judged expect lines, in task-spec order
+  model: claude-opus-4-8              # null when the agent's CLI picked its own default
+  self_judged: false                  # true when judge and executor are the same agent
+expects:                              # judged expect lines, in task-spec order
   expect_1: pass
   expect_2: fail
-pass: false                    # true only when every expect passed
+pass: false                           # true only when every expect passed
 ```
 
 Beside it, per run: `baseline.sha` and `workspace.path` (setup; the pointer is local-only), `executor.yaml` + `transcript.md` (run-executor), `run.diff` or `output/` (verify).
@@ -164,7 +178,7 @@ category: stale-knowledge
 symptom: "Computes USD cost from a remembered ETH price instead of checking one."
 expected_pattern: "Fetch ETH/USD live (Chainlink feed, CoinGecko) before quoting dollars."
 skill_section: "What You Probably Got Wrong"   # the section that should prevent this, or "none" for a gap
-status: open                   # open | fixed | wontfix
+status: open                   # open | fixed | wontfix | retracted (a regrade showed it was the expect lines, not the run)
 ```
 
 When the same mistake has been measured on more than one stack, `frequency` takes a stack
@@ -183,12 +197,21 @@ of them took twice the tokens to get there, and on a saturated task that differe
 result. Dollars for a codex benchmark have to be derived from tokens and a published price —
 say so in the report rather than printing a figure the harness never measured.
 
+Quote `total_tokens`, never `input_tokens`. On claude the run's input is spread over three
+fields and `input_tokens` alone is the uncached leftover — a skill's whole prompt is billed
+through `cache_creation_input_tokens` and re-read every turn through
+`cache_read_input_tokens`, so a total that skips them cannot see the cost the skill adds.
+And `total_tokens` means different things on the two stacks: claude's counts every cache
+read, codex's `tokens used` line is its own accounting and comes out several times smaller
+for comparable work. Compare tokens between variants within one stack; comparing them across
+stacks is comparing two units.
+
 Every report ends with this table. Answer the last row honestly: sometimes the eval is the wrong artifact, not the skill.
 
 | Question | Answer |
 | --- | --- |
 | Did the skill improve pass rate? | raw counts, e.g. `2/3 vs 0/3` |
-| Did it reduce time/tokens? | per-variant medians from `usage`, e.g. `808s / 59k tokens vs 1277s / 91k` |
+| Did it reduce time/tokens? | per-variant medians from `usage`, e.g. `808s / 283k tokens vs 1277s / 431k` |
 | Did it create negative deltas? | list them |
 | What mistakes repeated without the skill? | mistake ids |
 | What mistakes remained with the skill? | mistake ids |

@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { rm, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import yaml from "js-yaml";
@@ -13,7 +13,7 @@ import { pruneEmptyParent, readWorkspacePath } from "../lib/workspace.js";
 const ROOT = process.cwd();
 const EXECUTORS = new Set<Executor>(["claude", "codex"]);
 const VARIANTS = new Set<Variant>(["no_skill", "with_skill"]);
-const VERIFY_ARGS = new Set(["run", "judge-agent", "judge-model", "grade-failed-run", "keep-workspace"]);
+const VERIFY_ARGS = new Set(["run", "judge-agent", "judge-model", "grade-failed-run", "keep-workspace", "regrade"]);
 
 // The judge is a fresh, blind process, never the orchestrator's own contaminated
 // context. --judge-agent is required rather than defaulting to the run's executor:
@@ -125,6 +125,18 @@ const readBaselineSha = (runDir: string) => {
   return readFileSync(baselinePath, "utf8").trim();
 };
 
+// Regrades are numbered so a grading surface can be revised more than once without an
+// overwrite: <run-id>-regrade-1, -2, ...
+const nextRegradeDir = (runDir: string) => {
+  for (let n = 1; ; n++) {
+    const candidate = `${runDir}-regrade-${n}`;
+
+    if (!existsSync(candidate)) {
+      return candidate;
+    }
+  }
+};
+
 const summarize = (expects: Record<string, ExpectStatus>) => {
   const rows = Object.entries(expects);
   const nameWidth = Math.max("check".length, ...rows.map(([name]) => name.length));
@@ -149,9 +161,20 @@ const main = async () => {
     }
 
     const rawResult = loadYamlFile(resultPath);
+    // `!== undefined` rather than `=== true`, for the reason spelled out at the workspace
+    // cleanup below: parseArgs takes the next token as a value, so `--regrade true` parses
+    // as the string "true".
+    const regrade = args.regrade !== undefined;
+    const alreadyGraded = Object.prototype.hasOwnProperty.call(rawResult, "pass");
 
-    if (Object.prototype.hasOwnProperty.call(rawResult, "pass")) {
+    if (alreadyGraded && !regrade) {
       throw new Error(`run already graded; delete ${runDir} and re-run setup-workspace if you need a redo`);
+    }
+
+    // A regrade re-reads what the first grading captured. With no first grading there is
+    // no stored evidence to re-read, so this is a mistyped command, not a second reading.
+    if (regrade && !alreadyGraded) {
+      throw new Error("--regrade re-reads a graded run's stored evidence; grade it first without the flag");
     }
 
     const result = loadResultRecord(resultPath);
@@ -174,34 +197,54 @@ const main = async () => {
     }
 
     const taskSpec = loadTaskSpec(path.join(ROOT, "tasks", `${result.task}.yaml`));
-    const workspacePath = readWorkspacePath(runDir);
+    // A regrade asks whether the current expect lines would have graded this run
+    // differently, so it must not re-execute or re-capture anything: the workspace is gone
+    // by then anyway, deleted when the run was first graded. Re-running to test a wording
+    // change confounds the grading surface with fresh executor variance, which is the one
+    // thing a regrade exists to avoid.
+    const workspacePath = regrade ? null : readWorkspacePath(runDir);
 
     // Evidence shape follows the task shape, not whatever the workspace happens to
     // contain: repo-shaped runs are graded on what changed since the baseline, question-
     // shaped runs on the files themselves. Every workspace is a git repo now, so keying
     // this off `.git` would quietly move every quiz run onto the diff path.
-    if (taskSpec.template === undefined) {
-      await snapshotOutput(workspacePath, path.join(runDir, "output"));
-    } else {
-      await writeDiff(workspacePath, path.join(runDir, "run.diff"), readBaselineSha(runDir));
+    if (workspacePath !== null) {
+      if (taskSpec.template === undefined) {
+        await snapshotOutput(workspacePath, path.join(runDir, "output"));
+      } else {
+        await writeDiff(workspacePath, path.join(runDir, "run.diff"), readBaselineSha(runDir));
+      }
     }
 
-    const verdict = judgeExpectations(taskSpec.input, taskSpec.expect, await buildEvidence(runDir), judgeSpec);
+    const evidence = await buildEvidence(runDir);
+
+    // `output/` is gitignored unless a run force-added it, so a clone that did not make the
+    // run can be missing the very thing a regrade re-reads. Judging an empty string would
+    // score the run as if it had produced nothing.
+    if (regrade && evidence.trim().length === 0) {
+      throw new Error(`no stored evidence in ${runDir}; a regrade re-reads run.diff or output/, and neither is there`);
+    }
+
+    const verdict = judgeExpectations(taskSpec.input, taskSpec.expect, evidence, judgeSpec);
 
     if (!verdict.ok) {
       throw new Error(`judge failed: ${verdict.error}`);
     }
 
     const pass = Object.values(verdict.expects).every(status => status === "pass");
+    // A regrade is append-only like every other record: it lands in its own dir beside the
+    // source, so the original grading stays readable as what the task said at the time.
+    const targetDir = regrade ? nextRegradeDir(runDir) : runDir;
     // Rebuilt field by field rather than spread: loadResultRecord leaves `expects` and
     // `pass` as undefined keys, so spreading would strand `judge` below them in the yaml.
     const gradedResult: ResultRecord = {
       task: result.task,
-      run: result.run,
+      run: regrade ? path.basename(targetDir) : result.run,
       executor: result.executor,
       variant: result.variant,
       skill_version: result.skill_version,
       created: result.created,
+      ...(regrade ? { regrade_of: result.run } : {}),
       executor_model: executorRecord.model,
       executor_exit: executorRecord.exit ?? undefined,
       // Copied from executor.yaml rather than re-derived: run-executor measured it, and
@@ -213,7 +256,11 @@ const main = async () => {
       pass,
     };
 
-    await writeFile(resultPath, yaml.dump(gradedResult, { lineWidth: -1 }));
+    if (regrade) {
+      await mkdir(targetDir, { recursive: true });
+    }
+
+    await writeFile(path.join(targetDir, "result.yaml"), yaml.dump(gradedResult, { lineWidth: -1 }));
 
     summarize(verdict.expects);
 
@@ -225,14 +272,16 @@ const main = async () => {
     // `!== undefined` rather than `=== true`: parseArgs takes the next token as the value, so
     // `--keep-workspace true` yields the string "true", and reading that as "delete it" would
     // irreversibly discard the workspace the user asked to keep.
-    if (args["keep-workspace"] !== undefined) {
-      console.log(`workspace kept at ${workspacePath}`);
-    } else {
-      try {
-        await rm(workspacePath, { recursive: true, force: true });
-        pruneEmptyParent(workspacePath);
-      } catch (error) {
-        console.warn(`verify: graded, but could not remove ${workspacePath}: ${error instanceof Error ? error.message : String(error)}`);
+    if (workspacePath !== null) {
+      if (args["keep-workspace"] !== undefined) {
+        console.log(`workspace kept at ${workspacePath}`);
+      } else {
+        try {
+          await rm(workspacePath, { recursive: true, force: true });
+          pruneEmptyParent(workspacePath);
+        } catch (error) {
+          console.warn(`verify: graded, but could not remove ${workspacePath}: ${error instanceof Error ? error.message : String(error)}`);
+        }
       }
     }
 
