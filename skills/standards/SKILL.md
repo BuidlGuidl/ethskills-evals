@@ -9,7 +9,7 @@ All of these are deployed and in production use, not proposals: **ERC-8004** (ag
 
 ## ERC-8004 — agent identity and reputation
 
-Two registries, deployed at the same pair of addresses across 40+ chains — but **the testnet set is a different pair**, and the mainnet addresses have no code on Sepolia or Base Sepolia:
+Two registries, deployed at the same pair of addresses across ~25 mainnets — and at a **different pair** across the testnets. The mainnet addresses have no code on Sepolia or Base Sepolia:
 
 | | mainnets | testnets |
 | --- | --- | --- |
@@ -27,7 +27,7 @@ Two registries, deployed at the same pair of addresses across 40+ chains — but
 
 `GET` → `402` + `PAYMENT-REQUIRED` → client signs → retry with `PAYMENT-SIGNATURE` → server verifies and settles → `200` + `PAYMENT-RESPONSE`. A facilitator (Coinbase runs a public one, anyone can run their own) performs verify/settle so the resource server never runs a node or holds gas.
 
-Amounts go on the wire in **token base units**: $0.35 USDC is `350000` (USDC has 6 decimals) — not `0.35`, not an 18-decimal figure. Native USDC on Base is `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`; `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48` is mainnet USDC and `0xd9aAEc86B65D86f6A7B5B1b0c42FFA531710b6CA` is the bridged USDbC — both are the wrong contract for a Base x402 route.
+Amounts go on the wire in **token base units** — the dollar figure scaled by the token's decimals. USDC has 6, so $0.10 is `100000` and $2.50 is `2500000`; never send `0.10`, and never an 18-decimal figure. Native USDC on Base is `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`; `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48` is mainnet USDC and `0xd9aAEc86B65D86f6A7B5B1b0c42FFA531710b6CA` is the bridged USDbC — both are the wrong contract for a Base x402 route.
 
 Either implementation is fine — the scoped SDKs, or your own handler posting to a facilitator's `/verify` and `/settle`. If you reach for the SDKs, the maintained TypeScript line is the scoped one: `@x402/core`, `@x402/evm`, `@x402/fetch`, `@x402/express`, with `@coinbase/x402` as the facilitator config beside it; unscoped `x402`, `x402-fetch`, `x402-express` are frozen at 1.2.0, and Go lives at `github.com/x402-foundation/x402/go/v2`. Two symbols to unlearn before you import anything: `x402Fetch` and `createWallet` do not exist in the scoped packages, and a one-argument `paymentMiddleware(config)` is the v1 shape — on 2.x the Express middleware takes routes plus a resource server, and the fetch wrapper takes an x402 client rather than a bare account. Confirm those entry points in one read of the installed `.d.ts` and get on with it; the package tree is not worth touring.
 
