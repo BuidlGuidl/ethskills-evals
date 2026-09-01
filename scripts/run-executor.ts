@@ -7,6 +7,7 @@ import { finished } from "node:stream/promises";
 import yaml from "js-yaml";
 import { loadYamlFile, parseArgs, requireString } from "../lib/task.js";
 import { buildTranscript } from "../lib/transcript.js";
+import { buildUsage } from "../lib/usage.js";
 import type { Executor, ExecutorRecord } from "../lib/types.js";
 import { readWorkspacePath } from "../lib/workspace.js";
 
@@ -92,10 +93,11 @@ const main = async () => {
   const executor = parseExecutor(requireString(result.executor, "executor"));
   const prompt = await readFile(path.join(workspacePath, "TASK.md"), "utf8");
   const { file, args: commandArgs } = buildCommand(executor, model);
+  const startedAt = Date.now();
   const record: ExecutorRecord = {
     executor,
     model,
-    started: new Date().toISOString(),
+    started: new Date(startedAt).toISOString(),
     finished: null,
     exit: null,
   };
@@ -179,9 +181,19 @@ const main = async () => {
     process.exit(2);
   }
 
-  await writeRecord(recordPath, { ...record, finished: new Date().toISOString(), exit });
+  // Usage is recorded only for a run that finished: an interrupted run returns above with
+  // finished null, and half a session's tokens against a whole session's work would read
+  // as a cheap run rather than a dead one.
+  const usage = buildUsage(executor, chunks.join(""), errors.join(""), Date.now() - startedAt);
 
-  console.log(`executor exited ${exit}; transcript at ${path.join(runDir, "transcript.md")}`);
+  await writeRecord(recordPath, { ...record, finished: new Date().toISOString(), exit, usage });
+
+  // buildUsage always measures the clock, so duration_s is a number here; cost is claude's
+  // own float and prints as 1.7752330000000003 unless it is rounded to the cent.
+  const price = usage.cost_usd === null ? "" : ` ($${usage.cost_usd.toFixed(2)})`;
+  const tokens = usage.total_tokens === null ? "" : `, ${usage.total_tokens} tokens`;
+
+  console.log(`executor exited ${exit} in ${usage.duration_s}s${price}${tokens}; transcript at ${path.join(runDir, "transcript.md")}`);
   process.exit(exit === 0 ? 0 : 2);
 };
 

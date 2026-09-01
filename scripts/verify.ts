@@ -1,13 +1,14 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { rm, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import yaml from "js-yaml";
 import { buildEvidence, snapshotOutput, writeDiff } from "../lib/evidence.js";
 import { judgeExpectations } from "../lib/judge.js";
-import { expectSha, isRecord, loadTaskSpec, loadYamlFile, parseArgs, requireString } from "../lib/task.js";
-import type { Executor, ExecutorRecord, ExpectStatus, JudgeSpec, Regrade, ResultRecord, Variant } from "../lib/types.js";
+import { expectSha, inputSha, isRecord, loadTaskSpec, loadYamlFile, parseArgs, requireString } from "../lib/task.js";
+import { parseUsageRecord } from "../lib/usage.js";
+import type { Executor, ExecutorRecord, ExpectStatus, JudgeSpec, ResultRecord, Variant } from "../lib/types.js";
 import { pruneEmptyParent, readWorkspacePath } from "../lib/workspace.js";
 
 const ROOT = process.cwd();
@@ -72,21 +73,6 @@ const readExpects = (value: unknown) => {
   return expects;
 };
 
-// Prior regrades are replayed verbatim rather than re-parsed field by field: this script
-// only ever appends to the list, and a stricter reader here would reject a record written
-// by a later version of the harness that a re-grade should still be able to extend.
-const readRegrades = (value: unknown) => {
-  if (value === undefined) {
-    return undefined;
-  }
-
-  if (!Array.isArray(value)) {
-    throw new Error("regrades must be a list");
-  }
-
-  return value as Regrade[];
-};
-
 const loadResultRecord = (resultPath: string): ResultRecord => {
   const loaded = loadYamlFile(resultPath);
 
@@ -96,25 +82,26 @@ const loadResultRecord = (resultPath: string): ResultRecord => {
     executor: parseExecutor(requireString(loaded.executor, "executor")),
     variant: parseVariant(requireString(loaded.variant, "variant")),
     skill_version: loaded.skill_version === null ? null : requireString(loaded.skill_version, "skill_version"),
+    input_sha: loaded.input_sha === undefined ? undefined : requireString(loaded.input_sha, "input_sha"),
     created: requireString(loaded.created, "created"),
     executor_model: loaded.executor_model === undefined || loaded.executor_model === null
       ? null
       : requireString(loaded.executor_model, "executor_model"),
     executor_exit: typeof loaded.executor_exit === "number" ? loaded.executor_exit : undefined,
+    usage: parseUsageRecord(loaded.usage),
     expect_sha: loaded.expect_sha === undefined ? undefined : requireString(loaded.expect_sha, "expect_sha"),
-    retracted: loaded.retracted === undefined ? undefined : requireString(loaded.retracted, "retracted"),
     expects: loaded.expects === undefined ? undefined : readExpects(loaded.expects),
     pass: loaded.pass === undefined ? undefined : Boolean(loaded.pass),
-    regrades: readRegrades(loaded.regrades),
+    retracted: loaded.retracted === undefined ? undefined : requireString(loaded.retracted, "retracted"),
   };
 };
 
 // Grading a run whose executor is still working reads a half-written workspace, scores it,
 // and then the workspace gets deleted out from under a live process. run-executor writes
 // this record; no record or no finished timestamp means there is nothing to grade yet.
-// optional on a regrade only: the executor ran long ago and its record is what a first
-// grade already copied into result.yaml, so demanding it back would lock every run made
-// before run-executor started writing one out of ever being re-judged.
+// Optional on a regrade only: the executor ran long ago and what it recorded was already
+// copied into result.yaml by the first grade, so demanding it back would lock every run
+// made before run-executor started writing one out of ever being re-judged.
 const loadExecutorRecord = (runDir: string, optional = false): ExecutorRecord | null => {
   const recordPath = path.join(runDir, "executor.yaml");
 
@@ -140,6 +127,7 @@ const loadExecutorRecord = (runDir: string, optional = false): ExecutorRecord | 
     started: requireString(loaded.started, "started"),
     finished: requireString(loaded.finished, "finished"),
     exit: typeof loaded.exit === "number" ? loaded.exit : null,
+    usage: parseUsageRecord(loaded.usage),
   };
 };
 
@@ -153,8 +141,20 @@ const readBaselineSha = (runDir: string) => {
   return readFileSync(baselinePath, "utf8").trim();
 };
 
-// A regrade is only worth anything if someone else can run it, so the bar is that the
-// evidence is tracked — not merely that it sits in this working copy. output/ is
+// Regrades are numbered so a grading surface can be revised more than once without an
+// overwrite: <run-id>-regrade-1, -2, ...
+const nextRegradeDir = (runDir: string) => {
+  for (let n = 1; ; n++) {
+    const candidate = `${runDir}-regrade-${n}`;
+
+    if (!existsSync(candidate)) {
+      return candidate;
+    }
+  }
+};
+
+// A regrade is only worth anything if someone else can reproduce it, so the bar is that
+// the evidence is tracked — not merely that it sits in this working copy. output/ is
 // gitignored by default (AGENTS.md: force-add it where the snapshot is the deliverable),
 // so an untracked snapshot is the normal failure here and the message says how to fix it.
 const assertEvidenceCommitted = (runDir: string, bareTask: boolean) => {
@@ -180,7 +180,7 @@ const assertEvidenceCommitted = (runDir: string, bareTask: boolean) => {
 
   if (tracked.length === 0) {
     throw new Error(
-      `${evidencePath} exists but is not tracked by git, so a regrade here would grade material no other clone has. `
+      `${evidencePath} is not tracked by git, so a regrade here would grade material no other clone has. `
         + `Commit it first: git add -f ${path.relative(ROOT, evidencePath)}`,
     );
   }
@@ -210,32 +210,36 @@ const main = async () => {
     }
 
     const rawResult = loadYamlFile(resultPath);
-    const graded = Object.prototype.hasOwnProperty.call(rawResult, "pass");
-    // parseArgs takes the next token as a value, so `--regrade` alone is `true` and
-    // `--regrade "expect_5 added"` is that string; either means regrade, same as
-    // --keep-workspace and --grade-failed-run above.
-    const regrading = args.regrade !== undefined;
+    // `!== undefined` rather than `=== true`, for the reason spelled out at the workspace
+    // cleanup below: parseArgs takes the next token as a value, so `--regrade true` parses
+    // as the string "true".
+    const regrade = args.regrade !== undefined;
+    const alreadyGraded = Object.prototype.hasOwnProperty.call(rawResult, "pass");
 
-    if (graded && !regrading) {
+    if (alreadyGraded && !regrade) {
       throw new Error(
         `run already graded (${runDir}). A fresh executor pass is a new run id, never an overwrite — run setup again for that. `
           + `To re-judge THIS run's committed evidence against edited expect lines, pass --regrade --reason "<why>".`,
       );
     }
 
-    if (regrading && !graded) {
+    // A regrade re-reads what the first grading captured. With no first grading there is
+    // no stored evidence to re-read, so this is a mistyped command, not a second reading.
+    if (regrade && !alreadyGraded) {
       throw new Error(`nothing to regrade: ${resultPath} carries no grade yet. Grade it first without --regrade.`);
     }
 
     // Resolved before the judge runs, not after: a missing reason is an argument error, and
-    // discovering it once the judge has already been paid for wastes the call.
-    const regradeReason = regrading
+    // discovering it once the judge has already been paid for wastes the call. parseArgs
+    // takes the next token as a value, so `--regrade "expect_5 added"` states the reason
+    // inline and `--regrade --reason "..."` states it in its own flag; either is a reason.
+    const regradeReason = regrade
       ? (typeof args.reason === "string" ? args.reason : requireString(args.regrade, "--reason (or --regrade \"<why>\")"))
       : null;
 
     const result = loadResultRecord(resultPath);
     const judgeSpec = resolveJudge(args);
-    const executorRecord = loadExecutorRecord(runDir, regrading);
+    const executorRecord = loadExecutorRecord(runDir, regrade);
 
     if (executorRecord !== null && executorRecord.executor !== result.executor) {
       throw new Error(`executor.yaml ran ${executorRecord.executor}, result.yaml says ${result.executor}`);
@@ -253,80 +257,116 @@ const main = async () => {
     }
 
     const taskSpec = loadTaskSpec(path.join(ROOT, "tasks", `${result.task}.yaml`));
-    // A regrade runs long after verify deleted the workspace, so the committed evidence is
-    // all there is — which is exactly why it has to be committed. Re-snapshotting is not
-    // just impossible here, it would be wrong: the point is to re-judge the same material.
-    const workspacePath = regrading ? null : readWorkspacePath(runDir);
+    // A regrade asks whether the current expect lines would have graded this run
+    // differently, so it must not re-execute or re-capture anything: the workspace is gone
+    // by then anyway, deleted when the run was first graded. Re-running to test a wording
+    // change confounds the grading surface with fresh executor variance, which is the one
+    // thing a regrade exists to avoid.
+    const workspacePath = regrade ? null : readWorkspacePath(runDir);
 
-    if (workspacePath === null) {
-      assertEvidenceCommitted(runDir, taskSpec.template === undefined);
-    } else if (taskSpec.template === undefined) {
-      // Evidence shape follows the task shape, not whatever the workspace happens to
-      // contain: repo-shaped runs are graded on what changed since the baseline, question-
-      // shaped runs on the files themselves. Every workspace is a git repo now, so keying
-      // this off `.git` would quietly move every quiz run onto the diff path.
-      await snapshotOutput(workspacePath, path.join(runDir, "output"));
-    } else {
-      await writeDiff(workspacePath, path.join(runDir, "run.diff"), readBaselineSha(runDir));
+    // Evidence shape follows the task shape, not whatever the workspace happens to
+    // contain: repo-shaped runs are graded on what changed since the baseline, question-
+    // shaped runs on the files themselves. Every workspace is a git repo now, so keying
+    // this off `.git` would quietly move every quiz run onto the diff path.
+    if (workspacePath !== null) {
+      if (taskSpec.template === undefined) {
+        await snapshotOutput(workspacePath, path.join(runDir, "output"));
+      } else {
+        await writeDiff(workspacePath, path.join(runDir, "run.diff"), readBaselineSha(runDir));
+      }
     }
 
-    const verdict = judgeExpectations(taskSpec.input, taskSpec.expect, await buildEvidence(runDir), judgeSpec);
+    // Present is not enough: a regrade nobody else can reproduce is one person's assertion
+    // about a run, while the grade it stands beside in a report is everyone's. `output/` is
+    // gitignored unless a run force-added it, so a clone that did not make the run is the
+    // ordinary way to arrive here with nothing to re-read.
+    if (regrade) {
+      assertEvidenceCommitted(runDir, taskSpec.template === undefined);
+    }
+
+    const evidence = await buildEvidence(runDir);
+
+    // Tracked but empty: the snapshot was committed as an empty tree, or the diff came back
+    // clean. Judging an empty string would score the run as if it had produced nothing.
+    if (regrade && evidence.trim().length === 0) {
+      throw new Error(`no stored evidence in ${runDir}; a regrade re-reads run.diff or output/, and neither has anything in it`);
+    }
+
+    // A regrade asks what the current expect lines make of this run. It sends the judge the
+    // task input as it stands now, so an input that has been reworded since the run shows the
+    // judge a question the executor was never asked — grading old evidence against a new
+    // prompt. That is not a second reading of the run, it is a mismatch, and it is silent.
+    if (regrade) {
+      const currentSha = inputSha(taskSpec.input);
+
+      if (result.input_sha === undefined) {
+        console.warn(
+          `verify: ${result.run} predates input_sha, so the input it was given cannot be checked against `
+            + `tasks/${result.task}.yaml as it stands now. If the input has been reworded since, this regrade `
+            + "is grading old evidence against a new question — read the task notes before trusting it.",
+        );
+      } else if (result.input_sha !== currentSha) {
+        throw new Error(
+          `task input changed since ${result.run} ran (${result.input_sha} -> ${currentSha}). A regrade re-reads `
+            + "stored evidence against the current spec, so it would show the judge a prompt this run never saw. "
+            + "Re-run the task on the new input instead, or restore the input the run was given.",
+        );
+      }
+    }
+
+    const verdict = judgeExpectations(taskSpec.input, taskSpec.expect, evidence, judgeSpec);
 
     if (!verdict.ok) {
       throw new Error(`judge failed: ${verdict.error}`);
     }
 
     const pass = Object.values(verdict.expects).every(status => status === "pass");
-    const judgeRecord = { ...judgeSpec, self_judged: judgeSpec.agent === result.executor };
     const sha = expectSha(taskSpec.expect);
+    // A regrade is append-only like every other record: it lands in its own dir beside the
+    // source, so the original grading stays readable as what the task said at the time.
+    const targetDir = regrade ? nextRegradeDir(runDir) : runDir;
     // Rebuilt field by field rather than spread: loadResultRecord leaves `expects` and
     // `pass` as undefined keys, so spreading would strand `judge` below them in the yaml.
     const gradedResult: ResultRecord = {
       task: result.task,
-      run: result.run,
+      run: regrade ? path.basename(targetDir) : result.run,
       executor: result.executor,
       variant: result.variant,
       skill_version: result.skill_version,
+      ...(result.input_sha === undefined ? {} : { input_sha: result.input_sha }),
       created: result.created,
+      ...(regrade ? { regrade_of: result.run, regrade_reason: regradeReason as string, regraded_at: new Date().toISOString() } : {}),
       executor_model: executorRecord === null ? result.executor_model ?? null : executorRecord.model,
       executor_exit: executorRecord === null ? result.executor_exit : executorRecord.exit ?? undefined,
-      judge: judgeRecord,
+      // Copied from executor.yaml rather than re-derived: run-executor measured it, and
+      // the raw capture it measured from is gitignored, so result.yaml is where a reader
+      // of the eval PR can still see what the run cost.
+      usage: executorRecord === null ? result.usage : executorRecord.usage,
+      judge: { ...judgeSpec, self_judged: judgeSpec.agent === result.executor },
       expect_sha: sha,
       expects: verdict.expects,
       pass,
+      // A retraction is a fact about the run — its deliverable never reached the evidence —
+      // so it survives a re-reading of that evidence. Dropping it here would launder an
+      // excluded run back into a table by way of a rubric edit.
+      ...(result.retracted === undefined ? {} : { retracted: result.retracted }),
     };
 
-    if (result.retracted !== undefined) {
-      gradedResult.retracted = result.retracted;
+    if (regrade) {
+      await mkdir(targetDir, { recursive: true });
     }
 
-    if (regrading) {
-      // The superseded grade is kept whole. A record that said only "this was regraded"
-      // would leave the old table in a merged report unreconstructable, which is the
-      // failure mode an in-place edit to a grade otherwise causes.
-      gradedResult.regrades = [
-        ...(result.regrades ?? []),
-        {
-          at: new Date().toISOString(),
-          reason: regradeReason as string,
-          judge: judgeRecord,
-          superseded: {
-            expect_sha: result.expect_sha ?? null,
-            expects: result.expects ?? {},
-            pass: result.pass ?? false,
-          },
-        },
-      ];
-    }
-
-    await writeFile(resultPath, yaml.dump(gradedResult, { lineWidth: -1 }));
+    await writeFile(path.join(targetDir, "result.yaml"), yaml.dump(gradedResult, { lineWidth: -1 }));
 
     summarize(verdict.expects);
 
-    if (regrading) {
+    if (regrade) {
       const before = result.pass === true ? "pass" : "fail";
 
-      console.log(`regraded against expect_sha ${sha} (was ${result.expect_sha ?? "unrecorded"}): ${before} -> ${pass ? "pass" : "fail"}`);
+      console.log(
+        `${path.basename(targetDir)}: ${before} -> ${pass ? "pass" : "fail"}, `
+          + `expect_sha ${result.expect_sha ?? "unrecorded"} -> ${sha}`,
+      );
     }
 
     // After the summary, and never fatal. Workspaces sit outside the repo now, so nothing
@@ -337,16 +377,16 @@ const main = async () => {
     // `!== undefined` rather than `=== true`: parseArgs takes the next token as the value, so
     // `--keep-workspace true` yields the string "true", and reading that as "delete it" would
     // irreversibly discard the workspace the user asked to keep.
-    if (workspacePath === null) {
-      // regrade: there was never a workspace in this invocation to clean up.
-    } else if (args["keep-workspace"] !== undefined) {
-      console.log(`workspace kept at ${workspacePath}`);
-    } else {
-      try {
-        await rm(workspacePath, { recursive: true, force: true });
-        pruneEmptyParent(workspacePath);
-      } catch (error) {
-        console.warn(`verify: graded, but could not remove ${workspacePath}: ${error instanceof Error ? error.message : String(error)}`);
+    if (workspacePath !== null) {
+      if (args["keep-workspace"] !== undefined) {
+        console.log(`workspace kept at ${workspacePath}`);
+      } else {
+        try {
+          await rm(workspacePath, { recursive: true, force: true });
+          pruneEmptyParent(workspacePath);
+        } catch (error) {
+          console.warn(`verify: graded, but could not remove ${workspacePath}: ${error instanceof Error ? error.message : String(error)}`);
+        }
       }
     }
 

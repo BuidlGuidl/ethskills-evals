@@ -2,9 +2,10 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import yaml from "js-yaml";
-import type { TaskSpec } from "./types.js";
+import type { TaskSpec, TaskStatus } from "./types.js";
 
-const TASK_FIELDS = new Set(["skill", "input", "template", "expect", "runs", "notes"]);
+const TASK_FIELDS = new Set(["skill", "input", "template", "expect", "runs", "status", "notes"]);
+const TASK_STATUSES = new Set<TaskStatus>(["live", "retired"]);
 const REMOVED_TASK_FIELDS = new Set([
   "id",
   "domain",
@@ -13,6 +14,8 @@ const REMOVED_TASK_FIELDS = new Set([
   "runs_per_variant",
   "verifier",
 ]);
+
+export const inputSha = (input: string) => createHash("sha256").update(input).digest("hex").slice(0, 12);
 
 export const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -82,6 +85,18 @@ export const parseArgs = (allowed: Set<string>) => {
 export const expectSha = (expect: string[]) =>
   createHash("sha256").update(JSON.stringify(expect)).digest("hex").slice(0, 12);
 
+const parseStatus = (value: unknown): TaskStatus => {
+  if (value === undefined) {
+    return "live";
+  }
+
+  if (typeof value !== "string" || !TASK_STATUSES.has(value as TaskStatus)) {
+    throw new Error(`unknown task status: ${String(value)}`);
+  }
+
+  return value as TaskStatus;
+};
+
 export const loadTaskSpec = (taskPath: string): TaskSpec => {
   const loaded = loadYamlFile(taskPath);
 
@@ -107,6 +122,9 @@ export const loadTaskSpec = (taskPath: string): TaskSpec => {
     input: requireString(loaded.input, "input"),
     expect,
     runs: requireNumber(loaded.runs, "runs"),
+    // Absent means live: every task predating the field is one, and a spec that forgets it
+    // stays runnable rather than silently dropping out of the suite.
+    status: parseStatus(loaded.status),
   };
 
   if (loaded.template !== undefined) {

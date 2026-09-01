@@ -11,6 +11,15 @@ throughout.
 evidence with `yarn verify --regrade`; 18 runs, two passes over `gas-goal-001` and one over
 `gas-goal-002`.
 
+**Which reading this table is on.** The regrades are their own records —
+`artifacts/gas-goal-00{1,2}/<run-id>-regrade-<n>/result.yaml`, each naming its source in
+`regrade_of` and its rubric in `expect_sha`. The source runs keep the grades they were first
+given, and nothing in those files says a later reading exists: open
+`artifacts/gas-goal-001/2026-08-28T013258Z-codex-with-skill-1/result.yaml` and it still reads
+4/4 pass, the number this report exists to withdraw. The cells below are the **latest regrade**
+of each run; the "was" column is the first grading. Count from the `-regrade-2` dirs for
+`gas-goal-001` and the `-regrade-1` dirs for `gas-goal-002`.
+
 ## Why this exists
 
 Review of PR #57 found that `gas-goal-001` had no expect line requiring a measurement. Its
@@ -84,7 +93,8 @@ passed.
 
 `gas-quiz-001` 3/3 vs 0/3 and `gas-quiz-003` 3/3 vs 1/3 are unchanged; their expect lines were
 not touched, so they were not regraded and their records carry no `expect_sha`, which reads as
-"graded before the field existed".
+"graded before the field existed". For those two tasks there is only one reading, so the run
+dirs are the whole record.
 
 ## Rubric provenance, stated because it matters
 

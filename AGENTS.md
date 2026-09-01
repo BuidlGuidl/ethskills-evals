@@ -42,30 +42,11 @@ The skills under `skills/` are vendored at a pinned commit, and a task spec may 
 
 Runs are append-only. A re-run after a patch is a new run id, never an overwrite.
 
-**Editing an expect line is the one exception.** A rubric fix is not a new measurement, so
-re-running the executor to answer it pays for the wrong thing — and paying it is what makes
-editing a task's `input` look cheaper than editing its `expect`, which is the more
-destructive of the two. Re-judge the committed evidence instead:
-
-```bash
-yarn verify --run artifacts/<id>/<run-id> --judge-agent <agent> --judge-model <model> \
-  --regrade --reason "<what changed in the rubric and why>"
-```
-
-It refuses a run that was never graded, a graded run without the flag, a regrade with no
-stated reason, and — the one that decides whether any of this works — evidence git does not
-track. It never touches a workspace, and it appends the grade it superseded, whole, to
-`regrades:`. Regrade **every** run of the task, both variants, or the table mixes rubrics.
-
-Two fields exist to make that mixing visible rather than something a reader reconstructs
-from git log:
-
-- `expect_sha` fingerprints the expect list a grade was made against. Runs are comparable
-  only where it matches; a grade written before the field existed shows it as absent, which
-  means "unknown, probably an older rubric".
-- `retracted: <reason>` marks a grade that measures the harness rather than the model — a
-  killed CLI, or a deliverable that never reached the judge. Keep the record and exclude it
-  from the counts in the report, saying so; deleting it hides that the run happened.
+**Editing an expect line is the one exception**, and it is still not an overwrite — see
+"Revising expect lines" below. A rubric fix is not a new measurement, so re-running the
+executor to answer it pays for the wrong thing, and paying it is what makes editing a
+task's `input` look cheaper than editing its `expect`, which is the more destructive of
+the two.
 
 ## Hard rules
 
@@ -102,6 +83,28 @@ yarn verify --run artifacts/<id>/<run-id> --judge-agent claude --judge-model <yo
 
 Omit `--judge-model` to let that agent's CLI pick its own default. Keep one judge for the length of a benchmark. A grader that changes between runs makes `with_skill` and `no_skill` incomparable.
 
+### Revising expect lines: regrade, do not re-run
+
+When you change a task's `expect:` lines after runs exist, the question is whether the new wording grades the same answers differently. Re-running executors answers a different question, because it changes the grading surface and draws fresh samples at once.
+
+```bash
+yarn verify --run artifacts/<id>/<run-id> --regrade --reason "<what changed in the rubric and why>" \
+  --judge-agent claude --judge-model <model>
+```
+
+`--regrade` re-judges a run's stored evidence (`run.diff`, `output/`) against the task spec as it stands now. It never re-executes, never touches the source run dir, and writes `<run-id>-regrade-<n>/result.yaml` with `regrade_of` naming the run it re-read and `regrade_reason` saying why. Grade every run of the task, not the failures only — a wording change that flips a fail to a pass usually flips something the other way too. Hold the judge fixed at whatever graded the run originally; changing the wording and the judge together tells you nothing about either. A regrade is a second reading of one run, never a second run: never add it to a pass tally beside its source.
+
+It refuses a run that was never graded, a graded run without the flag, a regrade with no stated reason, and — the one that decides whether any of this works — evidence git does not track. Two fields make a mixed rubric visible rather than something a reader reconstructs from git log:
+
+- `expect_sha` fingerprints the expect list a grade was made against, and is written on every grade, first or re-reading. Runs are comparable only where it matches; a grade written before the field existed shows it as absent, which means "unknown, probably an older rubric". A regrade dir and its source disagreeing on it is the normal case — that disagreement is the regrade's whole point.
+- `retracted: <reason>` marks a grade that measures the harness rather than the model — a killed CLI, or a deliverable that never reached the judge. It is carried into a regrade of that run, because the deliverable did not reappear. Keep the record and exclude it from the counts in the report, saying so; deleting it hides that the run happened.
+
+**A source run's `result.yaml` does not know it was regraded.** The pointer runs one way — `regrade_of` names the source, nothing in the source names the regrade — so a reader who opens the run dir, or a tool that walks `artifacts/*/*/result.yaml`, sees the superseded grade with nothing marking it stale. `run-stats` skips `-regrade-` dirs for its cost tables, which is right (a regrade spawned no executor and has no cost), and it never reads `pass` at all. Pass tallies are read by hand, so the report is the only thing that can say which reading a table is on. Say it, and name the regrade dirs.
+
+The evidence a regrade re-reads is committed — `run.diff` for template-seeded runs, a force-added `output/` for the question-shaped ones — so it works from any clone that has the run dir. Where `output/` was left ignored, which is the default for a bare task that snapshots a whole scaffold, the evidence exists only on the machine that made the run: regrade there, and commit the records.
+
+**Rewording `input:` is not a wording change a regrade can absorb.** The judge is sent the task input as it stands now, so a regrade of a run made before the rewording shows the judge a question the executor was never asked, and grades old evidence against a new prompt. `setup` records `input_sha` on every run for exactly this: `--regrade` hard-fails when the current input hashes differently, and warns when the run predates the field and cannot be checked at all. A reworded input means a fresh baseline in both variants, never a regrade — and the old grades are not comparable to the new ones, which is a fact about the *input*, not about the expect lines.
+
 ## Isolation
 
 Tooling resolves context by walking *up* the filesystem, and every such walk used to end in this repo. Three things stop it.
@@ -126,8 +129,15 @@ template: templates/se-2         # optional; omit for a bare workspace (just TAS
 expect:                          # judged conditions, at least one
   - "..."
 runs: 3                          # per variant
+status: live                     # optional; live | retired. Absent means live.
 notes: free text                 # optional
 ```
+
+**Retiring a task is a field, not a sentence in `notes`.** `status: retired` keeps the spec and
+every artifact under it — the record of what it once graded stays readable — and makes `setup`
+refuse to build a workspace for it, so a task whose claim the skill no longer makes cannot quietly
+re-enter a benchmark table. Anything that lists tasks filters on this field; prose in `notes` is
+for *why*, and nothing reads it.
 
 Every workspace seed — generated scaffold or hand-authored ground truth — is committed under `templates/`; `templates/README.md` records what each one is and how to regenerate it. Commit sources only: dependencies (`node_modules/`, `lib/`) stay out, and `setup` copies the seed exactly as it stands on disk, so install them once per machine before the first run — the task notes carry the exact pinned commands and what a working install looks like (e.g. `forge test` → 39 passing). Unpinned installs silently rot the ground truth a benchmark rests on.
 
@@ -153,18 +163,28 @@ task: gas-cost-estimate-001
 run: 2026-07-06T093000Z-claude-with-skill-1
 executor: claude
 variant: with_skill
-skill_version: 191dcc1         # git short sha of the skill source; null for no_skill
+skill_version: 191dcc1                # git short sha of the skill source; null for no_skill
+input_sha: 4f2b9c1de803               # sha256 of the input this run was given; absent on pre-2026-08-28 runs
 created: 2026-07-06T09:30:00Z
-executor_model: claude-opus-5   # what actually ran; null when the CLI picked its default
-executor_exit: 0                # verify refuses anything else unless --grade-failed-run
-judge:                         # who graded this run
+executor_model: claude-opus-5         # what actually ran; null when the CLI picked its default
+executor_exit: 0                      # verify refuses anything else unless --grade-failed-run
+usage:                                # what the run cost; absent on runs made before 2026-08-27
+  duration_s: 812                     # the harness's own wall clock — the one figure both stacks share
+  turns: 34                           # claude only
+  cost_usd: 4.66                      # claude only; codex exec reports no price
+  input_tokens: 12                    # claude only; the UNCACHED remainder, double digits on a real run
+  cache_creation_input_tokens: 47453  # claude only; where a skill's own prompt lands
+  cache_read_input_tokens: 203362     # claude only; the context re-read on every turn
+  output_tokens: 31748                # claude only
+  total_tokens: 282575                # both stacks; the sum of the four above on claude, codex's own line on codex
+judge:                                # who graded this run
   agent: claude
-  model: claude-opus-4-8       # null when the agent's CLI picked its own default
-  self_judged: false           # true when judge and executor are the same agent
-expects:                       # judged expect lines, in task-spec order
+  model: claude-opus-4-8              # null when the agent's CLI picked its own default
+  self_judged: false                  # true when judge and executor are the same agent
+expects:                              # judged expect lines, in task-spec order
   expect_1: pass
   expect_2: fail
-pass: false                    # true only when every expect passed
+pass: false                           # true only when every expect passed
 ```
 
 Beside it, per run: `baseline.sha` and `workspace.path` (setup; the pointer is local-only), `executor.yaml` + `transcript.md` (run-executor), `run.diff` or `output/` (verify).
@@ -182,7 +202,7 @@ category: stale-knowledge
 symptom: "Computes USD cost from a remembered ETH price instead of checking one."
 expected_pattern: "Fetch ETH/USD live (Chainlink feed, CoinGecko) before quoting dollars."
 skill_section: "What You Probably Got Wrong"   # the section that should prevent this, or "none" for a gap
-status: open                   # open | fixed | wontfix
+status: open                   # open | fixed | wontfix | retracted (a regrade showed it was the expect lines, not the run)
 ```
 
 When the same mistake has been measured on more than one stack, `frequency` takes a stack
@@ -192,14 +212,47 @@ key per measurement instead of the two bare variant lines — see
 
 ## Reports
 
+**Every cost or duration number in a report comes out of `yarn run-stats`, never off a keyboard.**
+
+```bash
+yarn run-stats --tasks <id>,<id> [--since 2026-08-27] [--variant no_skill] [--runs]
+```
+
+It reads the `## run stats` footer `run-executor` writes into each committed `transcript.md`,
+prints per-task medians per variant with the cost range beside them, and says `(n with no footer)`
+for runs made before that footer existed — whose cost and duration this repo simply does not have.
+Print the range as well as the median: at `n=3` a goal task's cheapest and dearest run can differ by
+more than the delta the median is being read for, and a median that carries a headline needs its
+spread printed next to it. A number that `run-stats` cannot produce does not go in the table; write
+"not measured" and say what it would take to measure it. This paragraph exists because a wallets
+report once carried baseline costs assembled by hand out of a *benchmark-wide* median in an older
+report — one cell took its duration from an aggregate over seven tasks and its cost from the other
+variant's column — and no reviewer could have caught it without re-deriving every cell.
+
 State the executor, its model, the judge, and the run count at the top of every report. If any run came back `self_judged: true`, say so there — on a single-stack benchmark that is every run, and it is a caveat on the numbers, not a defect in them.
+
+Pass counts are not the whole verdict. `result.yaml` carries a `usage` block per run, so
+give the cost row real numbers rather than "no reduction observed": duration and tokens on
+both stacks, dollars on claude. Two arms that both pass every line are not equivalent if one
+of them took twice the tokens to get there, and on a saturated task that difference is the
+result. Dollars for a codex benchmark have to be derived from tokens and a published price —
+say so in the report rather than printing a figure the harness never measured.
+
+Quote `total_tokens`, never `input_tokens`. On claude the run's input is spread over three
+fields and `input_tokens` alone is the uncached leftover — a skill's whole prompt is billed
+through `cache_creation_input_tokens` and re-read every turn through
+`cache_read_input_tokens`, so a total that skips them cannot see the cost the skill adds.
+And `total_tokens` means different things on the two stacks: claude's counts every cache
+read, codex's `tokens used` line is its own accounting and comes out several times smaller
+for comparable work. Compare tokens between variants within one stack; comparing them across
+stacks is comparing two units.
 
 Every report ends with this table. Answer the last row honestly: sometimes the eval is the wrong artifact, not the skill.
 
 | Question | Answer |
 | --- | --- |
 | Did the skill improve pass rate? | raw counts, e.g. `2/3 vs 0/3` |
-| Did it reduce time/tokens? | yes/no, if observed |
+| Did it reduce time/tokens? | per-variant medians from `usage`, e.g. `808s / 283k tokens vs 1277s / 431k` |
 | Did it create negative deltas? | list them |
 | What mistakes repeated without the skill? | mistake ids |
 | What mistakes remained with the skill? | mistake ids |
