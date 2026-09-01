@@ -28,6 +28,12 @@ the workspaces. The quiz `output/answer.md` files are committed as the graded
 deliverable; the goal runs' `output/` trees are not, per AGENTS.md — their
 `run.diff` carries the same files.
 
+These runs carry no `baseline.sha` or `executor.yaml`, which AGENTS.md lists as
+committed. Nothing wrote them: the code that does landed in `5aef6cb`, which is
+not an ancestor of `43d5be6` and reached this branch only with the merge at
+`218931d`, alongside the out-of-tree workspace root and after these runs. They
+cannot be reconstructed, and the next cohort on the merged harness gets them.
+
 ## Results
 
 | Task | no_skill | with_skill | Delta |
