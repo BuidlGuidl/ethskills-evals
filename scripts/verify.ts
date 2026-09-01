@@ -4,6 +4,7 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import yaml from "js-yaml";
+import { guardJudgeBlindness } from "../lib/blindness.js";
 import { buildEvidence, snapshotOutput, writeDiff } from "../lib/evidence.js";
 import { judgeExpectations } from "../lib/judge.js";
 import { expectSha, inputSha, isRecord, loadTaskSpec, loadYamlFile, parseArgs, requireString } from "../lib/task.js";
@@ -14,8 +15,9 @@ import { pruneEmptyParent, readWorkspacePath } from "../lib/workspace.js";
 const ROOT = process.cwd();
 const EXECUTORS = new Set<Executor>(["claude", "codex"]);
 const VARIANTS = new Set<Variant>(["no_skill", "with_skill"]);
-const VERIFY_ARGS = new Set(["run", "judge-agent", "judge-model", "grade-failed-run", "keep-workspace", "regrade", "reason"]);
-
+const VERIFY_ARGS = new Set([
+  "run", "judge-agent", "judge-model", "grade-failed-run", "keep-workspace", "regrade", "reason", "allow-skill-mention",
+]);
 // The judge is a fresh, blind process, never the orchestrator's own contaminated
 // context. --judge-agent is required rather than defaulting to the run's executor:
 // the default was silent, and a batch graded by a forgotten flag looks exactly like a
@@ -313,6 +315,11 @@ const main = async () => {
         );
       }
     }
+
+    // `!== undefined` rather than `=== true`, per the parseArgs note below: the flag's
+    // value is whatever token follows it, so `--allow-skill-mention true` is the string
+    // "true" and reading that as "not passed" would fail a grade the operator cleared.
+    guardJudgeBlindness(evidence, args["allow-skill-mention"] !== undefined);
 
     const verdict = judgeExpectations(taskSpec.input, taskSpec.expect, evidence, judgeSpec);
 
