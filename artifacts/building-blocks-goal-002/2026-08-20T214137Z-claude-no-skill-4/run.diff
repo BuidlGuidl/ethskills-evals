@@ -1,0 +1,3909 @@
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..3895fd8
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,5 @@
++out/
++cache/
++broadcast/
++.env
++docs/
+diff --git a/.gitmodules b/.gitmodules
+new file mode 100644
+index 0000000..f5a571c
+--- /dev/null
++++ b/.gitmodules
+@@ -0,0 +1,6 @@
++[submodule "lib/openzeppelin-contracts"]
++	path = lib/openzeppelin-contracts
++	url = https://github.com/OpenZeppelin/openzeppelin-contracts
++[submodule "lib/forge-std"]
++	path = lib/forge-std
++	url = https://github.com/foundry-rs/forge-std
+diff --git a/README.md b/README.md
+new file mode 100644
+index 0000000..00cf3aa
+--- /dev/null
++++ b/README.md
+@@ -0,0 +1,324 @@
++# yvUSDC — Aerodrome USDC/WETH yield vault (Base)
++
++An ERC-4626 vault denominated in USDC. Deposits are paired with WETH into the Aerodrome
++volatile USDC/WETH pool, the LP is staked in that pool's gauge, and a keeper calls `harvest()`
++to claim AERO emissions, sell them for USDC, and compound them back into the position.
++
++> **Read "Risks" before depositing.** This vault holds an LP position, not USDC. A depositor's
++> USDC balance is exposed to ETH price movement and impermanent loss. It is not principal-protected.
++
++```
++                   deposit USDC                          harvest()
++   depositor  ──────────────────►  YieldVault  ◄────────────────────  keeper
++                  yvUSDC shares    (ERC-4626)
++                                        │  idle buffer (5%) stays here
++                                        │  everything above it is pushed to
++                                        ▼
++                        AerodromeUsdcWethStrategy
++                                        │
++              ┌─────────────────────────┼──────────────────────────┐
++              ▼                         ▼                          ▼
++     Aerodrome Router          Aerodrome vAMM LP           Aerodrome Gauge
++    (swap / add / remove)      (USDC + WETH)              (stakes LP, pays AERO)
++              ▲                         ▲                          │
++              └───────────── AERO sold back to USDC ───────────────┘
++
++     Chainlink USDC/USD + ETH/USD + AERO/USD price every one of those arrows
++```
++
++## Contracts
++
++| File | Role |
++| --- | --- |
++| `src/YieldVault.sol` | ERC-4626 vault. Share accounting, fees, deposit cap, pause, keeper entry point. |
++| `src/strategies/AerodromeUsdcWethStrategy.sol` | Owns the LP position: invest, harvest, unwind. |
++| `src/libraries/FairLpMath.sol` | Manipulation-resistant LP valuation (fair-reserves method). |
++| `src/libraries/ChainlinkLib.sol` | Chainlink reads with staleness / sanity checks. |
++| `src/BaseAddresses.sol` | Base mainnet addresses, each asserted against a live fork in the tests. |
++| `script/Deploy.s.sol` | Deployment, deriving the pool and gauge on-chain. |
++
++The vault talks to the strategy through `IStrategy`, so a replacement strategy can be swapped in
++with `setStrategy` without redeploying the vault or migrating depositors.
++
++## Why these integrations
++
++**Aerodrome, for the DEX.** It is the dominant AMM on Base and the venue where Base's liquidity
++incentives actually land. Two properties made it the right fit rather than just the biggest name:
++
++- *The yield has a real source.* The gauge pays AERO emissions voted to this pool, on top of the
++  0.30% swap fees that accrue into the reserves. `harvest()` has something concrete to claim and
++  compound. A plain Uniswap V2-style pool with no gauge would leave nothing for a keeper to do.
++- *The LP is a fungible ERC-20 over a constant-product curve.* `xy = k` means the position can be
++  valued from reserves with a closed-form, manipulation-resistant formula (below), sized with simple
++  arithmetic, and unwound pro-rata. Uniswap V3 / Aerodrome Slipstream would give far better capital
++  efficiency, but each position is an NFT with a tick range that has to be actively rebalanced, and
++  valuing it correctly is materially harder. That is the wrong trade for a first version — see
++  "What a v2 should change".
++
++**The gauge, not just the pool.** The strategy takes the *gauge* address in its constructor and reads
++the pool back out of `gauge.stakingToken()`. This makes it impossible to stake LP into a gauge that
++pays emissions for a different pool. The constructor additionally checks the reward token is AERO,
++that the pool is volatile rather than stable (the valuation math assumes `xy = k`), and that the
++router derives the same pool address from `(USDC, WETH, volatile)`.
++
++**Chainlink, for pricing.** This is the load-bearing choice. Everything the strategy does is bounded
++by an oracle price, never by the pool's own quote:
++
++| Operation | Guard |
++| --- | --- |
++| `totalAssets()` | LP valued from `k` and oracle prices, not from spot reserves |
++| every swap | `amountOutMin` derived from the oracle, less `maxSlippageBps` |
++| `addLiquidity` | LP received must be worth ≥ the tokens spent, less `maxSlippageBps` |
++| `removeLiquidity` | tokens received must be worth ≥ the LP burned, less `maxSlippageBps` |
++
++Chainlink is used rather than Aerodrome's built-in TWAP because the vault's share price has to be
++correct *in the same transaction* as a deposit or a redemption. A TWAP over recent observations can
++still be pushed by a determined attacker across a few blocks, and on Base a single sequencer orders
++those blocks. The Chainlink feeds used are all first-party Base mainnet feeds, checked for a positive
++answer and a timestamp inside a configured heartbeat; a stale feed halts trading and quoting rather
++than falling back to the pool.
++
++### Fair-reserves LP pricing
++
++Pricing an LP token as `reserve0 * price0 + reserve1 * price1` is the classic way to lose a vault.
++An attacker flash-borrows, pushes the pool far from market, mints or burns shares at the distorted
++price, restores the pool, and keeps the difference.
++
++`FairLpMath` instead reconstructs the reserves the pool *would* hold if it were balanced at the
++oracle prices. For a constant-product pool, `k = r0 · r1` is invariant under swaps, so:
++
++```
++balanced at oracle prices:  r0' · p0 == r1' · p1   and   r0' · r1' == k
++  =>  poolValue = r0'·p0 + r1'·p1 = 2 · √k · √(p0 · p1)
++```
++
++The result depends only on `k` and the oracle prices. Trading against the pool cannot move it —
++`test_valuationIsInvariantToReserveManipulation` moves the spot price 16× and the valuation does not
++budge, while a naive spot valuation inflates by more than 50%. Fees earned by the pool *do* raise
++`k`, so genuine LP appreciation is picked up automatically, harvest or no harvest.
++
++## Deployment
++
++Prerequisites: `foundry`, a Base RPC, and a funded deployer key.
++
++```bash
++forge install
++forge build
++forge test
++```
++
++Set the environment, then run the script:
++
++```bash
++export PRIVATE_KEY=0x...          # deployer
++export OWNER=0x...                # multisig or timelock — owns vault + strategy
++export TREASURY=0x...             # receives performance-fee shares
++export KEEPER=0x...               # allowed to call vault.harvest()
++export DEPOSIT_CAP=250000000000   # optional, USDC units (default 250,000 USDC)
++export BASE_RPC_URL=https://...
++export BASESCAN_API_KEY=...
++
++forge script script/Deploy.s.sol:Deploy --rpc-url base --broadcast --verify
++```
++
++The script resolves the USDC/WETH pool from `Router.poolFor(...)` and its gauge from
++`Voter.gauges(pool)`, and refuses to continue if the gauge is missing, dead, or points at a different
++pool. No pool or gauge address is hardcoded anywhere.
++
++It deploys the vault owned by the deployer so it can wire everything in one transaction, then calls
++`transferOwnership(OWNER)`. **Ownership is two-step: `OWNER` must call `acceptOwnership()` on both
++the vault and the strategy before the deployment is complete.** Verify afterwards:
++
++```bash
++cast call $VAULT "owner()(address)"     --rpc-url base   # == OWNER
++cast call $STRATEGY "owner()(address)"  --rpc-url base   # == OWNER
++cast call $VAULT "strategy()(address)"  --rpc-url base   # == STRATEGY
++cast call $VAULT "totalAssets()(uint256)" --rpc-url base
++```
++
++Start with a low `DEPOSIT_CAP` and raise it as the position proves out. The cap should be sized
++against the pool, not against demand — see "Operational limits".
++
++### Base addresses used
++
++| | Address |
++| --- | --- |
++| USDC | `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` |
++| WETH | `0x4200000000000000000000000000000000000006` |
++| AERO | `0x940181a94A35A4569E4529A3CDfB74e38FD98631` |
++| Aerodrome Router | `0xcF77a3Ba9A5CA399B7c97c74d54e5b1Beb874E43` |
++| Aerodrome PoolFactory | `0x420DD381b31aEf6683db6B902084cB0FFECe40Da` |
++| Aerodrome Voter | `0x16613524e02ad97eDfeF371bC883F2F5d6C480A5` |
++| Chainlink USDC/USD | `0x7e860098F58bBFC8648a4311b374B1D669a2bc6B` |
++| Chainlink ETH/USD | `0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70` |
++| Chainlink AERO/USD | `0x4EC5970fC728C5f65ba413992CD5fF6FD70fcfF0` |
++
++Every one of these is asserted against live Base state by `test/fork/BaseFork.t.sol`, including
++symbols, decimals, feed decimals, and that the gauge is alive.
++
++## Keeper operation
++
++One entry point:
++
++```solidity
++vault.harvest() returns (uint256 rewardsUsdc, uint256 feeShares, uint256 deployed)
++```
++
++Restricted to addresses in `isKeeper` (and the owner). In order, it:
++
++1. pushes idle USDC above the 5% liquidity buffer into the strategy;
++2. claims AERO from the gauge and sells it for USDC along `rewardRoute`;
++3. mints `performanceFeeBps` of the realised rewards to the treasury as shares;
++4. swaps half the strategy's idle USDC for WETH, adds liquidity, and stakes the LP.
++
++Deposits and the harvest are deliberately deployed in the same pass, so one harvest makes one swap
++rather than two.
++
++**Cadence.** Once or twice a day is the right starting point. There is no time-based state, so
++harvesting more often is safe but wasteful: each pass pays gas and one round of swap fees, and the
++depth cap (below) means it may not deploy much more than a less frequent pass would. Harvesting less
++often is also safe — AERO keeps accruing in the gauge and `pendingRewards()` reports it.
++
++**Suggested trigger.** Call when `strategy.pendingRewards()` exceeds a value that comfortably covers
++gas, or when `vault.idleAssets()` has drifted well above the buffer. Both are plain view calls.
++
++**Simulate first.** `harvest()` reverts rather than trading at a bad price. Always `eth_call` it
++before broadcasting, and skip the block on revert instead of retrying blindly:
++
++| Revert | Meaning | Action |
++| --- | --- | --- |
++| `StalePrice(feed, updatedAt)` | a Chainlink feed is past its heartbeat | wait; alert if it persists |
++| `SlippageExceeded(out, minOut)` | the pool disagrees with the oracle by more than `maxSlippageBps` | wait for arbitrage to realign the pool |
++| `INSUFFICIENT_OUTPUT_AMOUNT` | same, caught by the router's own check | as above |
++| `NotKeeper(caller)` | keeper not authorised | check `isKeeper` |
++
++None of these strand funds. Emissions keep accruing in the gauge and the position stays staked.
++
++**Public view calls worth monitoring:** `vault.totalAssets()`, `vault.convertToAssets(1e18)` (share
++price — should only fall on a harvest that deploys new capital, see "Costs"), `vault.idleAssets()`,
++`strategy.pendingRewards()`, `strategy.totalLpBalance()`.
++
++### Owner runbook
++
++| Task | Call |
++| --- | --- |
++| Stop new deposits | `vault.pause()` |
++| Stop compounding, keep claiming | `strategy.setEmergencyExit(true)` |
++| Unwind the position in stages | `strategy.unwind(type(uint256).max)`, repeatedly |
++| Retire / replace the strategy | `vault.setStrategy(newOrZero)` |
++| Retune trade sizing | `strategy.setMaxTradeReserve(bps)`, `setMaxSlippage(bps)` |
++| Repoint the AERO sale | `strategy.setRewardRoute(route)` |
++
++**Migration order matters.** `setStrategy` calls `liquidateAll()` and reverts if more than a dust
++amount is left behind, and one transaction can only unwind a bounded slice of the pool. So:
++run a final `harvest()` while the strategy is still attached, then `unwind(type(uint256).max)`
++repeatedly across separate blocks until `totalLpBalance()` is zero and no WETH is left, and only
++then call `setStrategy`.
++
++## Fees and costs
++
++| Parameter | Default | Cap | Goes to |
++| --- | --- | --- | --- |
++| `performanceFeeBps` | 10% | 20% | treasury, as shares, on realised rewards only |
++| `withdrawalFeeBps` | 0.50% | 1% | **stays in the vault** |
++| `bufferBps` | 5% | — | idle USDC held for small exits |
++
++The withdrawal fee is not revenue. Unwinding an LP position costs real slippage, and someone has to
++pay it. Rather than silently returning less than `previewRedeem` promised — which would break
++ERC-4626 — the vault quotes the fee up front and keeps it, so the cost lands on the exiting holder
++instead of being socialised to everyone who stayed. Only half of an unwind has to be swapped, so
++`withdrawalFeeBps ≥ maxSlippageBps / 2` is what makes an exit self-funding, including the final exit
++where there is no remaining position to over-unwind against. Keep that relationship if you retune.
++
++**Entry cost is socialised.** The first harvest that deploys new capital swaps half of it, which
++costs the pool fee plus price impact — roughly 0.2% at default settings. It shows up as a one-off dip
++in the share price, borne by all holders at deploy time, and is recovered by emissions.
++`test_sharePriceRisesOnceTheCapitalIsDeployed` pins this behaviour down explicitly.
++
++`previewDeposit` / `previewMint` / `previewWithdraw` / `previewRedeem` are all exact — integration
++tests assert `redeem()` returns precisely what `previewRedeem()` quoted, and that a
++`previewRedeem → previewWithdraw` round trip can never return more shares than it started with.
++
++## Operational limits
++
++**Trade size is capped by pool depth.** On a constant-product pool, swapping a fraction `f` of a
++reserve costs roughly `f + poolFee` against the mid price. `maxTradeReserveBps` (default 0.25%) caps
++every swap at that fraction of the relevant reserve, which is what actually keeps each operation
++inside `maxSlippageBps` (default 1%) given Aerodrome's 0.30% volatile fee. Keep
++`maxTradeReserveBps + poolFee` comfortably under `maxSlippageBps`; the default leaves headroom for
++the pool being somewhat off-oracle when the keeper arrives.
++
++Two consequences, both intentional:
++
++- **Deposits deploy over several harvests.** A large deposit is not rejected; it sits as idle USDC
++  (still counted in `totalAssets`, still withdrawable without slippage) and is deployed a slice at a
++  time. Anything the cap holds back simply waits for the next pass.
++- **Large exits are staged, not blocked.** A redemption bigger than one call can unwind reverts with
++  `InsufficientLiquidity(requested, available)`, naming what is available now. Splitting the exit
++  across transactions clears it at essentially the same total value —
++  `test_oversizedExitRevertsThenClearsInChunks` checks precisely that.
++
++**Size the deposit cap to the pool, not to demand.** At the time of writing, the live
++Aerodrome vAMM USDC/WETH pool holds roughly 1,800 WETH and 4.2M USDC (≈ $8.3M). Against that depth
++the fork tests measure a single-transaction exit capacity in the tens of thousands of USDC. The
++250,000 USDC default cap is about 3% of the pool; going materially above that makes exits slow and
++the position harder to unwind in a stress event.
++
++## Risks
++
++- **This is not a USDC-yield product.** Half the deposit is converted to WETH. If ETH moves, the
++  USDC-denominated value moves with it, minus impermanent loss. A depositor who wanted USDC exposure
++  and gets back less USDC after ETH falls has not been rugged — that is what an LP position does.
++  Anything front-ending this vault must say so plainly.
++- **Round-trip cost.** Deposit → deploy → unwind → withdraw pays swap fees and slippage twice, plus
++  the withdrawal fee. Short holding periods lose money; the position needs time in the gauge.
++- **Oracle risk.** Correctness depends on three Chainlink feeds. A stale feed halts harvests and
++  `totalAssets()` — safe, but it does block deposits and withdrawals until it recovers. A *wrong*
++  feed would mis-price shares; the heartbeats and positive-answer checks are the only defence, and
++  there is no secondary oracle in this version.
++- **Oracle lag.** Feeds update on deviation or heartbeat, so between updates the vault's share price
++  can lag the market slightly. Round-tripping that gap costs the withdrawal fee, which makes it
++  unattractive at realistic sizes, but it is not eliminated.
++- **Emissions risk.** AERO emissions to this pool are set by veAERO voting each epoch and can fall to
++  near zero. The vault keeps working; the yield does not.
++- **Admin trust.** The owner can replace the strategy, retune slippage, and pause deposits. It cannot
++  withdraw user funds directly — `sweep` explicitly rejects USDC, WETH, AERO and the LP token — but a
++  malicious strategy could. Use a multisig, ideally behind a timelock.
++- **Not audited.** This is a first version.
++
++## Testing
++
++```bash
++forge test                                       # 70 local tests, no network needed
++forge test --gas-report
++BASE_RPC_URL=https://mainnet.base.org forge test --match-path 'test/fork/*'   # + 6 fork tests
++```
++
++| Suite | Covers |
++| --- | --- |
++| `test/unit/FairLpMath.t.sol` | valuation invariance under manipulation, fee accrual, fuzzed |
++| `test/unit/ChainlinkLib.t.sol` | staleness, incomplete rounds, future timestamps, bad decimals |
++| `test/unit/YieldVault.t.sol` | ERC-4626 semantics, preview exactness, fees, cap, pause, access control, inflation attack |
++| `test/unit/Strategy.t.sol` | wiring checks, invest/harvest/withdraw, depth caps, oracle guards |
++| `test/integration/Lifecycle.t.sol` | multi-depositor flows, flash-loan sandwich, staged exits, migration |
++| `test/fork/BaseFork.t.sol` | every Base address and ABI, real gauge, real emissions, real round trip |
++
++The local suite runs against mocks that reproduce Aerodrome's actual semantics — fee taken off the
++input, `MINIMUM_LIQUIDITY` lock, optimal-ratio `addLiquidity` — sized to be in the same ballpark as
++the live pool. Both suites model the arbitrage that realigns the pool between keeper passes
++(`test/helpers/PoolArb.sol`); without it, consecutive harvests drift further and further from the
++oracle for reasons that never occur on a live chain.
++
++The fork tests are what verify the integration is real: they stake into the actual gauge, warp three
++days, and observe genuine AERO accrue before compounding it.
++
++## What a v2 should change
++
++- **Aerodrome Slipstream (concentrated liquidity)** for far better capital efficiency, at the cost of
++  NFT position management, tick rebalancing, and harder valuation.
++- **A withdrawal queue** so large exits are serviced by the keeper across blocks instead of being
++  refused, and the depth cap stops being user-visible.
++- **A second oracle** (a bounded Aerodrome TWAP as a sanity check on Chainlink) so a single feed
++  failure degrades rather than halts.
++- **Optional hedging** of the WETH leg, if the product is meant to be USDC-denominated yield rather
++  than an LP position with extra steps.
+diff --git a/TASK.md b/TASK.md
+new file mode 100644
+index 0000000..b09a7ac
+--- /dev/null
++++ b/TASK.md
+@@ -0,0 +1,8 @@
++Build the first version of our onchain yield vault on Base. Users deposit
++USDC; the strategy pairs it with WETH in DEX liquidity, and a keeper calls
++harvest() to claim and compound whatever the position earns.
++
++Work in this directory. Set up a Foundry project with the contracts and
++tests, make sure `forge build` and `forge test` pass, and include a short
++README.md explaining deployment, keeper operation, and why you selected
++the external integrations used by the strategy.
+diff --git a/foundry.lock b/foundry.lock
+new file mode 100644
+index 0000000..f302bde
+--- /dev/null
++++ b/foundry.lock
+@@ -0,0 +1,14 @@
++{
++  "lib/forge-std": {
++    "tag": {
++      "name": "v1.16.2",
++      "rev": "bf647bd6046f2f7da30d0c2bf435e5c76a780c1b"
++    }
++  },
++  "lib/openzeppelin-contracts": {
++    "tag": {
++      "name": "v5.1.0",
++      "rev": "69c8def5f222ff96f2b5beff05dfba996368aa79"
++    }
++  }
++}
+\ No newline at end of file
+diff --git a/foundry.toml b/foundry.toml
+new file mode 100644
+index 0000000..a527d04
+--- /dev/null
++++ b/foundry.toml
+@@ -0,0 +1,33 @@
++[profile.default]
++src = "src"
++out = "out"
++libs = ["lib"]
++test = "test"
++script = "script"
++solc_version = "0.8.24"
++evm_version = "cancun"
++optimizer = true
++optimizer_runs = 200
++via_ir = false
++bytecode_hash = "none"
++fs_permissions = [{ access = "read", path = "./" }]
++
++[lint]
++# `vault`, `asset`, `router`, ... are immutables that implement interface getters, so they must stay
++# lowerCamelCase; the naming lint is not applicable here.
++exclude_lints = ["screaming-snake-case-immutable", "screaming-snake-case-const"]
++
++[profile.default.fuzz]
++runs = 256
++
++[fmt]
++line_length = 120
++tab_width = 4
++bracket_spacing = false
++int_types = "long"
++
++[rpc_endpoints]
++base = "${BASE_RPC_URL}"
++
++[etherscan]
++base = { key = "${BASESCAN_API_KEY}", chain = 8453 }
+diff --git a/remappings.txt b/remappings.txt
+new file mode 100644
+index 0000000..094529f
+--- /dev/null
++++ b/remappings.txt
+@@ -0,0 +1,2 @@
++forge-std/=lib/forge-std/src/
++@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/
+diff --git a/script/Deploy.s.sol b/script/Deploy.s.sol
+new file mode 100644
+index 0000000..b699f55
+--- /dev/null
++++ b/script/Deploy.s.sol
+@@ -0,0 +1,96 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.24;
++
++import {Script} from "forge-std/Script.sol";
++import {console2} from "forge-std/console2.sol";
++import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
++
++import {YieldVault} from "../src/YieldVault.sol";
++import {AerodromeUsdcWethStrategy} from "../src/strategies/AerodromeUsdcWethStrategy.sol";
++import {BaseAddresses} from "../src/BaseAddresses.sol";
++import {IAerodromeRouter, IAerodromeVoter, IAerodromeGauge} from "../src/interfaces/IAerodrome.sol";
++
++/// @notice Deploys the vault and its Aerodrome strategy to Base.
++///
++/// Required environment:
++///   PRIVATE_KEY   deployer key
++///   OWNER         multisig / timelock that will own both contracts
++///   TREASURY      recipient of performance fee shares
++///   KEEPER        address allowed to call `vault.harvest()`
++/// Optional:
++///   DEPOSIT_CAP   initial cap on totalAssets, in USDC units (default: 250,000 USDC)
++///
++/// Usage:
++///   forge script script/Deploy.s.sol:Deploy --rpc-url base --broadcast --verify
++contract Deploy is Script {
++    function run() external returns (YieldVault vault, AerodromeUsdcWethStrategy strategy) {
++        require(block.chainid == BaseAddresses.CHAIN_ID, "not Base");
++
++        address owner = vm.envAddress("OWNER");
++        address treasury = vm.envAddress("TREASURY");
++        address keeper = vm.envAddress("KEEPER");
++        uint256 depositCap = vm.envOr("DEPOSIT_CAP", uint256(250_000e6));
++
++        // Resolve the pool and its gauge on-chain instead of trusting a pasted address.
++        address pool = IAerodromeRouter(BaseAddresses.AERODROME_ROUTER)
++            .poolFor(BaseAddresses.USDC, BaseAddresses.WETH, false, BaseAddresses.AERODROME_POOL_FACTORY);
++        address gauge = IAerodromeVoter(BaseAddresses.AERODROME_VOTER).gauges(pool);
++        require(gauge != address(0), "pool has no gauge");
++        require(IAerodromeVoter(BaseAddresses.AERODROME_VOTER).isAlive(gauge), "gauge not receiving emissions");
++        require(IAerodromeGauge(gauge).stakingToken() == pool, "gauge/pool mismatch");
++
++        uint256 pk = vm.envUint("PRIVATE_KEY");
++        address deployer = vm.addr(pk);
++
++        vm.startBroadcast(pk);
++
++        // The vault is deployed owned by the deployer so it can be wired up in one run; the last
++        // step hands it to `owner` (which then has to `acceptOwnership`). Note this must be
++        // `vm.addr(pk)` and not `msg.sender`, which inside a script is the default sender rather
++        // than the broadcasting key.
++        vault = new YieldVault(IERC20(BaseAddresses.USDC), "Yield USDC", "yvUSDC", deployer, treasury);
++
++        strategy = new AerodromeUsdcWethStrategy(
++            AerodromeUsdcWethStrategy.Config({
++                vault: address(vault),
++                usdc: BaseAddresses.USDC,
++                weth: BaseAddresses.WETH,
++                aero: BaseAddresses.AERO,
++                router: BaseAddresses.AERODROME_ROUTER,
++                gauge: gauge,
++                usdcUsdFeed: BaseAddresses.USDC_USD_FEED,
++                ethUsdFeed: BaseAddresses.ETH_USD_FEED,
++                aeroUsdFeed: BaseAddresses.AERO_USD_FEED,
++                usdcFeedHeartbeat: BaseAddresses.USDC_USD_HEARTBEAT,
++                ethFeedHeartbeat: BaseAddresses.ETH_USD_HEARTBEAT,
++                aeroFeedHeartbeat: BaseAddresses.AERO_USD_HEARTBEAT
++            }),
++            owner,
++            rewardRoute()
++        );
++
++        vault.setStrategy(strategy);
++        vault.setKeeper(keeper, true);
++        vault.setDepositCap(depositCap);
++        vault.transferOwnership(owner);
++
++        vm.stopBroadcast();
++
++        console2.log("vault      ", address(vault));
++        console2.log("strategy   ", address(strategy));
++        console2.log("pool       ", pool);
++        console2.log("gauge      ", gauge);
++        console2.log("owner      ", owner, "(must call acceptOwnership on both)");
++    }
++
++    /// @notice AERO -> USDC in one hop through the volatile AERO/USDC pool.
++    function rewardRoute() public pure returns (IAerodromeRouter.Route[] memory route) {
++        route = new IAerodromeRouter.Route[](1);
++        route[0] = IAerodromeRouter.Route({
++            from: BaseAddresses.AERO,
++            to: BaseAddresses.USDC,
++            stable: false,
++            factory: BaseAddresses.AERODROME_POOL_FACTORY
++        });
++    }
++}
+diff --git a/src/BaseAddresses.sol b/src/BaseAddresses.sol
+new file mode 100644
+index 0000000..2f20a0e
+--- /dev/null
++++ b/src/BaseAddresses.sol
+@@ -0,0 +1,32 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.24;
++
++/// @title BaseAddresses
++/// @notice Canonical Base mainnet (chain id 8453) addresses used by the deployment.
++/// @dev Only the entry points are listed. The USDC/WETH pool and its gauge are *derived* at deploy
++///      time - the pool from `Router.poolFor` and the gauge from `Voter.gauges` - so a stale or
++///      mistyped pool address cannot end up in the strategy. `test/fork/BaseFork.t.sol` checks every
++///      constant below against a live fork.
++library BaseAddresses {
++    uint256 internal constant CHAIN_ID = 8453;
++
++    // --- tokens ---
++    address internal constant USDC = 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913;
++    address internal constant WETH = 0x4200000000000000000000000000000000000006;
++    address internal constant AERO = 0x940181a94A35A4569E4529A3CDfB74e38FD98631;
++
++    // --- Aerodrome ---
++    address internal constant AERODROME_ROUTER = 0xcF77a3Ba9A5CA399B7c97c74d54e5b1Beb874E43;
++    address internal constant AERODROME_POOL_FACTORY = 0x420DD381b31aEf6683db6B902084cB0FFECe40Da;
++    address internal constant AERODROME_VOTER = 0x16613524e02ad97eDfeF371bC883F2F5d6C480A5;
++
++    // --- Chainlink feeds (all 8 decimals) ---
++    address internal constant USDC_USD_FEED = 0x7e860098F58bBFC8648a4311b374B1D669a2bc6B;
++    address internal constant ETH_USD_FEED = 0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70;
++    address internal constant AERO_USD_FEED = 0x4EC5970fC728C5f65ba413992CD5fF6FD70fcfF0;
++
++    // --- feed heartbeats, with headroom over the published deviation/heartbeat thresholds ---
++    uint256 internal constant USDC_USD_HEARTBEAT = 26 hours;
++    uint256 internal constant ETH_USD_HEARTBEAT = 30 minutes;
++    uint256 internal constant AERO_USD_HEARTBEAT = 26 hours;
++}
+diff --git a/src/YieldVault.sol b/src/YieldVault.sol
+new file mode 100644
+index 0000000..2743e82
+--- /dev/null
++++ b/src/YieldVault.sol
+@@ -0,0 +1,315 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.24;
++
++import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
++import {ERC4626} from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol";
++import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
++import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
++import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
++import {Ownable, Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
++import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
++import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
++import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
++
++import {IStrategy} from "./interfaces/IStrategy.sol";
++
++/// @title YieldVault
++/// @notice ERC-4626 vault denominated in USDC. Deposits sit idle until a keeper calls {harvest},
++///         which pushes everything above a liquidity buffer into the active strategy, compounds the
++///         strategy's rewards, and mints the performance fee to the treasury.
++///
++/// @dev Accounting notes:
++///  - `totalAssets()` prices the strategy position off Chainlink, not off DEX spot reserves, so a
++///    flash-loan sandwich of `deposit`/`redeem` cannot mint or burn shares at a distorted price.
++///    See {FairLpMath}.
++///  - Unwinding an LP position costs slippage. Rather than silently returning fewer assets than
++///    `previewRedeem` promised (which would break ERC-4626), the vault charges an explicit
++///    `withdrawalFeeBps` that is included in the preview functions. The fee is not transferred
++///    anywhere: it stays in the vault and covers the unwind cost, so remaining holders are not
++///    diluted by exiting holders. Only half of what the strategy unwinds has to be swapped, so
++///    `withdrawalFeeBps >= strategy.maxSlippageBps() / 2` is what makes an exit self-funding -
++///    including the last exit, where there is no position left to over-unwind against.
++contract YieldVault is ERC4626, Ownable2Step, Pausable, ReentrancyGuard {
++    using SafeERC20 for IERC20;
++    using Math for uint256;
++
++    uint256 public constant MAX_BPS = 10_000;
++    uint256 public constant MAX_PERFORMANCE_FEE_BPS = 2_000; // 20%
++    uint256 public constant MAX_WITHDRAWAL_FEE_BPS = 100; // 1%
++
++    /// @notice The strategy currently deploying vault assets. May be address(0) (all idle).
++    IStrategy public strategy;
++
++    /// @notice Addresses allowed to call {harvest}.
++    mapping(address => bool) public isKeeper;
++
++    /// @notice Recipient of performance fee shares.
++    address public treasury;
++
++    /// @notice Share of each harvest's realised rewards minted to the treasury, in bps.
++    uint256 public performanceFeeBps = 1_000; // 10%
++
++    /// @notice Charged on exit to cover strategy unwind slippage. Stays in the vault.
++    uint256 public withdrawalFeeBps = 50; // 0.50%, half of the strategy's 1% slippage ceiling
++
++    /// @notice Fraction of `totalAssets()` kept as idle USDC so small exits skip the DEX entirely.
++    uint256 public bufferBps = 500; // 5%
++
++    /// @notice Hard cap on `totalAssets()`. Deposits that would exceed it revert.
++    uint256 public depositCap = type(uint256).max;
++
++    event StrategyUpdated(address indexed oldStrategy, address indexed newStrategy, uint256 recovered);
++    event KeeperUpdated(address indexed keeper, bool allowed);
++    event TreasuryUpdated(address indexed treasury);
++    event PerformanceFeeUpdated(uint256 bps);
++    event WithdrawalFeeUpdated(uint256 bps);
++    event BufferUpdated(uint256 bps);
++    event DepositCapUpdated(uint256 cap);
++    event Harvested(address indexed keeper, uint256 rewardsUsdc, uint256 feeShares, uint256 deployed);
++
++    error ZeroAddress();
++    error FeeTooHigh(uint256 bps, uint256 max);
++    error BpsTooHigh(uint256 bps);
++    error NotKeeper(address caller);
++    error StrategyMismatch();
++    error StrategyStillFunded(uint256 remaining);
++    error InsufficientLiquidity(uint256 requested, uint256 available);
++    error DepositCapExceeded(uint256 totalAfter, uint256 cap);
++
++    modifier onlyKeeper() {
++        _requireKeeper();
++        _;
++    }
++
++    function _requireKeeper() internal view {
++        if (!isKeeper[msg.sender] && msg.sender != owner()) revert NotKeeper(msg.sender);
++    }
++
++    constructor(IERC20 asset_, string memory name_, string memory symbol_, address owner_, address treasury_)
++        ERC20(name_, symbol_)
++        ERC4626(asset_)
++        Ownable(owner_)
++    {
++        if (owner_ == address(0) || treasury_ == address(0)) revert ZeroAddress();
++        treasury = treasury_;
++        emit TreasuryUpdated(treasury_);
++    }
++
++    // ---------------------------------------------------------------------
++    // ERC-4626 accounting
++    // ---------------------------------------------------------------------
++
++    /// @dev 18-decimal shares over a 6-decimal asset. The 1e12 virtual-share offset also makes the
++    ///      classic ERC-4626 first-depositor inflation attack economically pointless.
++    function _decimalsOffset() internal pure override returns (uint8) {
++        return 12;
++    }
++
++    /// @inheritdoc ERC4626
++    function totalAssets() public view override returns (uint256) {
++        uint256 idle = IERC20(asset()).balanceOf(address(this));
++        IStrategy s = strategy;
++        return address(s) == address(0) ? idle : idle + s.estimatedTotalAssets();
++    }
++
++    /// @notice USDC held by the vault itself and immediately payable without touching the strategy.
++    function idleAssets() public view returns (uint256) {
++        return IERC20(asset()).balanceOf(address(this));
++    }
++
++    /// @inheritdoc ERC4626
++    /// @dev Net of `withdrawalFeeBps`.
++    function previewRedeem(uint256 shares) public view override returns (uint256) {
++        uint256 gross = _convertToAssets(shares, Math.Rounding.Floor);
++        return gross - gross.mulDiv(withdrawalFeeBps, MAX_BPS, Math.Rounding.Ceil);
++    }
++
++    /// @inheritdoc ERC4626
++    /// @dev Grossed up for `withdrawalFeeBps`, so `assets` is what the receiver actually gets.
++    function previewWithdraw(uint256 assets) public view override returns (uint256) {
++        uint256 gross = assets.mulDiv(MAX_BPS, MAX_BPS - withdrawalFeeBps, Math.Rounding.Ceil);
++        return _convertToShares(gross, Math.Rounding.Ceil);
++    }
++
++    /// @inheritdoc ERC4626
++    function maxWithdraw(address owner_) public view override returns (uint256) {
++        return previewRedeem(balanceOf(owner_));
++    }
++
++    /// @inheritdoc ERC4626
++    function maxDeposit(address) public view override returns (uint256) {
++        if (paused()) return 0;
++        uint256 total = totalAssets();
++        return total >= depositCap ? 0 : depositCap - total;
++    }
++
++    /// @inheritdoc ERC4626
++    function maxMint(address receiver) public view override returns (uint256) {
++        uint256 assets = maxDeposit(receiver);
++        return assets == type(uint256).max ? type(uint256).max : _convertToShares(assets, Math.Rounding.Floor);
++    }
++
++    // ---------------------------------------------------------------------
++    // Deposit / withdraw plumbing
++    // ---------------------------------------------------------------------
++
++    function _deposit(address caller, address receiver, uint256 assets, uint256 shares)
++        internal
++        override
++        whenNotPaused
++        nonReentrant
++    {
++        uint256 totalAfter = totalAssets() + assets;
++        if (totalAfter > depositCap) revert DepositCapExceeded(totalAfter, depositCap);
++        super._deposit(caller, receiver, assets, shares);
++    }
++
++    /// @dev Tops the vault up from the strategy when idle USDC is short of the requested amount.
++    function _withdraw(address caller, address receiver, address owner_, uint256 assets, uint256 shares)
++        internal
++        override
++        nonReentrant
++    {
++        uint256 idle = idleAssets();
++        if (idle < assets) {
++            IStrategy s = strategy;
++            if (address(s) != address(0)) {
++                s.withdraw(assets - idle);
++                idle = idleAssets();
++            }
++            if (idle < assets) revert InsufficientLiquidity(assets, idle);
++        }
++        super._withdraw(caller, receiver, owner_, assets, shares);
++    }
++
++    // ---------------------------------------------------------------------
++    // Keeper
++    // ---------------------------------------------------------------------
++
++    /// @notice Keeper entrypoint: claim and compound strategy rewards, then top the strategy up with
++    ///         idle deposits above the liquidity buffer.
++    /// @dev Rewards are compounded inside the strategy; the performance fee is taken as freshly
++    ///      minted shares, which dilutes holders by exactly the fee's asset value.
++    /// @return rewardsUsdc USDC-denominated value of the rewards realised by this harvest.
++    /// @return feeShares Shares minted to the treasury.
++    /// @return deployed Idle USDC pushed into the strategy.
++    function harvest()
++        external
++        onlyKeeper
++        nonReentrant
++        returns (uint256 rewardsUsdc, uint256 feeShares, uint256 deployed)
++    {
++        IStrategy s = strategy;
++        if (address(s) == address(0)) revert ZeroAddress();
++
++        // Push idle deposits first so the strategy deploys them and the compounded rewards in a
++        // single pass, rather than making two separate (and separately price-impacting) swaps.
++        deployed = _pushIdle(s);
++
++        rewardsUsdc = s.harvest();
++
++        if (rewardsUsdc != 0 && performanceFeeBps != 0) {
++            uint256 feeAssets = rewardsUsdc.mulDiv(performanceFeeBps, MAX_BPS, Math.Rounding.Floor);
++            // Converted after the harvest, so `feeShares` is worth `feeAssets` at the post-harvest
++            // share price and existing holders keep the remaining profit.
++            feeShares = _convertToShares(feeAssets, Math.Rounding.Floor);
++            if (feeShares != 0) _mint(treasury, feeShares);
++        }
++
++        emit Harvested(msg.sender, rewardsUsdc, feeShares, deployed);
++    }
++
++    /// @notice Pushes idle USDC above the buffer into the strategy without harvesting rewards.
++    function deployIdle() external onlyKeeper nonReentrant returns (uint256 deployed) {
++        IStrategy s = strategy;
++        if (address(s) == address(0)) revert ZeroAddress();
++        deployed = _pushIdle(s);
++        s.invest();
++    }
++
++    /// @dev Moves everything above the liquidity buffer to the strategy. Deploying it is the
++    ///      caller's job, so a harvest can batch the transfer and the investment into one pass.
++    function _pushIdle(IStrategy s) internal returns (uint256 deployed) {
++        if (paused()) return 0;
++        uint256 idle = idleAssets();
++        uint256 target = totalAssets().mulDiv(bufferBps, MAX_BPS, Math.Rounding.Ceil);
++        if (idle <= target) return 0;
++
++        deployed = idle - target;
++        IERC20(asset()).safeTransfer(address(s), deployed);
++    }
++
++    // ---------------------------------------------------------------------
++    // Admin
++    // ---------------------------------------------------------------------
++
++    /// @notice Retires the current strategy (pulling everything back to the vault) and installs a new one.
++    /// @param newStrategy The replacement, or address(0) to park the vault fully in idle USDC.
++    function setStrategy(IStrategy newStrategy) external onlyOwner nonReentrant {
++        IStrategy old = strategy;
++        uint256 recovered;
++
++        if (address(old) != address(0)) {
++            recovered = old.liquidateAll();
++            uint256 remaining = old.estimatedTotalAssets();
++            // A little dust is expected (LP rounding); anything material means the unwind failed.
++            if (remaining > _dustThreshold()) revert StrategyStillFunded(remaining);
++        }
++
++        if (address(newStrategy) != address(0)) {
++            if (newStrategy.vault() != address(this) || newStrategy.asset() != asset()) revert StrategyMismatch();
++        }
++
++        strategy = newStrategy;
++        emit StrategyUpdated(address(old), address(newStrategy), recovered);
++    }
++
++    function setKeeper(address keeper, bool allowed) external onlyOwner {
++        if (keeper == address(0)) revert ZeroAddress();
++        isKeeper[keeper] = allowed;
++        emit KeeperUpdated(keeper, allowed);
++    }
++
++    function setTreasury(address newTreasury) external onlyOwner {
++        if (newTreasury == address(0)) revert ZeroAddress();
++        treasury = newTreasury;
++        emit TreasuryUpdated(newTreasury);
++    }
++
++    function setPerformanceFee(uint256 bps) external onlyOwner {
++        if (bps > MAX_PERFORMANCE_FEE_BPS) revert FeeTooHigh(bps, MAX_PERFORMANCE_FEE_BPS);
++        performanceFeeBps = bps;
++        emit PerformanceFeeUpdated(bps);
++    }
++
++    function setWithdrawalFee(uint256 bps) external onlyOwner {
++        if (bps > MAX_WITHDRAWAL_FEE_BPS) revert FeeTooHigh(bps, MAX_WITHDRAWAL_FEE_BPS);
++        withdrawalFeeBps = bps;
++        emit WithdrawalFeeUpdated(bps);
++    }
++
++    function setBuffer(uint256 bps) external onlyOwner {
++        if (bps > MAX_BPS) revert BpsTooHigh(bps);
++        bufferBps = bps;
++        emit BufferUpdated(bps);
++    }
++
++    function setDepositCap(uint256 cap) external onlyOwner {
++        depositCap = cap;
++        emit DepositCapUpdated(cap);
++    }
++
++    /// @notice Blocks new deposits. Withdrawals stay open.
++    function pause() external onlyOwner {
++        _pause();
++    }
++
++    function unpause() external onlyOwner {
++        _unpause();
++    }
++
++    /// @dev One USDC unit of tolerated dust when retiring a strategy.
++    function _dustThreshold() internal view returns (uint256) {
++        return 10 ** IERC20Metadata(asset()).decimals();
++    }
++}
+diff --git a/src/interfaces/IAerodrome.sol b/src/interfaces/IAerodrome.sol
+new file mode 100644
+index 0000000..77c9d44
+--- /dev/null
++++ b/src/interfaces/IAerodrome.sol
+@@ -0,0 +1,91 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.24;
++
++/// @notice Minimal subset of the Aerodrome (Velodrome V2 fork) Router used by the strategy.
++/// @dev Deployed on Base at 0xcF77a3Ba9A5CA399B7c97c74d54e5b1Beb874E43.
++interface IAerodromeRouter {
++    /// @param from     input token of the hop
++    /// @param to       output token of the hop
++    /// @param stable   whether the hop uses the stable (x3y+y3x) or volatile (xy=k) curve
++    /// @param factory  pool factory that deployed the pool for this hop
++    struct Route {
++        address from;
++        address to;
++        bool stable;
++        address factory;
++    }
++
++    function defaultFactory() external view returns (address);
++
++    function poolFor(address tokenA, address tokenB, bool stable, address _factory) external view returns (address);
++
++    function addLiquidity(
++        address tokenA,
++        address tokenB,
++        bool stable,
++        uint256 amountADesired,
++        uint256 amountBDesired,
++        uint256 amountAMin,
++        uint256 amountBMin,
++        address to,
++        uint256 deadline
++    ) external returns (uint256 amountA, uint256 amountB, uint256 liquidity);
++
++    function removeLiquidity(
++        address tokenA,
++        address tokenB,
++        bool stable,
++        uint256 liquidity,
++        uint256 amountAMin,
++        uint256 amountBMin,
++        address to,
++        uint256 deadline
++    ) external returns (uint256 amountA, uint256 amountB);
++
++    function swapExactTokensForTokens(
++        uint256 amountIn,
++        uint256 amountOutMin,
++        Route[] calldata routes,
++        address to,
++        uint256 deadline
++    ) external returns (uint256[] memory amounts);
++
++    function getAmountsOut(uint256 amountIn, Route[] memory routes) external view returns (uint256[] memory amounts);
++}
++
++/// @notice Minimal subset of an Aerodrome constant-product (volatile) Pool.
++interface IAerodromePool {
++    function getReserves() external view returns (uint256 reserve0, uint256 reserve1, uint256 blockTimestampLast);
++    function token0() external view returns (address);
++    function token1() external view returns (address);
++    function stable() external view returns (bool);
++    function totalSupply() external view returns (uint256);
++    function balanceOf(address) external view returns (uint256);
++}
++
++/// @notice Minimal subset of an Aerodrome Gauge (the AERO emissions contract for a pool).
++interface IAerodromeGauge {
++    /// @notice Stakes `amount` of the gauge's LP token, pulled from msg.sender.
++    function deposit(uint256 amount) external;
++    /// @notice Unstakes `amount` of LP back to msg.sender.
++    function withdraw(uint256 amount) external;
++    /// @notice Claims accrued AERO for `account`, sending it to `account`.
++    function getReward(address account) external;
++    /// @notice Staked LP balance of `account`.
++    function balanceOf(address account) external view returns (uint256);
++    /// @notice Claimable AERO for `account`.
++    function earned(address account) external view returns (uint256);
++    /// @notice The LP token this gauge stakes.
++    function stakingToken() external view returns (address);
++    /// @notice The reward token (AERO).
++    function rewardToken() external view returns (address);
++}
++
++/// @notice Minimal subset of the Aerodrome Voter, the registry mapping pools to their gauges.
++/// @dev Deployed on Base at 0x16613524e02ad97eDfeF371bC883F2F5d6C480A5.
++interface IAerodromeVoter {
++    /// @return The gauge for `pool`, or address(0) if the pool has never been gauged.
++    function gauges(address pool) external view returns (address);
++    /// @return True if `gauge` is currently receiving emissions.
++    function isAlive(address gauge) external view returns (bool);
++}
+diff --git a/src/interfaces/IAggregatorV3.sol b/src/interfaces/IAggregatorV3.sol
+new file mode 100644
+index 0000000..51b4c27
+--- /dev/null
++++ b/src/interfaces/IAggregatorV3.sol
+@@ -0,0 +1,12 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.24;
++
++/// @notice Chainlink price feed interface (subset).
++interface IAggregatorV3 {
++    function decimals() external view returns (uint8);
++    function description() external view returns (string memory);
++    function latestRoundData()
++        external
++        view
++        returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound);
++}
+diff --git a/src/interfaces/IStrategy.sol b/src/interfaces/IStrategy.sol
+new file mode 100644
+index 0000000..7012084
+--- /dev/null
++++ b/src/interfaces/IStrategy.sol
+@@ -0,0 +1,34 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.24;
++
++/// @notice The interface `YieldVault` requires of any strategy it allocates to.
++interface IStrategy {
++    /// @return The vault this strategy reports to.
++    function vault() external view returns (address);
++
++    /// @return The ERC20 the vault accounts in (USDC).
++    function asset() external view returns (address);
++
++    /// @notice Oracle-priced value of everything the strategy controls, denominated in `asset`.
++    function estimatedTotalAssets() external view returns (uint256);
++
++    /// @notice Deploys any `asset` sitting idle in the strategy into the productive position.
++    /// @dev Vault-only. The vault transfers `asset` in first, then calls this.
++    function invest() external;
++
++    /// @notice Liquidates up to `amount` of `asset` and sends it to the vault.
++    /// @dev Vault-only. May return less than `amount` if the position cannot be unwound for that much.
++    /// @return freed The amount of `asset` actually transferred to the vault.
++    function withdraw(uint256 amount) external returns (uint256 freed);
++
++    /// @notice Claims accrued rewards, converts them to `asset` and compounds them back into the
++    ///         position.
++    /// @dev Vault-only; the vault gates this behind its keeper role and takes its fee on the result.
++    /// @return rewardsAsset The `asset`-denominated value of the rewards realised by this call.
++    function harvest() external returns (uint256 rewardsAsset);
++
++    /// @notice Unwinds the entire position back into `asset` and returns it to the vault.
++    /// @dev Vault-only. Used when retiring or migrating a strategy.
++    /// @return freed The amount of `asset` transferred to the vault.
++    function liquidateAll() external returns (uint256 freed);
++}
+diff --git a/src/libraries/ChainlinkLib.sol b/src/libraries/ChainlinkLib.sol
+new file mode 100644
+index 0000000..c891b28
+--- /dev/null
++++ b/src/libraries/ChainlinkLib.sol
+@@ -0,0 +1,36 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.24;
++
++import {IAggregatorV3} from "../interfaces/IAggregatorV3.sol";
++
++/// @title ChainlinkLib
++/// @notice Safe reads of Chainlink aggregators, normalised to 8 decimals.
++library ChainlinkLib {
++    error StalePrice(address feed, uint256 updatedAt);
++    error InvalidPrice(address feed, int256 answer);
++    error UnsupportedFeedDecimals(address feed, uint8 decimals);
++
++    uint8 internal constant PRICE_DECIMALS = 8;
++
++    /// @notice Reads `feed` and reverts unless the answer is positive and fresher than `maxAge`.
++    /// @param feed The Chainlink aggregator (or a proxy in front of one).
++    /// @param maxAge Maximum tolerated age in seconds; should be the feed heartbeat plus a margin.
++    /// @return price The answer scaled to 8 decimals.
++    function readPrice(IAggregatorV3 feed, uint256 maxAge) internal view returns (uint256 price) {
++        (, int256 answer,, uint256 updatedAt,) = feed.latestRoundData();
++
++        if (answer <= 0) revert InvalidPrice(address(feed), answer);
++        // `updatedAt == 0` means the round is incomplete; the subtraction below also guards a
++        // future-dated timestamp, which would otherwise underflow.
++        if (updatedAt == 0 || updatedAt > block.timestamp || block.timestamp - updatedAt > maxAge) {
++            revert StalePrice(address(feed), updatedAt);
++        }
++
++        uint8 dec = feed.decimals();
++        if (dec > PRICE_DECIMALS) revert UnsupportedFeedDecimals(address(feed), dec);
++
++        // casting to `uint256` is safe because `answer <= 0` reverted above
++        // forge-lint: disable-next-line(unsafe-typecast)
++        price = uint256(answer) * (10 ** (PRICE_DECIMALS - dec));
++    }
++}
+diff --git a/src/libraries/FairLpMath.sol b/src/libraries/FairLpMath.sol
+new file mode 100644
+index 0000000..a5f29f2
+--- /dev/null
++++ b/src/libraries/FairLpMath.sol
+@@ -0,0 +1,80 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.24;
++
++import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
++
++/// @title FairLpMath
++/// @notice Manipulation-resistant valuation of constant-product (xy=k) LP tokens.
++///
++/// @dev Reading `getReserves()` and pricing each leg at the pool's own spot rate is unsafe: an
++/// attacker can push the pool far from market inside one transaction, mint or burn vault shares at
++/// the distorted valuation, and restore the pool afterwards (a flash-loan sandwich of
++/// deposit/withdraw). Instead we use the *fair reserves* method: `k = r0 * r1` is invariant under
++/// swaps, so we recompute the reserves the pool *would* hold if it were balanced at the oracle
++/// prices, and value those.
++///
++///   Balanced at oracle prices:  r0' * p0 == r1' * p1  and  r0' * r1' == k
++///     =>  r0' = sqrt(k * p1 / p0),  r1' = sqrt(k * p0 / p1)
++///     =>  poolValue = r0' * p0 + r1' * p1 = 2 * sqrt(k) * sqrt(p0 * p1)
++///
++/// The result depends only on `k` and the oracle prices, so trading against the pool cannot move
++/// it. Attribution: this is the LP pricing used by Alpha Homora V2 / "fair uniswap LP" pricing.
++library FairLpMath {
++    error ZeroSupply();
++
++    uint256 internal constant WAD = 1e18;
++    uint256 internal constant PRICE_UNIT = 1e8;
++
++    /// @notice Snapshot of a constant-product pool plus the oracle prices of its two tokens.
++    struct PoolState {
++        uint256 reserve0; // raw reserve of token0
++        uint256 reserve1; // raw reserve of token1
++        uint256 totalSupply; // total LP supply
++        uint256 price0; // USD price of one whole token0, 8 decimals
++        uint256 price1; // USD price of one whole token1, 8 decimals
++        uint8 decimals0;
++        uint8 decimals1;
++    }
++
++    /// @notice Oracle-fair USD value of `lpAmount` LP tokens of a constant-product pool.
++    /// @param s Pool reserves, supply, decimals and oracle prices.
++    /// @param lpAmount LP tokens to value (18 decimals, as minted by the pool).
++    /// @return valueUsd USD value with 18 decimals.
++    function lpValueUsd(PoolState memory s, uint256 lpAmount) internal pure returns (uint256 valueUsd) {
++        if (s.totalSupply == 0) revert ZeroSupply();
++        if (lpAmount == 0 || s.reserve0 == 0 || s.reserve1 == 0) return 0;
++
++        // Normalise both reserves to 18 decimals so `sqrt(r0 * r1)` is also 18-decimal.
++        uint256 sqrtK = Math.sqrt(_toWad(s.reserve0, s.decimals0) * _toWad(s.reserve1, s.decimals1)); // 18dp
++        uint256 sqrtP = Math.sqrt(s.price0 * s.price1); // 8dp
++
++        // poolValueUsd(18dp) = 2 * sqrtK * sqrtP / 1e8
++        uint256 poolValueUsd = 2 * Math.mulDiv(sqrtK, sqrtP, PRICE_UNIT);
++
++        valueUsd = Math.mulDiv(poolValueUsd, lpAmount, s.totalSupply);
++    }
++
++    /// @notice USD value (18 decimals) of `amount` of a token worth `price` (8 decimals) per unit.
++    function tokenValueUsd(uint256 amount, uint8 decimals, uint256 price) internal pure returns (uint256) {
++        return Math.mulDiv(_toWad(amount, decimals), price, PRICE_UNIT);
++    }
++
++    /// @notice Inverse of {tokenValueUsd}: how much of a token `valueUsd` buys, in token decimals.
++    function usdToToken(uint256 valueUsd, uint8 decimals, uint256 price) internal pure returns (uint256) {
++        if (price == 0) return 0;
++        uint256 wadAmount = Math.mulDiv(valueUsd, PRICE_UNIT, price);
++        return _fromWad(wadAmount, decimals);
++    }
++
++    function _toWad(uint256 amount, uint8 decimals) private pure returns (uint256) {
++        if (decimals == 18) return amount;
++        if (decimals < 18) return amount * (10 ** (18 - decimals));
++        return amount / (10 ** (decimals - 18));
++    }
++
++    function _fromWad(uint256 amount, uint8 decimals) private pure returns (uint256) {
++        if (decimals == 18) return amount;
++        if (decimals < 18) return amount / (10 ** (18 - decimals));
++        return amount * (10 ** (decimals - 18));
++    }
++}
+diff --git a/src/strategies/AerodromeUsdcWethStrategy.sol b/src/strategies/AerodromeUsdcWethStrategy.sol
+new file mode 100644
+index 0000000..3c2716f
+--- /dev/null
++++ b/src/strategies/AerodromeUsdcWethStrategy.sol
+@@ -0,0 +1,578 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.24;
++
++import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
++import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
++import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
++import {Ownable, Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
++import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
++
++import {IStrategy} from "../interfaces/IStrategy.sol";
++import {IAerodromeRouter, IAerodromePool, IAerodromeGauge} from "../interfaces/IAerodrome.sol";
++import {IAggregatorV3} from "../interfaces/IAggregatorV3.sol";
++import {ChainlinkLib} from "../libraries/ChainlinkLib.sol";
++import {FairLpMath} from "../libraries/FairLpMath.sol";
++
++/// @title AerodromeUsdcWethStrategy
++/// @notice Pairs vault USDC with WETH in the Aerodrome volatile USDC/WETH pool, stakes the LP in the
++///         pool's gauge, and compounds the AERO emissions plus accrued swap fees back into the LP.
++///
++/// @dev Every interaction with the DEX is bounded by Chainlink prices:
++///  - swaps use an oracle-derived `amountOutMin`;
++///  - `addLiquidity` asserts the LP received is worth at least the tokens spent, minus slippage;
++///  - `removeLiquidity` asserts the tokens received are worth at least the LP burned, minus slippage;
++///  - {estimatedTotalAssets} values the LP with the fair-reserves formula (see {FairLpMath}).
++///  This is what keeps the position safe to hold, and the vault's share price safe to quote, in a
++///  pool whose spot reserves anyone can move with a flash loan.
++contract AerodromeUsdcWethStrategy is IStrategy, Ownable2Step {
++    using SafeERC20 for IERC20;
++    using ChainlinkLib for IAggregatorV3;
++    using Math for uint256;
++
++    uint256 public constant MAX_BPS = 10_000;
++    uint256 public constant MAX_SLIPPAGE_BPS = 500; // 5% ceiling on the owner-settable slippage
++
++    /// @notice Config bundle for the constructor, to keep the argument list readable.
++    struct Config {
++        address vault;
++        address usdc;
++        address weth;
++        address aero;
++        address router;
++        address gauge;
++        address usdcUsdFeed;
++        address ethUsdFeed;
++        address aeroUsdFeed;
++        uint256 usdcFeedHeartbeat;
++        uint256 ethFeedHeartbeat;
++        uint256 aeroFeedHeartbeat;
++    }
++
++    // --- immutable wiring ---
++    address public immutable override vault;
++    address public immutable override asset; // USDC
++    address public immutable weth;
++    address public immutable aero;
++
++    IAerodromeRouter public immutable router;
++    IAerodromePool public immutable pool;
++    IAerodromeGauge public immutable gauge;
++    address public immutable poolFactory;
++
++    IAggregatorV3 public immutable usdcUsdFeed;
++    IAggregatorV3 public immutable ethUsdFeed;
++    IAggregatorV3 public immutable aeroUsdFeed;
++
++    uint256 public immutable usdcFeedHeartbeat;
++    uint256 public immutable ethFeedHeartbeat;
++    uint256 public immutable aeroFeedHeartbeat;
++
++    uint8 private immutable _usdcDecimals;
++    uint8 private immutable _wethDecimals;
++    uint8 private immutable _aeroDecimals;
++    bool private immutable _usdcIsToken0;
++
++    // --- tunables ---
++
++    /// @notice Maximum value loss tolerated on any single DEX interaction, in bps.
++    uint256 public maxSlippageBps = 100; // 1%
++
++    /// @notice Extra LP unwound on withdrawals so slippage cannot leave the vault short.
++    /// @dev Half of what is unwound has to be swapped back to USDC, so this must exceed the cost of
++    ///      that swap - keep it at or above `maxSlippageBps`. Over-unwinding is free: the surplus
++    ///      stays as idle USDC in the strategy and is redeployed by the next harvest.
++    uint256 public unwindBufferBps = 100; // 1%
++
++    /// @notice Ceiling on a single USDC->WETH invest swap, as a fraction of the pool's USDC reserve.
++    /// @dev On a constant-product pool, swapping a fraction `f` of the input reserve costs roughly
++    ///      `f + poolFee` against the mid price, so this is what actually keeps {invest} inside
++    ///      `maxSlippageBps`. Keep `maxTradeReserveBps + poolFeeBps` comfortably under
++    ///      `maxSlippageBps`; the default pairs 0.25% with Aerodrome's 0.30% volatile fee against a
++    ///      1% tolerance. Whatever the cap holds back stays idle and is deployed by the next harvest.
++    uint256 public maxTradeReserveBps = 25; // 0.25% of the USDC reserve
++
++    /// @notice Below this much idle USDC, {invest} is a no-op (the gas is not worth the dust).
++    uint256 public minInvestUsdc = 10e6; // 10 USDC
++
++    /// @notice Below this much claimed AERO, {harvest} skips the reward swap.
++    uint256 public minHarvestAero = 1e18; // 1 AERO
++
++    /// @notice When set, {harvest} stops re-investing; the position is only ever unwound.
++    bool public emergencyExit;
++
++    /// @notice Swap path used to turn claimed AERO into USDC.
++    IAerodromeRouter.Route[] private _rewardRoute;
++
++    event Invested(uint256 usdcIn, uint256 liquidity);
++    event Withdrawn(uint256 requested, uint256 freed);
++    event Harvest(uint256 aeroClaimed, uint256 usdcRealised, uint256 liquidityAdded);
++    event LiquidatedAll(uint256 freed);
++    event MaxSlippageUpdated(uint256 bps);
++    event UnwindBufferUpdated(uint256 bps);
++    event ThresholdsUpdated(uint256 minInvestUsdc, uint256 minHarvestAero);
++    event MaxTradeReserveUpdated(uint256 bps);
++    event RewardRouteUpdated(uint256 hops);
++    event EmergencyExitSet(bool enabled);
++
++    error NotVault(address caller);
++    error ZeroAddress();
++    error BadPool();
++    error SlippageTooHigh(uint256 bps);
++    error TradeSizeTooHigh(uint256 bps);
++    error BadRewardRoute();
++    error SlippageExceeded(uint256 valueOut, uint256 minValueOut);
++    error ProtectedToken(address token);
++
++    modifier onlyVault() {
++        _requireVault();
++        _;
++    }
++
++    function _requireVault() internal view {
++        if (msg.sender != vault) revert NotVault(msg.sender);
++    }
++
++    constructor(Config memory c, address owner_, IAerodromeRouter.Route[] memory rewardRoute_) Ownable(owner_) {
++        if (
++            c.vault == address(0) || c.usdc == address(0) || c.weth == address(0) || c.aero == address(0)
++                || c.router == address(0) || c.gauge == address(0)
++        ) revert ZeroAddress();
++
++        vault = c.vault;
++        asset = c.usdc;
++        weth = c.weth;
++        aero = c.aero;
++        router = IAerodromeRouter(c.router);
++        gauge = IAerodromeGauge(c.gauge);
++
++        // Trust the gauge for the pool address rather than a constructor argument: it guarantees the
++        // LP we stake is the LP the gauge actually pays emissions on.
++        IAerodromePool p = IAerodromePool(IAerodromeGauge(c.gauge).stakingToken());
++        pool = p;
++        if (IAerodromeGauge(c.gauge).rewardToken() != c.aero) revert BadPool();
++        if (p.stable()) revert BadPool(); // fair-reserves pricing below assumes xy=k
++
++        address t0 = p.token0();
++        address t1 = p.token1();
++        if (!((t0 == c.usdc && t1 == c.weth) || (t0 == c.weth && t1 == c.usdc))) revert BadPool();
++        _usdcIsToken0 = t0 == c.usdc;
++
++        poolFactory = IAerodromeRouter(c.router).defaultFactory();
++        if (IAerodromeRouter(c.router).poolFor(c.usdc, c.weth, false, poolFactory) != address(p)) revert BadPool();
++
++        usdcUsdFeed = IAggregatorV3(c.usdcUsdFeed);
++        ethUsdFeed = IAggregatorV3(c.ethUsdFeed);
++        aeroUsdFeed = IAggregatorV3(c.aeroUsdFeed);
++        usdcFeedHeartbeat = c.usdcFeedHeartbeat;
++        ethFeedHeartbeat = c.ethFeedHeartbeat;
++        aeroFeedHeartbeat = c.aeroFeedHeartbeat;
++
++        _usdcDecimals = IERC20Metadata(c.usdc).decimals();
++        _wethDecimals = IERC20Metadata(c.weth).decimals();
++        _aeroDecimals = IERC20Metadata(c.aero).decimals();
++
++        _setRewardRoute(rewardRoute_);
++    }
++
++    // ---------------------------------------------------------------------
++    // Views
++    // ---------------------------------------------------------------------
++
++    /// @inheritdoc IStrategy
++    /// @dev Idle USDC + idle WETH + LP (staked and unstaked), all priced off Chainlink.
++    function estimatedTotalAssets() public view override returns (uint256) {
++        (uint256 usdcPrice, uint256 ethPrice) = _pairPrices();
++
++        uint256 valueUsd = FairLpMath.tokenValueUsd(IERC20(weth).balanceOf(address(this)), _wethDecimals, ethPrice)
++            + _lpValueUsd(totalLpBalance(), usdcPrice, ethPrice);
++
++        return IERC20(asset).balanceOf(address(this)) + FairLpMath.usdToToken(valueUsd, _usdcDecimals, usdcPrice);
++    }
++
++    /// @notice LP tokens held by the strategy, staked in the gauge or loose after a partial unwind.
++    function totalLpBalance() public view returns (uint256) {
++        return gauge.balanceOf(address(this)) + IERC20(address(pool)).balanceOf(address(this));
++    }
++
++    /// @notice AERO claimable from the gauge right now.
++    function pendingRewards() external view returns (uint256) {
++        return gauge.earned(address(this));
++    }
++
++    /// @notice The configured AERO -> USDC swap path.
++    function rewardRoute() external view returns (IAerodromeRouter.Route[] memory) {
++        return _rewardRoute;
++    }
++
++    // ---------------------------------------------------------------------
++    // Vault-facing
++    // ---------------------------------------------------------------------
++
++    /// @inheritdoc IStrategy
++    function invest() external override onlyVault {
++        if (emergencyExit) return;
++        _investIdle();
++    }
++
++    /// @inheritdoc IStrategy
++    function withdraw(uint256 amount) external override onlyVault returns (uint256 freed) {
++        uint256 idle = IERC20(asset).balanceOf(address(this));
++
++        if (idle < amount) {
++            uint256 shortfall = amount - idle;
++            // Unwind a touch more than needed so swap slippage cannot leave us a few units short.
++            uint256 target = shortfall.mulDiv(MAX_BPS + unwindBufferBps, MAX_BPS, Math.Rounding.Ceil);
++
++            // WETH stranded by a previously capped unwind is sold first, before touching the LP.
++            uint256 stranded = _idleWethAsUsdc();
++            _unwind(target > stranded ? _lpForUsdc(target - stranded) : 0);
++            idle = IERC20(asset).balanceOf(address(this));
++        }
++
++        freed = idle < amount ? idle : amount;
++        if (freed != 0) IERC20(asset).safeTransfer(vault, freed);
++        emit Withdrawn(amount, freed);
++    }
++
++    /// @inheritdoc IStrategy
++    function harvest() external override onlyVault returns (uint256 rewardsAsset) {
++        uint256 before = IERC20(asset).balanceOf(address(this));
++
++        gauge.getReward(address(this));
++
++        // Includes AERO left over from a previous capped harvest.
++        uint256 toSell = IERC20(aero).balanceOf(address(this));
++        uint256 claimed = toSell;
++        uint256 cap = _maxAeroTrade();
++        if (toSell > cap) toSell = cap;
++
++        if (toSell >= minHarvestAero) {
++            _swapRewardToUsdc(toSell);
++            rewardsAsset = IERC20(asset).balanceOf(address(this)) - before;
++        }
++
++        uint256 liquidity;
++        if (!emergencyExit) liquidity = _investIdle();
++
++        emit Harvest(claimed, rewardsAsset, liquidity);
++    }
++
++    /// @inheritdoc IStrategy
++    function liquidateAll() external override onlyVault returns (uint256 freed) {
++        gauge.getReward(address(this));
++        uint256 toSell = IERC20(aero).balanceOf(address(this));
++        uint256 cap = _maxAeroTrade();
++        if (toSell > cap) toSell = cap;
++        // Anything above the cap stays as AERO rather than being force-sold at a bad price, which
++        // could revert the whole migration. Run a final {harvest} before retiring the strategy so
++        // there is nothing left to strand.
++        if (toSell >= minHarvestAero) _swapRewardToUsdc(toSell);
++
++        _unwind(totalLpBalance());
++
++        freed = IERC20(asset).balanceOf(address(this));
++        if (freed != 0) IERC20(asset).safeTransfer(vault, freed);
++        emit LiquidatedAll(freed);
++    }
++
++    // ---------------------------------------------------------------------
++    // Internals: position management
++    // ---------------------------------------------------------------------
++
++    /// @dev Converts idle USDC into a balanced LP position and stakes it.
++    function _investIdle() internal returns (uint256 liquidity) {
++        uint256 usdcBal = IERC20(asset).balanceOf(address(this));
++        if (usdcBal < minInvestUsdc) return 0;
++
++        // Half the USDC buys WETH; `addLiquidity` then consumes both sides at the pool ratio and
++        // leaves whatever does not fit as idle dust for the next invest.
++        uint256 swapAmount = usdcBal / 2;
++        uint256 cap = _maxUsdcTrade();
++        if (swapAmount > cap) swapAmount = cap;
++        if (swapAmount == 0) return 0;
++
++        _swapUsdcToWeth(swapAmount);
++
++        liquidity = _addLiquidityAndStake();
++        emit Invested(usdcBal, liquidity);
++    }
++
++    /// @dev Largest USDC swap that keeps price impact comfortably inside `maxSlippageBps`.
++    function _maxUsdcTrade() internal view returns (uint256) {
++        (uint256 r0, uint256 r1,) = pool.getReserves();
++        uint256 usdcReserve = _usdcIsToken0 ? r0 : r1;
++        return usdcReserve.mulDiv(maxTradeReserveBps, MAX_BPS);
++    }
++
++    /// @dev The WETH-side equivalent of {_maxUsdcTrade}, used when unwinding.
++    function _maxWethTrade() internal view returns (uint256) {
++        (uint256 r0, uint256 r1,) = pool.getReserves();
++        uint256 wethReserve = _usdcIsToken0 ? r1 : r0;
++        return wethReserve.mulDiv(maxTradeReserveBps, MAX_BPS);
++    }
++
++    /// @dev Same cap applied to the reward sale, measured against the first hop of the reward route.
++    ///      A harvest that is large relative to that pool sells what it can and carries the rest
++    ///      forward, rather than reverting and leaving the emissions unclaimable.
++    function _maxAeroTrade() internal view returns (uint256) {
++        IAerodromeRouter.Route memory hop = _rewardRoute[0];
++        IAerodromePool p = IAerodromePool(router.poolFor(hop.from, hop.to, hop.stable, hop.factory));
++        (uint256 r0, uint256 r1,) = p.getReserves();
++        uint256 aeroReserve = p.token0() == aero ? r0 : r1;
++        return aeroReserve.mulDiv(maxTradeReserveBps, MAX_BPS);
++    }
++
++    /// @dev Adds all idle USDC/WETH as liquidity and stakes the resulting LP in the gauge.
++    function _addLiquidityAndStake() internal returns (uint256 liquidity) {
++        uint256 usdcBal = IERC20(asset).balanceOf(address(this));
++        uint256 wethBal = IERC20(weth).balanceOf(address(this));
++        if (usdcBal == 0 || wethBal == 0) return 0;
++
++        (uint256 usdcPrice, uint256 ethPrice) = _pairPrices();
++
++        IERC20(asset).forceApprove(address(router), usdcBal);
++        IERC20(weth).forceApprove(address(router), wethBal);
++
++        uint256 usdcUsed;
++        uint256 wethUsed;
++        (usdcUsed, wethUsed, liquidity) =
++            router.addLiquidity(asset, weth, false, usdcBal, wethBal, 0, 0, address(this), block.timestamp);
++
++        IERC20(asset).forceApprove(address(router), 0);
++        IERC20(weth).forceApprove(address(router), 0);
++
++        // `amountAMin`/`amountBMin` only bound the *ratio*, not the value of the LP minted. Check
++        // the thing we actually care about: LP received is worth what we put in.
++        uint256 valueIn = FairLpMath.tokenValueUsd(usdcUsed, _usdcDecimals, usdcPrice)
++            + FairLpMath.tokenValueUsd(wethUsed, _wethDecimals, ethPrice);
++        uint256 valueOut = _lpValueUsd(liquidity, usdcPrice, ethPrice);
++        uint256 minValueOut = valueIn.mulDiv(MAX_BPS - maxSlippageBps, MAX_BPS);
++        if (valueOut < minValueOut) revert SlippageExceeded(valueOut, minValueOut);
++
++        _stakeLp();
++    }
++
++    /// @dev Stakes any loose LP.
++    function _stakeLp() internal {
++        uint256 lp = IERC20(address(pool)).balanceOf(address(this));
++        if (lp == 0) return;
++        IERC20(address(pool)).forceApprove(address(gauge), lp);
++        gauge.deposit(lp);
++    }
++
++    /// @dev Burns `lpAmount` of LP and converts the WETH leg to USDC. The WETH sale is capped the
++    ///      same way {invest} is, so a single call frees at most roughly
++    ///      `2 * maxTradeReserveBps` of the pool - larger exits simply take more than one call.
++    ///      Called with `lpAmount == 0` it only drains leftover WETH, which is how a staged exit
++    ///      finishes.
++    function _unwind(uint256 lpAmount) internal {
++        uint256 total = totalLpBalance();
++        if (lpAmount > total) lpAmount = total;
++
++        if (lpAmount != 0) {
++            uint256 loose = IERC20(address(pool)).balanceOf(address(this));
++            if (loose < lpAmount) gauge.withdraw(lpAmount - loose);
++
++            (uint256 usdcPrice, uint256 ethPrice) = _pairPrices();
++            uint256 lpValueUsd = _lpValueUsd(lpAmount, usdcPrice, ethPrice);
++
++            IERC20(address(pool)).forceApprove(address(router), lpAmount);
++            (uint256 usdcOut, uint256 wethOut) =
++                router.removeLiquidity(asset, weth, false, lpAmount, 0, 0, address(this), block.timestamp);
++            IERC20(address(pool)).forceApprove(address(router), 0);
++
++            uint256 valueOut = FairLpMath.tokenValueUsd(usdcOut, _usdcDecimals, usdcPrice)
++                + FairLpMath.tokenValueUsd(wethOut, _wethDecimals, ethPrice);
++            uint256 minValueOut = lpValueUsd.mulDiv(MAX_BPS - maxSlippageBps, MAX_BPS);
++            if (valueOut < minValueOut) revert SlippageExceeded(valueOut, minValueOut);
++        }
++
++        uint256 wethBal = IERC20(weth).balanceOf(address(this));
++        if (wethBal == 0) return;
++
++        uint256 cap = _maxWethTrade();
++        _swapWethToUsdc(wethBal > cap ? cap : wethBal);
++    }
++
++    // ---------------------------------------------------------------------
++    // Internals: swaps
++    // ---------------------------------------------------------------------
++
++    function _swapUsdcToWeth(uint256 amountIn) internal returns (uint256 out) {
++        if (amountIn == 0) return 0;
++        (uint256 usdcPrice, uint256 ethPrice) = _pairPrices();
++        uint256 minOut = _minOut(amountIn, _usdcDecimals, usdcPrice, _wethDecimals, ethPrice);
++        out = _swapDirect(asset, weth, amountIn, minOut);
++    }
++
++    function _swapWethToUsdc(uint256 amountIn) internal returns (uint256 out) {
++        if (amountIn == 0) return 0;
++        (uint256 usdcPrice, uint256 ethPrice) = _pairPrices();
++        uint256 minOut = _minOut(amountIn, _wethDecimals, ethPrice, _usdcDecimals, usdcPrice);
++        out = _swapDirect(weth, asset, amountIn, minOut);
++    }
++
++    function _swapRewardToUsdc(uint256 amountIn) internal returns (uint256 out) {
++        uint256 aeroPrice = aeroUsdFeed.readPrice(aeroFeedHeartbeat);
++        uint256 usdcPrice = usdcUsdFeed.readPrice(usdcFeedHeartbeat);
++        uint256 minOut = _minOut(amountIn, _aeroDecimals, aeroPrice, _usdcDecimals, usdcPrice);
++
++        IERC20(aero).forceApprove(address(router), amountIn);
++        uint256[] memory amounts =
++            router.swapExactTokensForTokens(amountIn, minOut, _rewardRoute, address(this), block.timestamp);
++        IERC20(aero).forceApprove(address(router), 0);
++        out = amounts[amounts.length - 1];
++    }
++
++    function _swapDirect(address tokenIn, address tokenOut, uint256 amountIn, uint256 minOut)
++        internal
++        returns (uint256 out)
++    {
++        // A trade whose oracle-fair output rounds to zero is dust: skip it rather than burn gas or
++        // revert inside the pool on a zero-output swap.
++        if (amountIn == 0 || minOut == 0) return 0;
++
++        IAerodromeRouter.Route[] memory route = new IAerodromeRouter.Route[](1);
++        route[0] = IAerodromeRouter.Route({from: tokenIn, to: tokenOut, stable: false, factory: poolFactory});
++
++        IERC20(tokenIn).forceApprove(address(router), amountIn);
++        uint256[] memory amounts =
++            router.swapExactTokensForTokens(amountIn, minOut, route, address(this), block.timestamp);
++        IERC20(tokenIn).forceApprove(address(router), 0);
++        out = amounts[amounts.length - 1];
++    }
++
++    /// @dev Oracle-implied output for a swap, less `maxSlippageBps`.
++    function _minOut(uint256 amountIn, uint8 decIn, uint256 priceIn, uint8 decOut, uint256 priceOut)
++        internal
++        view
++        returns (uint256)
++    {
++        uint256 valueUsd = FairLpMath.tokenValueUsd(amountIn, decIn, priceIn);
++        uint256 fairOut = FairLpMath.usdToToken(valueUsd, decOut, priceOut);
++        return fairOut.mulDiv(MAX_BPS - maxSlippageBps, MAX_BPS);
++    }
++
++    // ---------------------------------------------------------------------
++    // Internals: pricing
++    // ---------------------------------------------------------------------
++
++    function _pairPrices() internal view returns (uint256 usdcPrice, uint256 ethPrice) {
++        usdcPrice = usdcUsdFeed.readPrice(usdcFeedHeartbeat);
++        ethPrice = ethUsdFeed.readPrice(ethFeedHeartbeat);
++    }
++
++    function _lpValueUsd(uint256 lpAmount, uint256 usdcPrice, uint256 ethPrice) internal view returns (uint256) {
++        if (lpAmount == 0) return 0;
++        return FairLpMath.lpValueUsd(_poolState(usdcPrice, ethPrice), lpAmount);
++    }
++
++    /// @dev Reserves, supply, decimals and oracle prices in the pool's own token order.
++    function _poolState(uint256 usdcPrice, uint256 ethPrice) internal view returns (FairLpMath.PoolState memory s) {
++        (s.reserve0, s.reserve1,) = pool.getReserves();
++        s.totalSupply = pool.totalSupply();
++        if (_usdcIsToken0) {
++            (s.price0, s.price1) = (usdcPrice, ethPrice);
++            (s.decimals0, s.decimals1) = (_usdcDecimals, _wethDecimals);
++        } else {
++            (s.price0, s.price1) = (ethPrice, usdcPrice);
++            (s.decimals0, s.decimals1) = (_wethDecimals, _usdcDecimals);
++        }
++    }
++
++    /// @dev USDC value of WETH the strategy is currently sitting on.
++    function _idleWethAsUsdc() internal view returns (uint256) {
++        uint256 wethBal = IERC20(weth).balanceOf(address(this));
++        if (wethBal == 0) return 0;
++        (uint256 usdcPrice, uint256 ethPrice) = _pairPrices();
++        return
++            FairLpMath.usdToToken(FairLpMath.tokenValueUsd(wethBal, _wethDecimals, ethPrice), _usdcDecimals, usdcPrice);
++    }
++
++    /// @dev How much LP is worth `usdcAmount`, rounded up.
++    function _lpForUsdc(uint256 usdcAmount) internal view returns (uint256) {
++        uint256 lpTotal = totalLpBalance();
++        if (lpTotal == 0 || usdcAmount == 0) return 0;
++
++        (uint256 usdcPrice, uint256 ethPrice) = _pairPrices();
++        uint256 positionUsd = _lpValueUsd(lpTotal, usdcPrice, ethPrice);
++        if (positionUsd == 0) return 0;
++
++        uint256 wantUsd = FairLpMath.tokenValueUsd(usdcAmount, _usdcDecimals, usdcPrice);
++        if (wantUsd >= positionUsd) return lpTotal;
++        return wantUsd.mulDiv(lpTotal, positionUsd, Math.Rounding.Ceil);
++    }
++
++    // ---------------------------------------------------------------------
++    // Admin
++    // ---------------------------------------------------------------------
++
++    function setMaxSlippage(uint256 bps) external onlyOwner {
++        if (bps > MAX_SLIPPAGE_BPS) revert SlippageTooHigh(bps);
++        maxSlippageBps = bps;
++        emit MaxSlippageUpdated(bps);
++    }
++
++    function setUnwindBuffer(uint256 bps) external onlyOwner {
++        if (bps > MAX_SLIPPAGE_BPS) revert SlippageTooHigh(bps);
++        unwindBufferBps = bps;
++        emit UnwindBufferUpdated(bps);
++    }
++
++    /// @notice Sets the per-call invest trade cap as a fraction of the pool's USDC reserve.
++    function setMaxTradeReserve(uint256 bps) external onlyOwner {
++        if (bps == 0 || bps > 1_000) revert TradeSizeTooHigh(bps);
++        maxTradeReserveBps = bps;
++        emit MaxTradeReserveUpdated(bps);
++    }
++
++    function setThresholds(uint256 minInvestUsdc_, uint256 minHarvestAero_) external onlyOwner {
++        minInvestUsdc = minInvestUsdc_;
++        minHarvestAero = minHarvestAero_;
++        emit ThresholdsUpdated(minInvestUsdc_, minHarvestAero_);
++    }
++
++    /// @notice Repoints the AERO -> USDC swap path, e.g. if a deeper route appears.
++    function setRewardRoute(IAerodromeRouter.Route[] memory route) external onlyOwner {
++        _setRewardRoute(route);
++    }
++
++    /// @notice Unwinds `lpAmount` of the position to idle USDC held by the strategy.
++    /// @dev Exists so a position that is large relative to the pool can be exited in stages, each
++    ///      one small enough to clear the `maxSlippageBps` check, before the vault retires the
++    ///      strategy. Pass `type(uint256).max` to take as much as one call allows; call it with 0
++    ///      to sell WETH that a previous capped call left behind.
++    function unwind(uint256 lpAmount) external onlyOwner {
++        _unwind(lpAmount);
++    }
++
++    /// @notice Stops the strategy re-investing; {harvest} then only claims and converts rewards.
++    function setEmergencyExit(bool enabled) external onlyOwner {
++        emergencyExit = enabled;
++        emit EmergencyExitSet(enabled);
++    }
++
++    /// @notice Recovers tokens that are not part of the position (airdrops, mistaken transfers).
++    function sweep(address token, address to) external onlyOwner {
++        if (token == asset || token == weth || token == aero || token == address(pool)) revert ProtectedToken(token);
++        if (to == address(0)) revert ZeroAddress();
++        IERC20(token).safeTransfer(to, IERC20(token).balanceOf(address(this)));
++    }
++
++    function _setRewardRoute(IAerodromeRouter.Route[] memory route) internal {
++        uint256 len = route.length;
++        if (len == 0 || route[0].from != aero || route[len - 1].to != asset) revert BadRewardRoute();
++
++        delete _rewardRoute;
++        for (uint256 i; i < len; ++i) {
++            if (i != 0 && route[i].from != route[i - 1].to) revert BadRewardRoute();
++            if (route[i].factory == address(0)) revert BadRewardRoute();
++            // `poolFor` returns a deterministic CREATE2 address whether or not the pool was ever
++            // deployed, so check there is actually code there rather than only a non-zero address.
++            address hopPool = router.poolFor(route[i].from, route[i].to, route[i].stable, route[i].factory);
++            if (hopPool.code.length == 0) revert BadRewardRoute();
++            _rewardRoute.push(route[i]);
++        }
++        emit RewardRouteUpdated(len);
++    }
++}
+diff --git a/test/BaseTest.sol b/test/BaseTest.sol
+new file mode 100644
+index 0000000..104a94e
+--- /dev/null
++++ b/test/BaseTest.sol
+@@ -0,0 +1,193 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.24;
++
++import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
++
++import {PoolArb} from "./helpers/PoolArb.sol";
++
++import {YieldVault} from "../src/YieldVault.sol";
++import {AerodromeUsdcWethStrategy} from "../src/strategies/AerodromeUsdcWethStrategy.sol";
++import {IAerodromeRouter, IAerodromePool} from "../src/interfaces/IAerodrome.sol";
++
++import {MockERC20} from "./mocks/MockERC20.sol";
++import {MockAggregator} from "./mocks/MockAggregator.sol";
++import {MockAerodromePool} from "./mocks/MockAerodromePool.sol";
++import {MockAerodromeRouter} from "./mocks/MockAerodromeRouter.sol";
++import {MockAerodromeGauge} from "./mocks/MockAerodromeGauge.sol";
++
++/// @notice Shared fixture: a USDC/WETH volatile pool at $3000/ETH, an AERO/USDC pool at $1/AERO,
++///         a gauge over the USDC/WETH LP, Chainlink stand-ins, and a vault wired to the strategy.
++abstract contract BaseTest is PoolArb {
++    uint256 internal constant USDC_UNIT = 1e6;
++    uint256 internal constant WAD = 1e18;
++    int256 internal constant ETH_PRICE = 3000e8;
++    int256 internal constant USDC_PRICE = 1e8;
++    int256 internal constant AERO_PRICE = 1e8;
++    uint256 internal constant POOL_FEE_BPS = 30; // 0.30%
++
++    address internal owner = makeAddr("owner");
++    address internal treasury = makeAddr("treasury");
++    address internal keeper = makeAddr("keeper");
++    address internal alice = makeAddr("alice");
++    address internal bob = makeAddr("bob");
++    address internal factory = makeAddr("factory");
++
++    MockERC20 internal usdc;
++    MockERC20 internal weth;
++    MockERC20 internal aero;
++
++    MockAerodromePool internal pool; // USDC/WETH
++    MockAerodromePool internal aeroPool; // AERO/USDC
++    MockAerodromeRouter internal router;
++    MockAerodromeGauge internal gauge;
++
++    MockAggregator internal usdcFeed;
++    MockAggregator internal ethFeed;
++    MockAggregator internal aeroFeed;
++
++    YieldVault internal vault;
++    AerodromeUsdcWethStrategy internal strategy;
++
++    function setUp() public virtual {
++        vm.warp(1_700_000_000);
++
++        usdc = new MockERC20("USD Coin", "USDC", 6);
++        weth = new MockERC20("Wrapped Ether", "WETH", 18);
++        aero = new MockERC20("Aerodrome", "AERO", 18);
++
++        usdcFeed = new MockAggregator(8, USDC_PRICE, "USDC / USD");
++        ethFeed = new MockAggregator(8, ETH_PRICE, "ETH / USD");
++        aeroFeed = new MockAggregator(8, AERO_PRICE, "AERO / USD");
++
++        router = new MockAerodromeRouter(factory);
++
++        pool = new MockAerodromePool(address(usdc), address(weth), POOL_FEE_BPS);
++        aeroPool = new MockAerodromePool(address(aero), address(usdc), POOL_FEE_BPS);
++        router.registerPool(address(usdc), address(weth), false, address(pool));
++        router.registerPool(address(aero), address(usdc), false, address(aeroPool));
++
++        // Sized to be in the same ballpark as the live Aerodrome vAMM-WETH/USDC pool on Base
++        // (tens of millions), so trade sizes in these tests have realistic price impact.
++        _seedPool(pool, address(usdc), 30_000_000 * USDC_UNIT, address(weth), 10_000 * WAD);
++        _seedPool(aeroPool, address(aero), 20_000_000 * WAD, address(usdc), 20_000_000 * USDC_UNIT);
++
++        gauge = new MockAerodromeGauge(address(pool), address(aero));
++
++        vault = new YieldVault(IERC20(address(usdc)), "Yield USDC", "yvUSDC", owner, treasury);
++
++        IAerodromeRouter.Route[] memory rewardRoute = new IAerodromeRouter.Route[](1);
++        rewardRoute[0] =
++            IAerodromeRouter.Route({from: address(aero), to: address(usdc), stable: false, factory: factory});
++
++        strategy = new AerodromeUsdcWethStrategy(
++            AerodromeUsdcWethStrategy.Config({
++                vault: address(vault),
++                usdc: address(usdc),
++                weth: address(weth),
++                aero: address(aero),
++                router: address(router),
++                gauge: address(gauge),
++                usdcUsdFeed: address(usdcFeed),
++                ethUsdFeed: address(ethFeed),
++                aeroUsdFeed: address(aeroFeed),
++                usdcFeedHeartbeat: 1 days,
++                ethFeedHeartbeat: 20 minutes,
++                aeroFeedHeartbeat: 1 days
++            }),
++            owner,
++            rewardRoute
++        );
++
++        vm.startPrank(owner);
++        vault.setStrategy(strategy);
++        vault.setKeeper(keeper, true);
++        vm.stopPrank();
++    }
++
++    // --- helpers ---
++
++    function _seedPool(MockAerodromePool p, address tokenA, uint256 amountA, address tokenB, uint256 amountB) internal {
++        MockERC20(tokenA).mint(address(p), amountA);
++        MockERC20(tokenB).mint(address(p), amountB);
++        p.mint(address(this));
++    }
++
++    function _deposit(address user, uint256 assets) internal returns (uint256 shares) {
++        usdc.mint(user, assets);
++        vm.startPrank(user);
++        usdc.approve(address(vault), assets);
++        shares = vault.deposit(assets, user);
++        vm.stopPrank();
++    }
++
++    /// @dev Emits `amount` of AERO to current gauge stakers.
++    function _emitRewards(uint256 amount) internal {
++        aero.mint(address(this), amount);
++        aero.approve(address(gauge), amount);
++        gauge.notifyRewardAmount(amount);
++    }
++
++    /// @dev Simulates swap fees accruing to the USDC/WETH pool by donating to both sides.
++    function _accrueTradingFees(uint256 usdcAmount, uint256 wethAmount) internal {
++        usdc.mint(address(pool), usdcAmount);
++        weth.mint(address(pool), wethAmount);
++        pool.sync();
++    }
++
++    /// @dev Pushes the USDC/WETH pool price by swapping `usdcIn` USDC for WETH.
++    function _pushPriceWithUsdc(uint256 usdcIn) internal {
++        usdc.mint(address(this), usdcIn);
++        usdc.approve(address(router), usdcIn);
++        IAerodromeRouter.Route[] memory r = new IAerodromeRouter.Route[](1);
++        r[0] = IAerodromeRouter.Route({from: address(usdc), to: address(weth), stable: false, factory: factory});
++        router.swapExactTokensForTokens(usdcIn, 0, r, address(this), block.timestamp);
++    }
++
++    /// @dev Exits `user` completely in `chunks` redemptions. A position larger than roughly
++    ///      `2 * maxTradeReserveBps` of the pool cannot be unwound in one transaction; on a live
++    ///      chain arbitrage restores the pool price between them.
++    function _exitInChunks(address user, uint256 chunks) internal returns (uint256 received) {
++        uint256 shares = vault.balanceOf(user);
++        for (uint256 i; i < chunks; ++i) {
++            uint256 slice = i + 1 == chunks ? vault.balanceOf(user) : shares / chunks;
++            vm.prank(user);
++            received += vault.redeem(slice, user, user);
++            _arbPoolToOracle();
++        }
++    }
++
++    /// @dev Runs the staged-exit runbook until the strategy holds only USDC.
++    function _drainStrategy() internal {
++        for (uint256 i; i < 20; ++i) {
++            if (strategy.totalLpBalance() == 0 && weth.balanceOf(address(strategy)) < 1e12) return;
++            vm.prank(owner);
++            strategy.unwind(type(uint256).max);
++            _arbPoolToOracle();
++        }
++        revert("strategy did not drain");
++    }
++
++    /// @dev See {PoolArb}: models the arbitrage that realigns the pool between keeper passes.
++    function _arbPoolToOracle() internal {
++        _arbToOracle(
++            PoolArb.Venue({
++                router: IAerodromeRouter(address(router)),
++                pool: IAerodromePool(address(pool)),
++                factory: factory,
++                usdc: address(usdc),
++                weth: address(weth),
++                // forge-lint: disable-start(unsafe-typecast) - both are positive literals
++                usdcPrice: uint256(USDC_PRICE),
++                ethPrice: uint256(ETH_PRICE)
++                // forge-lint: disable-end(unsafe-typecast)
++            })
++        );
++    }
++
++    /// @dev Keeps the Chainlink stand-ins fresh across `vm.warp`.
++    function _refreshFeeds() internal {
++        usdcFeed.setAnswer(usdcFeed.answer());
++        ethFeed.setAnswer(ethFeed.answer());
++        aeroFeed.setAnswer(aeroFeed.answer());
++    }
++}
+diff --git a/test/fork/BaseFork.t.sol b/test/fork/BaseFork.t.sol
+new file mode 100644
+index 0000000..8ed78e0
+--- /dev/null
++++ b/test/fork/BaseFork.t.sol
+@@ -0,0 +1,288 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.24;
++
++import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
++import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
++
++import {YieldVault} from "../../src/YieldVault.sol";
++import {AerodromeUsdcWethStrategy} from "../../src/strategies/AerodromeUsdcWethStrategy.sol";
++import {BaseAddresses} from "../../src/BaseAddresses.sol";
++import {ChainlinkLib} from "../../src/libraries/ChainlinkLib.sol";
++import {IAggregatorV3} from "../../src/interfaces/IAggregatorV3.sol";
++import {IAerodromeRouter, IAerodromePool, IAerodromeGauge, IAerodromeVoter} from "../../src/interfaces/IAerodrome.sol";
++import {PoolArb} from "../helpers/PoolArb.sol";
++
++/// @notice Runs the real thing against live Base state. Skipped unless BASE_RPC_URL is set:
++///
++///     BASE_RPC_URL=https://mainnet.base.org forge test --match-path 'test/fork/*'
++///
++/// These are the tests that check the constants in {BaseAddresses} are still correct, that the
++/// Aerodrome interfaces in `src/interfaces` match the deployed ABIs, and that a full
++/// deposit -> harvest -> withdraw cycle works against the actual pool and gauge.
++contract BaseForkTest is PoolArb {
++    uint256 internal constant USDC_UNIT = 1e6;
++
++    address internal owner = makeAddr("owner");
++    address internal treasury = makeAddr("treasury");
++    address internal keeper = makeAddr("keeper");
++    address internal alice = makeAddr("alice");
++
++    IERC20 internal usdc = IERC20(BaseAddresses.USDC);
++    IAerodromePool internal pool;
++    IAerodromeGauge internal gauge;
++
++    YieldVault internal vault;
++    AerodromeUsdcWethStrategy internal strategy;
++
++    function setUp() public {
++        string memory rpc = vm.envOr("BASE_RPC_URL", string(""));
++        if (bytes(rpc).length == 0) {
++            vm.skip(true);
++            return;
++        }
++        vm.createSelectFork(rpc);
++
++        address poolAddr = IAerodromeRouter(BaseAddresses.AERODROME_ROUTER)
++            .poolFor(BaseAddresses.USDC, BaseAddresses.WETH, false, BaseAddresses.AERODROME_POOL_FACTORY);
++        pool = IAerodromePool(poolAddr);
++        gauge = IAerodromeGauge(IAerodromeVoter(BaseAddresses.AERODROME_VOTER).gauges(poolAddr));
++
++        vault = new YieldVault(usdc, "Yield USDC", "yvUSDC", owner, treasury);
++
++        IAerodromeRouter.Route[] memory route = new IAerodromeRouter.Route[](1);
++        route[0] = IAerodromeRouter.Route({
++            from: BaseAddresses.AERO,
++            to: BaseAddresses.USDC,
++            stable: false,
++            factory: BaseAddresses.AERODROME_POOL_FACTORY
++        });
++
++        strategy = new AerodromeUsdcWethStrategy(
++            AerodromeUsdcWethStrategy.Config({
++                vault: address(vault),
++                usdc: BaseAddresses.USDC,
++                weth: BaseAddresses.WETH,
++                aero: BaseAddresses.AERO,
++                router: BaseAddresses.AERODROME_ROUTER,
++                gauge: address(gauge),
++                usdcUsdFeed: BaseAddresses.USDC_USD_FEED,
++                ethUsdFeed: BaseAddresses.ETH_USD_FEED,
++                aeroUsdFeed: BaseAddresses.AERO_USD_FEED,
++                usdcFeedHeartbeat: BaseAddresses.USDC_USD_HEARTBEAT,
++                ethFeedHeartbeat: BaseAddresses.ETH_USD_HEARTBEAT,
++                aeroFeedHeartbeat: BaseAddresses.AERO_USD_HEARTBEAT
++            }),
++            owner,
++            route
++        );
++
++        vm.startPrank(owner);
++        vault.setStrategy(strategy);
++        vault.setKeeper(keeper, true);
++        vm.stopPrank();
++    }
++
++    function test_fork_addressConstantsResolve() public view {
++        assertEq(block.chainid, BaseAddresses.CHAIN_ID, "wrong chain");
++        assertEq(IERC20Metadata(BaseAddresses.USDC).symbol(), "USDC");
++        assertEq(IERC20Metadata(BaseAddresses.USDC).decimals(), 6);
++        assertEq(IERC20Metadata(BaseAddresses.WETH).symbol(), "WETH");
++        assertEq(IERC20Metadata(BaseAddresses.AERO).symbol(), "AERO");
++
++        assertEq(
++            IAerodromeRouter(BaseAddresses.AERODROME_ROUTER).defaultFactory(),
++            BaseAddresses.AERODROME_POOL_FACTORY,
++            "router's default factory changed"
++        );
++
++        assertTrue(address(pool) != address(0), "USDC/WETH volatile pool not found");
++        assertFalse(pool.stable());
++        assertTrue(address(gauge) != address(0), "pool is not gauged");
++        assertTrue(IAerodromeVoter(BaseAddresses.AERODROME_VOTER).isAlive(address(gauge)), "gauge is dead");
++        assertEq(gauge.stakingToken(), address(pool));
++        assertEq(gauge.rewardToken(), BaseAddresses.AERO);
++    }
++
++    function test_fork_priceFeedsAreLiveAndSane() public view {
++        assertEq(IAggregatorV3(BaseAddresses.ETH_USD_FEED).decimals(), 8);
++        assertEq(IAggregatorV3(BaseAddresses.USDC_USD_FEED).decimals(), 8);
++        assertEq(IAggregatorV3(BaseAddresses.AERO_USD_FEED).decimals(), 8);
++
++        uint256 eth = ChainlinkLib.readPrice(IAggregatorV3(BaseAddresses.ETH_USD_FEED), 1 days);
++        uint256 usd = ChainlinkLib.readPrice(IAggregatorV3(BaseAddresses.USDC_USD_FEED), 2 days);
++        uint256 aero = ChainlinkLib.readPrice(IAggregatorV3(BaseAddresses.AERO_USD_FEED), 2 days);
++
++        assertGt(eth, 100e8, "ETH under $100 - wrong feed?");
++        assertLt(eth, 1_000_000e8);
++        assertApproxEqRel(usd, 1e8, 0.05e18, "USDC is not near $1");
++        assertGt(aero, 0);
++        assertLt(aero, 1_000e8);
++    }
++
++    /// @notice The fair-reserves valuation should agree with the pool's own spot valuation while the
++    ///         pool is arbitraged, which it is on a live fork.
++    function test_fork_lpValuationMatchesSpot() public view {
++        (uint256 r0, uint256 r1,) = pool.getReserves();
++        uint256 ethPrice = ChainlinkLib.readPrice(IAggregatorV3(BaseAddresses.ETH_USD_FEED), 1 days);
++        uint256 usdcPrice = ChainlinkLib.readPrice(IAggregatorV3(BaseAddresses.USDC_USD_FEED), 2 days);
++
++        (uint256 usdcReserve, uint256 wethReserve) = pool.token0() == BaseAddresses.USDC ? (r0, r1) : (r1, r0);
++
++        uint256 spotUsd = usdcReserve * usdcPrice / 1e8 + (wethReserve * ethPrice / 1e8) / 1e12;
++        uint256 fairUsdc = _totalPoolValueAsUsdc();
++
++        assertApproxEqRel(fairUsdc, spotUsd, 0.02e18, "fair value disagrees with an arbitraged pool");
++    }
++
++    function test_fork_depositHarvestWithdrawCycle() public {
++        uint256 amount = 50_000 * USDC_UNIT;
++        deal(BaseAddresses.USDC, alice, amount);
++
++        vm.startPrank(alice);
++        usdc.approve(address(vault), amount);
++        vault.deposit(amount, alice);
++        vm.stopPrank();
++
++        assertEq(vault.totalAssets(), amount);
++
++        vm.prank(keeper);
++        vault.harvest();
++
++        assertGt(gauge.balanceOf(address(strategy)), 0, "LP is staked in the live gauge");
++        assertApproxEqRel(vault.totalAssets(), amount, 0.01e18, "entering the pool cost under 1%");
++
++        // Let real emissions accrue, then compound them. Chainlink cannot post inside a fork, so
++        // stand in for the rounds that would have landed during those three days; likewise nothing
++        // arbitrages the pool back after our own entry swap, so do that too.
++        vm.warp(block.timestamp + 3 days);
++        vm.roll(block.number + 3 days / 2);
++        _refreshFeeds();
++        _arbPoolToOracle();
++
++        uint256 pending = strategy.pendingRewards();
++        emit log_named_decimal_uint("AERO earned over 3 days", pending, 18);
++
++        vm.prank(keeper);
++        (uint256 rewards,,) = vault.harvest();
++        if (pending > 1e18) {
++            assertGt(rewards, 0, "emissions should convert to USDC");
++            assertGt(vault.balanceOf(treasury), 0, "performance fee minted");
++        }
++
++        // The live vAMM pool holds only ~$8M, so one transaction can unwind roughly
++        // `2 * maxTradeReserveBps` of it. Exit half here; the chunked path for a full exit is
++        // covered in test/integration/Lifecycle.t.sol.
++        uint256 half = vault.balanceOf(alice) / 2;
++        uint256 quoted = vault.previewRedeem(half);
++        vm.prank(alice);
++        uint256 got = vault.redeem(half, alice, alice);
++
++        assertEq(got, quoted, "redeem must match previewRedeem exactly");
++        assertApproxEqRel(got, amount / 2, 0.02e18, "round trip within 2% of principal");
++    }
++
++    /// @notice Documents the live pool's per-transaction capacity: an exit larger than the strategy
++    ///         can unwind in one call is refused with the amount that is actually available, rather
++    ///         than filled at a bad price.
++    function test_fork_oversizedExitIsRefusedNotFilledBadly() public {
++        uint256 amount = 200_000 * USDC_UNIT;
++        deal(BaseAddresses.USDC, alice, amount);
++
++        vm.startPrank(alice);
++        usdc.approve(address(vault), amount);
++        vault.deposit(amount, alice);
++        vm.stopPrank();
++
++        vm.prank(keeper);
++        vault.harvest();
++
++        // Deploy the balance over several keeper passes, as the depth cap requires.
++        for (uint256 i; i < 8; ++i) {
++            _arbPoolToOracle();
++            vm.prank(keeper);
++            vault.harvest();
++        }
++        _arbPoolToOracle();
++        assertGt(strategy.totalLpBalance(), 0);
++
++        uint256 shares = vault.balanceOf(alice);
++        vm.prank(alice);
++        vm.expectPartialRevert(YieldVault.InsufficientLiquidity.selector);
++        vault.redeem(shares, alice, alice);
++
++        // A chunk inside that capacity clears immediately, so exits are staged rather than blocked.
++        vm.prank(alice);
++        vault.withdraw(25_000 * USDC_UNIT, alice, alice);
++        assertEq(usdc.balanceOf(alice), 25_000 * USDC_UNIT);
++        assertGt(vault.balanceOf(alice), 0, "the rest stays invested for the next transaction");
++    }
++
++    /// @dev See {PoolArb}.
++    function _arbPoolToOracle() internal {
++        _arbToOracle(
++            PoolArb.Venue({
++                router: IAerodromeRouter(BaseAddresses.AERODROME_ROUTER),
++                pool: pool,
++                factory: BaseAddresses.AERODROME_POOL_FACTORY,
++                usdc: BaseAddresses.USDC,
++                weth: BaseAddresses.WETH,
++                usdcPrice: ChainlinkLib.readPrice(IAggregatorV3(BaseAddresses.USDC_USD_FEED), 2 days),
++                ethPrice: ChainlinkLib.readPrice(IAggregatorV3(BaseAddresses.ETH_USD_FEED), 1 days)
++            })
++        );
++    }
++
++    function test_fork_withdrawSkipsTheDexWhenTheBufferCovers() public {
++        uint256 amount = 100_000 * USDC_UNIT;
++        deal(BaseAddresses.USDC, alice, amount);
++
++        vm.startPrank(alice);
++        usdc.approve(address(vault), amount);
++        vault.deposit(amount, alice);
++        vm.stopPrank();
++
++        vm.prank(keeper);
++        vault.harvest();
++
++        uint256 lpBefore = strategy.totalLpBalance();
++        vm.prank(alice);
++        vault.withdraw(1_000 * USDC_UNIT, alice, alice);
++
++        assertEq(strategy.totalLpBalance(), lpBefore, "served from the idle buffer");
++        assertEq(usdc.balanceOf(alice), 1_000 * USDC_UNIT);
++    }
++
++    /// @dev Re-posts each feed's latest answer at the current timestamp.
++    function _refreshFeeds() internal {
++        address[3] memory feeds = [BaseAddresses.ETH_USD_FEED, BaseAddresses.USDC_USD_FEED, BaseAddresses.AERO_USD_FEED];
++        for (uint256 i; i < feeds.length; ++i) {
++            (uint80 roundId, int256 answer,,,) = IAggregatorV3(feeds[i]).latestRoundData();
++            vm.mockCall(
++                feeds[i],
++                abi.encodeWithSelector(IAggregatorV3.latestRoundData.selector),
++                abi.encode(roundId, answer, block.timestamp, block.timestamp, roundId)
++            );
++        }
++    }
++
++    /// @dev The whole pool valued the way the strategy values its slice of it.
++    function _totalPoolValueAsUsdc() internal view returns (uint256) {
++        (uint256 r0, uint256 r1,) = pool.getReserves();
++        uint256 ethPrice = ChainlinkLib.readPrice(IAggregatorV3(BaseAddresses.ETH_USD_FEED), 1 days);
++        uint256 usdcPrice = ChainlinkLib.readPrice(IAggregatorV3(BaseAddresses.USDC_USD_FEED), 2 days);
++
++        bool usdcIsToken0 = pool.token0() == BaseAddresses.USDC;
++        FairLpMathShim.PoolState memory s = FairLpMathShim.PoolState({
++            reserve0: r0,
++            reserve1: r1,
++            totalSupply: pool.totalSupply(),
++            price0: usdcIsToken0 ? usdcPrice : ethPrice,
++            price1: usdcIsToken0 ? ethPrice : usdcPrice,
++            decimals0: usdcIsToken0 ? 6 : 18,
++            decimals1: usdcIsToken0 ? 18 : 6
++        });
++        return FairLpMathShim.usdToToken(FairLpMathShim.lpValueUsd(s, s.totalSupply), 6, usdcPrice);
++    }
++}
++
++import {FairLpMath as FairLpMathShim} from "../../src/libraries/FairLpMath.sol";
+diff --git a/test/helpers/PoolArb.sol b/test/helpers/PoolArb.sol
+new file mode 100644
+index 0000000..bf68307
+--- /dev/null
++++ b/test/helpers/PoolArb.sol
+@@ -0,0 +1,56 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.24;
++
++import {Test} from "forge-std/Test.sol";
++import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
++import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
++
++import {IAerodromeRouter, IAerodromePool} from "../../src/interfaces/IAerodrome.sol";
++
++/// @notice Stands in for the arbitrageurs that keep a live pool pinned to the market price.
++/// @dev The strategy's own swaps leave the pool roughly `2 x tradeSize` away from the oracle. On
++///      Base that gap is closed within a block or two; in a test nothing closes it, so consecutive
++///      harvests would drift further and further out and trip the slippage guard for reasons that
++///      never occur in production. Both the local suite and the fork suite call this between
++///      keeper passes so they measure the strategy, not the absence of arbitrage.
++abstract contract PoolArb is Test {
++    struct Venue {
++        IAerodromeRouter router;
++        IAerodromePool pool;
++        address factory;
++        address usdc;
++        address weth;
++        uint256 usdcPrice; // 8 decimals
++        uint256 ethPrice; // 8 decimals
++    }
++
++    function _arbToOracle(Venue memory v) internal {
++        (uint256 r0, uint256 r1,) = v.pool.getReserves();
++        (uint256 reserveUsdc, uint256 reserveWeth) = v.pool.token0() == v.usdc ? (r0, r1) : (r1, r0);
++
++        // Constant-product reserves that would price ETH at the oracle: r0' = sqrt(k * p1/p0).
++        uint256 usdc18 = reserveUsdc * 1e12;
++        uint256 k = usdc18 * reserveWeth;
++        uint256 priceWad = Math.mulDiv(v.ethPrice, 1e18, v.usdcPrice);
++        uint256 targetUsdc18 = Math.sqrt(Math.mulDiv(k, priceWad, 1e18));
++
++        if (targetUsdc18 > usdc18) {
++            uint256 amountIn = (targetUsdc18 - usdc18) / 1e12;
++            if (amountIn < 1e4) return; // already aligned to within a cent
++            _swap(v, v.usdc, v.weth, amountIn);
++        } else {
++            uint256 targetWeth = k / targetUsdc18;
++            if (targetWeth <= reserveWeth + 1e12) return;
++            _swap(v, v.weth, v.usdc, targetWeth - reserveWeth);
++        }
++    }
++
++    function _swap(Venue memory v, address tokenIn, address tokenOut, uint256 amountIn) private {
++        deal(tokenIn, address(this), IERC20(tokenIn).balanceOf(address(this)) + amountIn);
++        IERC20(tokenIn).approve(address(v.router), amountIn);
++
++        IAerodromeRouter.Route[] memory route = new IAerodromeRouter.Route[](1);
++        route[0] = IAerodromeRouter.Route({from: tokenIn, to: tokenOut, stable: false, factory: v.factory});
++        v.router.swapExactTokensForTokens(amountIn, 0, route, address(this), block.timestamp);
++    }
++}
+diff --git a/test/integration/Lifecycle.t.sol b/test/integration/Lifecycle.t.sol
+new file mode 100644
+index 0000000..cb5f10d
+--- /dev/null
++++ b/test/integration/Lifecycle.t.sol
+@@ -0,0 +1,182 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.24;
++
++import {BaseTest} from "../BaseTest.sol";
++
++/// @notice End-to-end behaviour across many depositors, harvests and exits.
++contract LifecycleTest is BaseTest {
++    address internal carol = makeAddr("carol");
++
++    /// @dev One keeper cycle: emissions accrue, the keeper compounds, arbitrageurs realign the pool.
++    function _cycle(uint256 aeroEmitted) internal {
++        vm.warp(block.timestamp + 12 hours);
++        _refreshFeeds();
++        if (aeroEmitted != 0 && gauge.totalStaked() > 0) _emitRewards(aeroEmitted);
++        vm.prank(keeper);
++        vault.harvest();
++        _arbPoolToOracle();
++    }
++
++    function test_sharePriceRisesOnceTheCapitalIsDeployed() public {
++        _deposit(alice, 200_000 * USDC_UNIT);
++        _cycle(0); // first pass just moves USDC into the LP
++
++        uint256 last = vault.convertToAssets(1e18);
++        assertLt(last, 1e6, "entering the LP costs the pool fee plus price impact, once");
++
++        for (uint256 i; i < 6; ++i) {
++            _cycle(2_000 * WAD);
++            uint256 current = vault.convertToAssets(1e18);
++            assertGe(current, last, "share price regressed on harvest");
++            last = current;
++        }
++
++        assertGt(last, 1e6, "emissions more than repaid the entry cost");
++    }
++
++    function test_lateDepositorDoesNotDiluteEarlierYield() public {
++        _deposit(alice, 100_000 * USDC_UNIT);
++        _cycle(0);
++        uint256 aliceValueBefore = vault.convertToAssets(vault.balanceOf(alice));
++        _cycle(5_000 * WAD);
++
++        uint256 alicePerShare = vault.convertToAssets(1e18);
++
++        // Bob arrives after the yield has already been booked.
++        uint256 bobShares = _deposit(bob, 100_000 * USDC_UNIT);
++        assertApproxEqRel(vault.convertToAssets(bobShares), 100_000 * USDC_UNIT, 1e12, "bob pays the live price");
++        assertEq(vault.convertToAssets(1e18), alicePerShare, "his deposit does not move the price");
++
++        assertGt(vault.convertToAssets(vault.balanceOf(alice)), aliceValueBefore, "alice keeps her yield");
++    }
++
++    function test_threeDepositorsExitInFull() public {
++        _deposit(alice, 150_000 * USDC_UNIT);
++        _cycle(0);
++        _cycle(3_000 * WAD);
++        _deposit(bob, 250_000 * USDC_UNIT);
++        _cycle(3_000 * WAD);
++        _deposit(carol, 100_000 * USDC_UNIT);
++        _cycle(3_000 * WAD);
++
++        address[3] memory users = [alice, bob, carol];
++        for (uint256 i; i < users.length; ++i) {
++            uint256 got = _exitInChunks(users[i], 3);
++            assertEq(usdc.balanceOf(users[i]), got);
++        }
++
++        // Everyone is out; only the treasury's fee shares remain.
++        assertEq(vault.balanceOf(alice) + vault.balanceOf(bob) + vault.balanceOf(carol), 0);
++        assertEq(vault.totalSupply(), vault.balanceOf(treasury));
++        assertGt(vault.balanceOf(treasury), 0);
++
++        // Each depositor came out ahead of principal despite the fees and two pool round trips.
++        assertGt(usdc.balanceOf(alice), 150_000 * USDC_UNIT);
++        assertGt(usdc.balanceOf(bob), 250_000 * USDC_UNIT);
++    }
++
++    function test_treasuryFeeIsRedeemable() public {
++        _deposit(alice, 200_000 * USDC_UNIT);
++        _cycle(0);
++        _cycle(10_000 * WAD);
++        _cycle(10_000 * WAD);
++
++        uint256 feeShares = vault.balanceOf(treasury);
++        assertGt(feeShares, 0);
++
++        vm.prank(treasury);
++        uint256 got = vault.redeem(feeShares, treasury, treasury);
++        assertGt(got, 1_500 * USDC_UNIT, "roughly 10% of ~20,000 USDC of emissions");
++        assertLt(got, 2_100 * USDC_UNIT);
++    }
++
++    /// @notice A flash-loan sandwich: deposit, wrench the pool, redeem in the same transaction.
++    ///         Oracle-based accounting plus the withdrawal fee must leave the attacker down.
++    function test_flashDepositManipulationIsNotProfitable() public {
++        _deposit(alice, 500_000 * USDC_UNIT);
++        _cycle(1_000 * WAD);
++
++        uint256 attackCapital = 2_000_000 * USDC_UNIT;
++        usdc.mint(bob, attackCapital);
++
++        vm.startPrank(bob);
++        usdc.approve(address(vault), type(uint256).max);
++        uint256 shares = vault.deposit(attackCapital, bob);
++        vm.stopPrank();
++
++        _pushPriceWithUsdc(12_000_000 * USDC_UNIT); // 40% of the USDC reserve
++
++        vm.prank(bob);
++        vault.redeem(shares, bob, bob);
++
++        assertLt(usdc.balanceOf(bob), attackCapital, "manipulation must not pay");
++    }
++
++    /// @notice Yield must never let a holder redeem more than their pro-rata slice.
++    function testFuzz_redemptionNeverExceedsProRataShare(uint256 aliceIn, uint256 bobIn, uint256 emissions) public {
++        aliceIn = bound(aliceIn, 100 * USDC_UNIT, 500_000 * USDC_UNIT);
++        bobIn = bound(bobIn, 100 * USDC_UNIT, 500_000 * USDC_UNIT);
++        emissions = bound(emissions, 0, 20_000 * WAD);
++
++        _deposit(alice, aliceIn);
++        _deposit(bob, bobIn);
++        _cycle(emissions);
++
++        uint256 aliceShares = vault.balanceOf(alice);
++        uint256 proRata = vault.totalAssets() * aliceShares / vault.totalSupply();
++
++        vm.prank(alice);
++        uint256 got = vault.redeem(aliceShares, alice, alice);
++        assertLe(got, proRata, "redeemed more than the share was worth");
++
++        // And whatever is left still covers Bob and the treasury.
++        assertGe(vault.totalAssets() + 1, vault.convertToAssets(vault.totalSupply()));
++    }
++
++    function test_emergencyExitThenMigrate() public {
++        _deposit(alice, 300_000 * USDC_UNIT);
++        _cycle(5_000 * WAD);
++        _cycle(5_000 * WAD);
++
++        uint256 assetsBefore = vault.totalAssets();
++
++        // Stop compounding, unwind in stages, then retire the strategy entirely.
++        vm.prank(owner);
++        strategy.setEmergencyExit(true);
++        _drainStrategy();
++        vm.prank(owner);
++        vault.setStrategy(IStrategyNone(address(0)));
++
++        assertEq(strategy.totalLpBalance(), 0);
++        assertApproxEqRel(vault.idleAssets(), assetsBefore, 0.01e18, "value came back as USDC");
++
++        // Users can still exit normally against the idle balance.
++        uint256 shares = vault.balanceOf(alice);
++        vm.prank(alice);
++        uint256 got = vault.redeem(shares, alice, alice);
++        assertGt(got, 300_000 * USDC_UNIT);
++    }
++
++    /// @notice A single redemption can only unwind so much of the pool. Oversized exits revert with
++    ///         the amount that is actually available, and clear in chunks.
++    function test_oversizedExitRevertsThenClearsInChunks() public {
++        _deposit(alice, 1_000_000 * USDC_UNIT);
++        _cycle(0);
++        _cycle(0);
++        _cycle(0);
++
++        uint256 shares = vault.balanceOf(alice);
++        uint256 wanted = vault.previewRedeem(shares);
++
++        vm.prank(alice);
++        vm.expectPartialRevert(YieldVaultErrors.InsufficientLiquidity.selector);
++        vault.redeem(shares, alice, alice);
++
++        uint256 got = _exitInChunks(alice, 10);
++        assertEq(vault.balanceOf(alice), 0);
++        assertApproxEqRel(got, wanted, 0.01e18, "chunked exit returns essentially the same value");
++    }
++}
++
++import {IStrategy as IStrategyNone} from "../../src/interfaces/IStrategy.sol";
++import {YieldVault as YieldVaultErrors} from "../../src/YieldVault.sol";
+diff --git a/test/mocks/MockAerodromeGauge.sol b/test/mocks/MockAerodromeGauge.sol
+new file mode 100644
+index 0000000..ca06a3d
+--- /dev/null
++++ b/test/mocks/MockAerodromeGauge.sol
+@@ -0,0 +1,74 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.24;
++
++import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
++import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
++
++import {IAerodromeGauge} from "../../src/interfaces/IAerodrome.sol";
++
++/// @notice Gauge mock: stakes LP and pays a reward token pro-rata. Tests drive emissions with
++///         {notifyRewardAmount} instead of the real gauge's time-based `rewardRate`.
++contract MockAerodromeGauge is IAerodromeGauge {
++    using SafeERC20 for IERC20;
++
++    uint256 private constant ACC_PRECISION = 1e30;
++
++    address public immutable override stakingToken;
++    address public immutable override rewardToken;
++
++    uint256 public totalStaked;
++    uint256 public accRewardPerShare;
++
++    mapping(address => uint256) public override balanceOf;
++    mapping(address => uint256) private _rewardDebt;
++    mapping(address => uint256) private _accrued;
++
++    constructor(address stakingToken_, address rewardToken_) {
++        stakingToken = stakingToken_;
++        rewardToken = rewardToken_;
++    }
++
++    /// @notice Distributes `amount` of reward token to current stakers. Pulled from the caller.
++    function notifyRewardAmount(uint256 amount) external {
++        require(totalStaked > 0, "NO_STAKE");
++        IERC20(rewardToken).safeTransferFrom(msg.sender, address(this), amount);
++        accRewardPerShare += amount * ACC_PRECISION / totalStaked;
++    }
++
++    function deposit(uint256 amount) external override {
++        _settle(msg.sender);
++        IERC20(stakingToken).safeTransferFrom(msg.sender, address(this), amount);
++        balanceOf[msg.sender] += amount;
++        totalStaked += amount;
++        _sync(msg.sender);
++    }
++
++    function withdraw(uint256 amount) external override {
++        _settle(msg.sender);
++        balanceOf[msg.sender] -= amount;
++        totalStaked -= amount;
++        _sync(msg.sender);
++        IERC20(stakingToken).safeTransfer(msg.sender, amount);
++    }
++
++    function getReward(address account) external override {
++        _settle(account);
++        _sync(account);
++        uint256 owed = _accrued[account];
++        if (owed == 0) return;
++        _accrued[account] = 0;
++        IERC20(rewardToken).safeTransfer(account, owed);
++    }
++
++    function earned(address account) public view override returns (uint256) {
++        return _accrued[account] + (balanceOf[account] * accRewardPerShare / ACC_PRECISION) - _rewardDebt[account];
++    }
++
++    function _settle(address account) private {
++        _accrued[account] = earned(account);
++    }
++
++    function _sync(address account) private {
++        _rewardDebt[account] = balanceOf[account] * accRewardPerShare / ACC_PRECISION;
++    }
++}
+diff --git a/test/mocks/MockAerodromePool.sol b/test/mocks/MockAerodromePool.sol
+new file mode 100644
+index 0000000..e3d25b3
+--- /dev/null
++++ b/test/mocks/MockAerodromePool.sol
+@@ -0,0 +1,110 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.24;
++
++import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
++import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
++import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
++import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
++
++/// @notice Constant-product pool that mirrors Aerodrome's volatile (xy=k) pool semantics closely
++///         enough to exercise the strategy: same fee model (fee skimmed off `amountIn`), same
++///         `getReserves`/`mint`/`burn`/`swap` shapes, same MINIMUM_LIQUIDITY lock.
++contract MockAerodromePool is ERC20 {
++    using SafeERC20 for IERC20;
++
++    uint256 public constant MINIMUM_LIQUIDITY = 1000;
++
++    address public immutable token0;
++    address public immutable token1;
++    bool public constant stable = false;
++
++    /// @notice Swap fee in bps taken off the input amount (Aerodrome volatile pools are ~0.30%).
++    uint256 public feeBps;
++
++    uint256 private _reserve0;
++    uint256 private _reserve1;
++    uint256 private _blockTimestampLast;
++
++    constructor(address tokenA, address tokenB, uint256 feeBps_) ERC20("Aerodrome Volatile LP", "vAMM-LP") {
++        (token0, token1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
++        feeBps = feeBps_;
++    }
++
++    function setFeeBps(uint256 f) external {
++        feeBps = f;
++    }
++
++    function getReserves() external view returns (uint256, uint256, uint256) {
++        return (_reserve0, _reserve1, _blockTimestampLast);
++    }
++
++    function mint(address to) external returns (uint256 liquidity) {
++        uint256 balance0 = IERC20(token0).balanceOf(address(this));
++        uint256 balance1 = IERC20(token1).balanceOf(address(this));
++        uint256 amount0 = balance0 - _reserve0;
++        uint256 amount1 = balance1 - _reserve1;
++
++        uint256 supply = totalSupply();
++        if (supply == 0) {
++            liquidity = Math.sqrt(amount0 * amount1) - MINIMUM_LIQUIDITY;
++            _mint(address(1), MINIMUM_LIQUIDITY); // permanently locked
++        } else {
++            liquidity = Math.min(amount0 * supply / _reserve0, amount1 * supply / _reserve1);
++        }
++        require(liquidity > 0, "INSUFFICIENT_LIQUIDITY_MINTED");
++        _mint(to, liquidity);
++        _update(balance0, balance1);
++    }
++
++    function burn(address to) external returns (uint256 amount0, uint256 amount1) {
++        uint256 liquidity = balanceOf(address(this));
++        uint256 supply = totalSupply();
++        amount0 = liquidity * IERC20(token0).balanceOf(address(this)) / supply;
++        amount1 = liquidity * IERC20(token1).balanceOf(address(this)) / supply;
++        require(amount0 > 0 && amount1 > 0, "INSUFFICIENT_LIQUIDITY_BURNED");
++
++        _burn(address(this), liquidity);
++        IERC20(token0).safeTransfer(to, amount0);
++        IERC20(token1).safeTransfer(to, amount1);
++        _update(IERC20(token0).balanceOf(address(this)), IERC20(token1).balanceOf(address(this)));
++    }
++
++    function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes calldata) external {
++        require(amount0Out > 0 || amount1Out > 0, "INSUFFICIENT_OUTPUT");
++        require(amount0Out < _reserve0 && amount1Out < _reserve1, "INSUFFICIENT_LIQUIDITY");
++
++        if (amount0Out > 0) IERC20(token0).safeTransfer(to, amount0Out);
++        if (amount1Out > 0) IERC20(token1).safeTransfer(to, amount1Out);
++
++        uint256 balance0 = IERC20(token0).balanceOf(address(this));
++        uint256 balance1 = IERC20(token1).balanceOf(address(this));
++        uint256 amount0In = balance0 > _reserve0 - amount0Out ? balance0 - (_reserve0 - amount0Out) : 0;
++        uint256 amount1In = balance1 > _reserve1 - amount1Out ? balance1 - (_reserve1 - amount1Out) : 0;
++        require(amount0In > 0 || amount1In > 0, "INSUFFICIENT_INPUT");
++
++        // Aerodrome takes the fee out of the input, so k must not shrink once fees are removed.
++        uint256 adjusted0 = balance0 - (amount0In * feeBps / 10_000);
++        uint256 adjusted1 = balance1 - (amount1In * feeBps / 10_000);
++        require(adjusted0 * adjusted1 >= _reserve0 * _reserve1, "K");
++
++        _update(balance0, balance1);
++    }
++
++    /// @notice Aerodrome-style quote used by the router mock.
++    function getAmountOut(uint256 amountIn, address tokenIn) public view returns (uint256) {
++        uint256 amountInAfterFee = amountIn - (amountIn * feeBps / 10_000);
++        (uint256 reserveIn, uint256 reserveOut) = tokenIn == token0 ? (_reserve0, _reserve1) : (_reserve1, _reserve0);
++        return amountInAfterFee * reserveOut / (reserveIn + amountInAfterFee);
++    }
++
++    /// @notice Simulates accrued swap fees / donations landing in the pool.
++    function sync() external {
++        _update(IERC20(token0).balanceOf(address(this)), IERC20(token1).balanceOf(address(this)));
++    }
++
++    function _update(uint256 balance0, uint256 balance1) private {
++        _reserve0 = balance0;
++        _reserve1 = balance1;
++        _blockTimestampLast = block.timestamp;
++    }
++}
+diff --git a/test/mocks/MockAerodromeRouter.sol b/test/mocks/MockAerodromeRouter.sol
+new file mode 100644
+index 0000000..bf7e867
+--- /dev/null
++++ b/test/mocks/MockAerodromeRouter.sol
+@@ -0,0 +1,145 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.24;
++
++import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
++import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
++
++import {IAerodromeRouter} from "../../src/interfaces/IAerodrome.sol";
++import {MockAerodromePool} from "./MockAerodromePool.sol";
++
++/// @notice Router mock implementing the Aerodrome/Velodrome V2 add/remove/swap flow used by the
++///         strategy, including the optimal-ratio quoting that leaves dust on one side.
++contract MockAerodromeRouter is IAerodromeRouter {
++    using SafeERC20 for IERC20;
++
++    address public immutable override defaultFactory;
++
++    mapping(bytes32 => address) private _pools;
++
++    constructor(address factory_) {
++        defaultFactory = factory_;
++    }
++
++    function registerPool(address tokenA, address tokenB, bool stable, address pool) external {
++        _pools[_key(tokenA, tokenB, stable)] = pool;
++    }
++
++    function poolFor(address tokenA, address tokenB, bool stable, address) public view override returns (address) {
++        return _pools[_key(tokenA, tokenB, stable)];
++    }
++
++    function addLiquidity(
++        address tokenA,
++        address tokenB,
++        bool stable,
++        uint256 amountADesired,
++        uint256 amountBDesired,
++        uint256 amountAMin,
++        uint256 amountBMin,
++        address to,
++        uint256 deadline
++    ) external override returns (uint256 amountA, uint256 amountB, uint256 liquidity) {
++        require(deadline >= block.timestamp, "EXPIRED");
++        address pool = poolFor(tokenA, tokenB, stable, defaultFactory);
++        require(pool != address(0), "NO_POOL");
++
++        (amountA, amountB) = _quoteAdd(MockAerodromePool(pool), tokenA, amountADesired, amountBDesired);
++        require(amountA >= amountAMin && amountB >= amountBMin, "INSUFFICIENT_AMOUNT");
++
++        liquidity = _pullAndMint(pool, tokenA, tokenB, amountA, amountB, to);
++    }
++
++    function _pullAndMint(address pool, address tokenA, address tokenB, uint256 amountA, uint256 amountB, address to)
++        private
++        returns (uint256)
++    {
++        IERC20(tokenA).safeTransferFrom(msg.sender, pool, amountA);
++        IERC20(tokenB).safeTransferFrom(msg.sender, pool, amountB);
++        return MockAerodromePool(pool).mint(to);
++    }
++
++    function removeLiquidity(
++        address tokenA,
++        address tokenB,
++        bool stable,
++        uint256 liquidity,
++        uint256 amountAMin,
++        uint256 amountBMin,
++        address to,
++        uint256 deadline
++    ) external override returns (uint256 amountA, uint256 amountB) {
++        require(deadline >= block.timestamp, "EXPIRED");
++        MockAerodromePool pool = MockAerodromePool(poolFor(tokenA, tokenB, stable, defaultFactory));
++        require(address(pool) != address(0), "NO_POOL");
++
++        IERC20(address(pool)).safeTransferFrom(msg.sender, address(pool), liquidity);
++        (uint256 amount0, uint256 amount1) = pool.burn(to);
++        (amountA, amountB) = tokenA == pool.token0() ? (amount0, amount1) : (amount1, amount0);
++        require(amountA >= amountAMin && amountB >= amountBMin, "INSUFFICIENT_AMOUNT");
++    }
++
++    function swapExactTokensForTokens(
++        uint256 amountIn,
++        uint256 amountOutMin,
++        Route[] calldata routes,
++        address to,
++        uint256 deadline
++    ) external override returns (uint256[] memory amounts) {
++        require(deadline >= block.timestamp, "EXPIRED");
++        amounts = getAmountsOut(amountIn, routes);
++        require(amounts[amounts.length - 1] >= amountOutMin, "INSUFFICIENT_OUTPUT_AMOUNT");
++
++        IERC20(routes[0].from)
++            .safeTransferFrom(
++                msg.sender, poolFor(routes[0].from, routes[0].to, routes[0].stable, defaultFactory), amounts[0]
++            );
++
++        for (uint256 i; i < routes.length; ++i) {
++            MockAerodromePool pool =
++                MockAerodromePool(poolFor(routes[i].from, routes[i].to, routes[i].stable, defaultFactory));
++            address recipient = i < routes.length - 1
++                ? poolFor(routes[i + 1].from, routes[i + 1].to, routes[i + 1].stable, defaultFactory)
++                : to;
++            (uint256 amount0Out, uint256 amount1Out) =
++                routes[i].from == pool.token0() ? (uint256(0), amounts[i + 1]) : (amounts[i + 1], uint256(0));
++            pool.swap(amount0Out, amount1Out, recipient, "");
++        }
++    }
++
++    function getAmountsOut(uint256 amountIn, Route[] memory routes)
++        public
++        view
++        override
++        returns (uint256[] memory amounts)
++    {
++        amounts = new uint256[](routes.length + 1);
++        amounts[0] = amountIn;
++        for (uint256 i; i < routes.length; ++i) {
++            MockAerodromePool pool =
++                MockAerodromePool(poolFor(routes[i].from, routes[i].to, routes[i].stable, defaultFactory));
++            require(address(pool) != address(0), "NO_POOL");
++            amounts[i + 1] = pool.getAmountOut(amounts[i], routes[i].from);
++        }
++    }
++
++    function _quoteAdd(MockAerodromePool pool, address tokenA, uint256 amountADesired, uint256 amountBDesired)
++        private
++        view
++        returns (uint256 amountA, uint256 amountB)
++    {
++        (uint256 r0, uint256 r1,) = pool.getReserves();
++        if (r0 == 0 && r1 == 0) return (amountADesired, amountBDesired);
++
++        (uint256 reserveA, uint256 reserveB) = tokenA == pool.token0() ? (r0, r1) : (r1, r0);
++        uint256 amountBOptimal = amountADesired * reserveB / reserveA;
++        if (amountBOptimal <= amountBDesired) return (amountADesired, amountBOptimal);
++
++        uint256 amountAOptimal = amountBDesired * reserveA / reserveB;
++        return (amountAOptimal, amountBDesired);
++    }
++
++    function _key(address tokenA, address tokenB, bool stable) private pure returns (bytes32) {
++        (address t0, address t1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
++        return keccak256(abi.encode(t0, t1, stable));
++    }
++}
+diff --git a/test/mocks/MockAggregator.sol b/test/mocks/MockAggregator.sol
+new file mode 100644
+index 0000000..b936fac
+--- /dev/null
++++ b/test/mocks/MockAggregator.sol
+@@ -0,0 +1,35 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.24;
++
++import {IAggregatorV3} from "../../src/interfaces/IAggregatorV3.sol";
++
++/// @notice Minimal Chainlink aggregator stand-in with test-controlled answer and timestamp.
++contract MockAggregator is IAggregatorV3 {
++    uint8 public immutable override decimals;
++    string public override description;
++
++    int256 public answer;
++    uint256 public updatedAt;
++    uint80 public roundId = 1;
++
++    constructor(uint8 d, int256 initialAnswer, string memory desc) {
++        decimals = d;
++        answer = initialAnswer;
++        description = desc;
++        updatedAt = block.timestamp;
++    }
++
++    function setAnswer(int256 a) external {
++        answer = a;
++        updatedAt = block.timestamp;
++        roundId++;
++    }
++
++    function setUpdatedAt(uint256 t) external {
++        updatedAt = t;
++    }
++
++    function latestRoundData() external view override returns (uint80, int256, uint256, uint256, uint80) {
++        return (roundId, answer, updatedAt, updatedAt, roundId);
++    }
++}
+diff --git a/test/mocks/MockERC20.sol b/test/mocks/MockERC20.sol
+new file mode 100644
+index 0000000..1547ea3
+--- /dev/null
++++ b/test/mocks/MockERC20.sol
+@@ -0,0 +1,24 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.24;
++
++import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
++
++contract MockERC20 is ERC20 {
++    uint8 private immutable _dec;
++
++    constructor(string memory n, string memory s, uint8 d) ERC20(n, s) {
++        _dec = d;
++    }
++
++    function decimals() public view override returns (uint8) {
++        return _dec;
++    }
++
++    function mint(address to, uint256 amount) external {
++        _mint(to, amount);
++    }
++
++    function burn(address from, uint256 amount) external {
++        _burn(from, amount);
++    }
++}
+diff --git a/test/mocks/MockIlliquidStrategy.sol b/test/mocks/MockIlliquidStrategy.sol
+new file mode 100644
+index 0000000..54fc72a
+--- /dev/null
++++ b/test/mocks/MockIlliquidStrategy.sol
+@@ -0,0 +1,39 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.24;
++
++import {IStrategy} from "../../src/interfaces/IStrategy.sol";
++
++/// @notice Reports assets it cannot actually free, to exercise the vault's liquidity guard.
++contract MockIlliquidStrategy is IStrategy {
++    address public immutable override vault;
++    address public immutable override asset;
++    uint256 public reported;
++
++    constructor(address vault_, address asset_) {
++        vault = vault_;
++        asset = asset_;
++    }
++
++    function setReported(uint256 amount) external {
++        reported = amount;
++    }
++
++    function estimatedTotalAssets() external view override returns (uint256) {
++        return reported;
++    }
++
++    function invest() external override {}
++
++    function withdraw(uint256) external pure override returns (uint256) {
++        return 0; // stuck
++    }
++
++    function harvest() external pure override returns (uint256) {
++        return 0;
++    }
++
++    function liquidateAll() external override returns (uint256) {
++        reported = 0;
++        return 0;
++    }
++}
+diff --git a/test/unit/ChainlinkLib.t.sol b/test/unit/ChainlinkLib.t.sol
+new file mode 100644
+index 0000000..1744f86
+--- /dev/null
++++ b/test/unit/ChainlinkLib.t.sol
+@@ -0,0 +1,71 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.24;
++
++import {Test} from "forge-std/Test.sol";
++
++import {ChainlinkLib} from "../../src/libraries/ChainlinkLib.sol";
++import {IAggregatorV3} from "../../src/interfaces/IAggregatorV3.sol";
++import {MockAggregator} from "../mocks/MockAggregator.sol";
++
++contract ChainlinkHarness {
++    function readPrice(IAggregatorV3 feed, uint256 maxAge) external view returns (uint256) {
++        return ChainlinkLib.readPrice(feed, maxAge);
++    }
++}
++
++contract ChainlinkLibTest is Test {
++    ChainlinkHarness harness;
++    MockAggregator feed;
++
++    function setUp() public {
++        vm.warp(1_700_000_000);
++        harness = new ChainlinkHarness();
++        feed = new MockAggregator(8, 3000e8, "ETH / USD");
++    }
++
++    function test_readsFreshPrice() public view {
++        assertEq(harness.readPrice(IAggregatorV3(address(feed)), 1 hours), 3000e8);
++    }
++
++    function test_scalesUpLowerDecimalFeeds() public {
++        MockAggregator sixDp = new MockAggregator(6, 3000e6, "ETH / USD (6dp)");
++        assertEq(harness.readPrice(IAggregatorV3(address(sixDp)), 1 hours), 3000e8);
++    }
++
++    function test_revertsOnStalePrice() public {
++        vm.warp(block.timestamp + 2 hours);
++        vm.expectRevert(
++            abi.encodeWithSelector(ChainlinkLib.StalePrice.selector, address(feed), block.timestamp - 2 hours)
++        );
++        harness.readPrice(IAggregatorV3(address(feed)), 1 hours);
++    }
++
++    function test_revertsOnIncompleteRound() public {
++        feed.setUpdatedAt(0);
++        vm.expectRevert(abi.encodeWithSelector(ChainlinkLib.StalePrice.selector, address(feed), 0));
++        harness.readPrice(IAggregatorV3(address(feed)), 1 hours);
++    }
++
++    function test_revertsOnFutureTimestamp() public {
++        uint256 future = block.timestamp + 1;
++        feed.setUpdatedAt(future);
++        vm.expectRevert(abi.encodeWithSelector(ChainlinkLib.StalePrice.selector, address(feed), future));
++        harness.readPrice(IAggregatorV3(address(feed)), 1 hours);
++    }
++
++    function test_revertsOnNonPositiveAnswer() public {
++        feed.setAnswer(0);
++        vm.expectRevert(abi.encodeWithSelector(ChainlinkLib.InvalidPrice.selector, address(feed), int256(0)));
++        harness.readPrice(IAggregatorV3(address(feed)), 1 hours);
++
++        feed.setAnswer(-1);
++        vm.expectRevert(abi.encodeWithSelector(ChainlinkLib.InvalidPrice.selector, address(feed), int256(-1)));
++        harness.readPrice(IAggregatorV3(address(feed)), 1 hours);
++    }
++
++    function test_revertsOnTooManyDecimals() public {
++        MockAggregator wide = new MockAggregator(18, 3000e18, "ETH / USD (18dp)");
++        vm.expectRevert(abi.encodeWithSelector(ChainlinkLib.UnsupportedFeedDecimals.selector, address(wide), uint8(18)));
++        harness.readPrice(IAggregatorV3(address(wide)), 1 hours);
++    }
++}
+diff --git a/test/unit/FairLpMath.t.sol b/test/unit/FairLpMath.t.sol
+new file mode 100644
+index 0000000..3e1a6cc
+--- /dev/null
++++ b/test/unit/FairLpMath.t.sol
+@@ -0,0 +1,123 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.24;
++
++import {Test} from "forge-std/Test.sol";
++import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
++
++import {FairLpMath} from "../../src/libraries/FairLpMath.sol";
++
++/// @dev `FairLpMath` is an internal library, so reverts need an external call frame to assert on.
++contract FairLpMathHarness {
++    function lpValueUsd(FairLpMath.PoolState memory s, uint256 lpAmount) external pure returns (uint256) {
++        return FairLpMath.lpValueUsd(s, lpAmount);
++    }
++}
++
++contract FairLpMathTest is Test {
++    uint256 constant USDC_UNIT = 1e6;
++    uint256 constant WAD = 1e18;
++
++    /// @dev 3,000,000 USDC + 1,000 WETH at $1 / $3000 => a $6,000,000 pool.
++    function _balancedPool() internal pure returns (FairLpMath.PoolState memory s) {
++        s.reserve0 = 3_000_000 * USDC_UNIT;
++        s.reserve1 = 1_000 * WAD;
++        s.decimals0 = 6;
++        s.decimals1 = 18;
++        s.price0 = 1e8;
++        s.price1 = 3000e8;
++        s.totalSupply = Math.sqrt(s.reserve0 * s.reserve1);
++    }
++
++    function test_valuesBalancedPoolAtSumOfLegs() public pure {
++        FairLpMath.PoolState memory s = _balancedPool();
++        uint256 total = FairLpMath.lpValueUsd(s, s.totalSupply);
++        assertApproxEqRel(total, 6_000_000 * WAD, 1e12, "pool value");
++    }
++
++    function test_valuesProRata() public pure {
++        FairLpMath.PoolState memory s = _balancedPool();
++        uint256 half = FairLpMath.lpValueUsd(s, s.totalSupply / 2);
++        assertApproxEqRel(half, 3_000_000 * WAD, 1e12, "half the LP is half the value");
++    }
++
++    /// @notice The point of the fair-reserves formula: moving the pool's spot price without changing
++    ///         `k` must not change the valuation. A naive `reserve * price` sum would move a lot.
++    function test_valuationIsInvariantToReserveManipulation() public pure {
++        FairLpMath.PoolState memory s = _balancedPool();
++        uint256 fairBefore = FairLpMath.lpValueUsd(s, s.totalSupply);
++
++        // Simulate an attacker dumping USDC into the pool: reserve0 quadruples, reserve1 quarters,
++        // so k is untouched but the spot price has moved 16x.
++        FairLpMath.PoolState memory manipulated = s;
++        manipulated.reserve0 = s.reserve0 * 4;
++        manipulated.reserve1 = s.reserve1 / 4;
++
++        uint256 fairAfter = FairLpMath.lpValueUsd(manipulated, s.totalSupply);
++        assertApproxEqRel(fairAfter, fairBefore, 1e12, "fair value must not move");
++
++        // For contrast, the naive spot valuation would report a wildly different number.
++        uint256 naive = (manipulated.reserve0 * 1e12 * manipulated.price0 / 1e8)
++            + (manipulated.reserve1 * manipulated.price1 / 1e8);
++        assertGt(naive, fairBefore * 15 / 10, "naive spot pricing is inflated by the manipulation");
++    }
++
++    /// @notice k grows as swap fees accrue; the fair value must grow with it.
++    function test_valuationTracksFeeAccrual() public pure {
++        FairLpMath.PoolState memory s = _balancedPool();
++        uint256 before = FairLpMath.lpValueUsd(s, s.totalSupply);
++
++        FairLpMath.PoolState memory grown = s;
++        grown.reserve0 = s.reserve0 * 101 / 100;
++        grown.reserve1 = s.reserve1 * 101 / 100;
++
++        assertApproxEqRel(FairLpMath.lpValueUsd(grown, s.totalSupply), before * 101 / 100, 1e12);
++    }
++
++    function test_returnsZeroForEmptyInputs() public pure {
++        FairLpMath.PoolState memory s = _balancedPool();
++        assertEq(FairLpMath.lpValueUsd(s, 0), 0);
++
++        FairLpMath.PoolState memory empty = s;
++        empty.reserve0 = 0;
++        assertEq(FairLpMath.lpValueUsd(empty, s.totalSupply), 0);
++    }
++
++    function test_revertsOnZeroSupply() public {
++        FairLpMathHarness harness = new FairLpMathHarness();
++        FairLpMath.PoolState memory s = _balancedPool();
++        s.totalSupply = 0;
++        vm.expectRevert(FairLpMath.ZeroSupply.selector);
++        harness.lpValueUsd(s, 1);
++    }
++
++    function test_tokenValueRoundTrip() public pure {
++        uint256 usd = FairLpMath.tokenValueUsd(1_500 * USDC_UNIT, 6, 1e8);
++        assertEq(usd, 1_500 * WAD);
++        assertEq(FairLpMath.usdToToken(usd, 6, 1e8), 1_500 * USDC_UNIT);
++
++        uint256 ethUsd = FairLpMath.tokenValueUsd(2 * WAD, 18, 3000e8);
++        assertEq(ethUsd, 6_000 * WAD);
++        assertEq(FairLpMath.usdToToken(ethUsd, 18, 3000e8), 2 * WAD);
++    }
++
++    /// @notice Whatever the reserves, the fair value only depends on k and the prices.
++    function testFuzz_invariantToPriceMoveAtConstantK(uint256 reserve0, uint256 reserve1, uint256 shift) public pure {
++        reserve0 = bound(reserve0, 1_000 * USDC_UNIT, 100_000_000 * USDC_UNIT);
++        reserve1 = bound(reserve1, 1 * WAD, 100_000 * WAD);
++        shift = bound(shift, 2, 50);
++
++        FairLpMath.PoolState memory s = _balancedPool();
++        s.reserve0 = reserve0;
++        s.reserve1 = reserve1;
++        s.totalSupply = Math.sqrt(reserve0 * reserve1 * 1e12);
++
++        FairLpMath.PoolState memory moved = s;
++        moved.reserve0 = reserve0 * shift;
++        moved.reserve1 = reserve1 / shift;
++
++        uint256 a = FairLpMath.lpValueUsd(s, s.totalSupply);
++        uint256 b = FairLpMath.lpValueUsd(moved, s.totalSupply);
++        // Only integer-division truncation of `reserve1 / shift` separates the two.
++        assertApproxEqRel(b, a, 1e15, "fair value drifted");
++    }
++}
+diff --git a/test/unit/Strategy.t.sol b/test/unit/Strategy.t.sol
+new file mode 100644
+index 0000000..254ac72
+--- /dev/null
++++ b/test/unit/Strategy.t.sol
+@@ -0,0 +1,392 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.24;
++
++import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
++
++import {BaseTest} from "../BaseTest.sol";
++import {AerodromeUsdcWethStrategy} from "../../src/strategies/AerodromeUsdcWethStrategy.sol";
++import {IAerodromeRouter} from "../../src/interfaces/IAerodrome.sol";
++import {ChainlinkLib} from "../../src/libraries/ChainlinkLib.sol";
++import {MockAerodromeGauge} from "../mocks/MockAerodromeGauge.sol";
++import {MockAerodromePool} from "../mocks/MockAerodromePool.sol";
++
++contract StrategyTest is BaseTest {
++    /// @dev Deposits and runs one keeper pass so the strategy holds a live LP position.
++    function _seedPosition(uint256 amount) internal {
++        _deposit(alice, amount);
++        vm.prank(keeper);
++        vault.harvest();
++    }
++
++    // ---------------------------------------------------------------- wiring
++
++    function test_constructorWiring() public view {
++        assertEq(strategy.vault(), address(vault));
++        assertEq(strategy.asset(), address(usdc));
++        assertEq(address(strategy.pool()), address(pool));
++        assertEq(address(strategy.gauge()), address(gauge));
++        assertEq(strategy.poolFactory(), factory);
++
++        IAerodromeRouter.Route[] memory route = strategy.rewardRoute();
++        assertEq(route.length, 1);
++        assertEq(route[0].from, address(aero));
++        assertEq(route[0].to, address(usdc));
++        assertFalse(route[0].stable);
++    }
++
++    function test_constructorRejectsGaugeForAnotherPool() public {
++        MockAerodromePool wrongPool = new MockAerodromePool(address(aero), address(weth), POOL_FEE_BPS);
++        MockAerodromeGauge wrongGauge = new MockAerodromeGauge(address(wrongPool), address(aero));
++
++        vm.expectRevert(AerodromeUsdcWethStrategy.BadPool.selector);
++        new AerodromeUsdcWethStrategy(_config(address(wrongGauge)), owner, _route());
++    }
++
++    function test_setRewardRouteRejectsNonExistentPool() public {
++        IAerodromeRouter.Route[] memory ghost = new IAerodromeRouter.Route[](1);
++        // Well-formed AERO -> USDC, but through a factory that has no such pool deployed.
++        ghost[0] = IAerodromeRouter.Route({
++            from: address(aero), to: address(usdc), stable: true, factory: makeAddr("otherFactory")
++        });
++
++        vm.prank(owner);
++        vm.expectRevert(AerodromeUsdcWethStrategy.BadRewardRoute.selector);
++        strategy.setRewardRoute(ghost);
++    }
++
++    function test_constructorRejectsBadRewardRoute() public {
++        IAerodromeRouter.Route[] memory bad = new IAerodromeRouter.Route[](1);
++        // Ends in WETH rather than the vault asset.
++        bad[0] = IAerodromeRouter.Route({from: address(aero), to: address(weth), stable: false, factory: factory});
++
++        vm.expectRevert(AerodromeUsdcWethStrategy.BadRewardRoute.selector);
++        new AerodromeUsdcWethStrategy(_config(address(gauge)), owner, bad);
++    }
++
++    // ---------------------------------------------------------------- invest
++
++    function test_investStakesLpAndPreservesValue() public {
++        _seedPosition(100_000 * USDC_UNIT);
++
++        assertGt(strategy.totalLpBalance(), 0, "LP minted");
++        assertEq(gauge.balanceOf(address(strategy)), strategy.totalLpBalance(), "all LP is staked");
++        assertEq(pool.balanceOf(address(strategy)), 0, "nothing left unstaked");
++
++        // 95,000 deployed; a 47,500 USDC swap into a 30M USDC reserve plus the 0.3% pool fee.
++        assertApproxEqRel(vault.totalAssets(), 100_000 * USDC_UNIT, 0.003e18, "round-trip cost stays small");
++    }
++
++    function test_investIsCappedByPoolDepth() public {
++        // 0.25% of the 30M USDC reserve = 75,000 USDC per swap, so ~150,000 USDC deploys per call.
++        _deposit(alice, 5_000_000 * USDC_UNIT);
++        vm.prank(keeper);
++        vault.harvest();
++
++        // Undeployed USDC waits in the strategy: still counted, still withdrawable without slippage.
++        uint256 waiting = usdc.balanceOf(address(strategy));
++        uint256 deployed = strategy.estimatedTotalAssets() - waiting;
++        assertApproxEqRel(deployed, 150_000 * USDC_UNIT, 0.02e18, "~2 x 0.25% of the USDC reserve");
++        assertGt(waiting, 4_000_000 * USDC_UNIT, "the rest queues for the next pass");
++
++        uint256 lpAfterFirst = strategy.totalLpBalance();
++        _arbPoolToOracle();
++
++        vm.prank(keeper);
++        vault.harvest();
++        assertGt(strategy.totalLpBalance(), lpAfterFirst, "the next pass deploys more");
++        assertLt(usdc.balanceOf(address(strategy)), waiting);
++    }
++
++    function test_investIsNoOpBelowThreshold() public {
++        _deposit(alice, 100 * USDC_UNIT);
++        vm.prank(owner);
++        strategy.setThresholds(1_000 * USDC_UNIT, 1e18);
++
++        vm.prank(keeper);
++        vault.harvest();
++        assertEq(strategy.totalLpBalance(), 0, "dust is not worth the gas");
++    }
++
++    function test_investIsVaultOnly() public {
++        vm.prank(alice);
++        vm.expectRevert(abi.encodeWithSelector(AerodromeUsdcWethStrategy.NotVault.selector, alice));
++        strategy.invest();
++    }
++
++    // ---------------------------------------------------------------- harvest
++
++    function test_harvestCompoundsRewardsAndPaysFee() public {
++        _seedPosition(100_000 * USDC_UNIT);
++
++        uint256 assetsBefore = vault.totalAssets();
++        uint256 lpBefore = strategy.totalLpBalance();
++
++        _emitRewards(5_000 * WAD); // 5,000 AERO at $1
++        assertApproxEqAbs(strategy.pendingRewards(), 5_000 * WAD, 1e12);
++
++        vm.prank(keeper);
++        (uint256 rewards, uint256 feeShares,) = vault.harvest();
++
++        // ~5,000 USDC of rewards, less the AERO/USDC pool's own fee and impact.
++        assertApproxEqRel(rewards, 5_000 * USDC_UNIT, 0.02e18, "rewards realised in USDC");
++        assertGt(feeShares, 0, "treasury paid");
++        assertEq(vault.balanceOf(treasury), feeShares);
++
++        assertGt(strategy.totalLpBalance(), lpBefore, "rewards were compounded back into the LP");
++        assertGt(vault.totalAssets(), assetsBefore + 4_000 * USDC_UNIT, "share price rose");
++
++        // The 10% performance fee is worth ~10% of the harvest.
++        assertApproxEqRel(vault.previewRedeem(feeShares), rewards / 10, 0.01e18);
++    }
++
++    function test_harvestSkipsDustRewards() public {
++        _seedPosition(100_000 * USDC_UNIT);
++        _emitRewards(0.5e18); // below minHarvestAero
++
++        vm.prank(keeper);
++        (uint256 rewards, uint256 feeShares,) = vault.harvest();
++        assertEq(rewards, 0);
++        assertEq(feeShares, 0);
++    }
++
++    function test_harvestPicksUpPoolTradingFees() public {
++        _seedPosition(100_000 * USDC_UNIT);
++        uint256 before = vault.totalAssets();
++
++        // Swap fees accrue inside the pool: k grows, so every LP token is worth more.
++        _accrueTradingFees(300_000 * USDC_UNIT, 100 * WAD);
++
++        assertGt(vault.totalAssets(), before, "LP appreciation shows up without a harvest");
++    }
++
++    function test_harvestWithZeroFee() public {
++        vm.prank(owner);
++        vault.setPerformanceFee(0);
++        _seedPosition(100_000 * USDC_UNIT);
++        _emitRewards(1_000 * WAD);
++
++        vm.prank(keeper);
++        (, uint256 feeShares,) = vault.harvest();
++        assertEq(feeShares, 0);
++        assertEq(vault.balanceOf(treasury), 0);
++    }
++
++    function test_harvestIsVaultOnly() public {
++        vm.prank(keeper);
++        vm.expectRevert(abi.encodeWithSelector(AerodromeUsdcWethStrategy.NotVault.selector, keeper));
++        strategy.harvest();
++    }
++
++    function test_emergencyExitStopsReinvesting() public {
++        _seedPosition(100_000 * USDC_UNIT);
++        uint256 lpBefore = strategy.totalLpBalance();
++
++        vm.prank(owner);
++        strategy.setEmergencyExit(true);
++        _emitRewards(1_000 * WAD);
++
++        vm.prank(keeper);
++        (uint256 rewards,,) = vault.harvest();
++
++        assertGt(rewards, 0, "rewards are still claimed and converted");
++        assertEq(strategy.totalLpBalance(), lpBefore, "but nothing new is added to the LP");
++    }
++
++    // ---------------------------------------------------------------- withdraw
++
++    function test_withdrawUnwindsJustEnough() public {
++        _seedPosition(100_000 * USDC_UNIT);
++        uint256 lpBefore = strategy.totalLpBalance();
++
++        uint256 shares = vault.previewWithdraw(50_000 * USDC_UNIT);
++        vm.prank(alice);
++        vault.withdraw(50_000 * USDC_UNIT, alice, alice);
++
++        assertEq(usdc.balanceOf(alice), 50_000 * USDC_UNIT);
++        assertGt(strategy.totalLpBalance(), 0, "the rest of the position is untouched");
++        assertLt(strategy.totalLpBalance(), lpBefore);
++        assertEq(vault.balanceOf(alice), 100_000 * WAD - shares);
++    }
++
++    function test_smallWithdrawalIsServedFromTheBuffer() public {
++        _seedPosition(100_000 * USDC_UNIT);
++        uint256 lpBefore = strategy.totalLpBalance();
++
++        vm.prank(alice);
++        vault.withdraw(1_000 * USDC_UNIT, alice, alice);
++
++        assertEq(strategy.totalLpBalance(), lpBefore, "the 5% idle buffer covered it, no DEX round trip");
++    }
++
++    function test_fullExitReturnsPrincipalLessCosts() public {
++        _seedPosition(100_000 * USDC_UNIT);
++
++        uint256 shares = vault.balanceOf(alice);
++        vm.prank(alice);
++        uint256 out = vault.redeem(shares, alice, alice);
++
++        assertEq(vault.totalSupply(), 0);
++        // Principal back minus the 0.50% withdrawal fee and two pool round trips.
++        assertApproxEqRel(out, 100_000 * USDC_UNIT, 0.01e18);
++        assertLt(out, 100_000 * USDC_UNIT, "the round trip is not free");
++    }
++
++    function test_liquidateAllIsVaultOnly() public {
++        vm.prank(owner);
++        vm.expectRevert(abi.encodeWithSelector(AerodromeUsdcWethStrategy.NotVault.selector, owner));
++        strategy.liquidateAll();
++    }
++
++    function test_ownerCanUnwindInStages() public {
++        _seedPosition(600_000 * USDC_UNIT);
++        uint256 lp = strategy.totalLpBalance();
++        assertGt(lp, 0);
++
++        vm.prank(owner);
++        strategy.unwind(lp / 2);
++
++        assertApproxEqRel(strategy.totalLpBalance(), lp / 2, 0.001e18);
++        assertGt(usdc.balanceOf(address(strategy)), 0, "unwound value is held as idle USDC");
++    }
++
++    // ---------------------------------------------------------------- oracle guards
++
++    function test_stalePriceBlocksHarvest() public {
++        _seedPosition(100_000 * USDC_UNIT);
++        _emitRewards(1_000 * WAD);
++
++        uint256 postedAt = block.timestamp;
++        vm.warp(block.timestamp + 2 days);
++        // Only the AERO feed goes stale; the pair feeds are still being posted.
++        usdcFeed.setAnswer(USDC_PRICE);
++        ethFeed.setAnswer(ETH_PRICE);
++
++        vm.prank(keeper);
++        vm.expectRevert(abi.encodeWithSelector(ChainlinkLib.StalePrice.selector, address(aeroFeed), postedAt));
++        vault.harvest();
++    }
++
++    function test_stalePriceBlocksValuation() public {
++        _seedPosition(100_000 * USDC_UNIT);
++        vm.warp(block.timestamp + 1 hours); // ETH feed heartbeat is 20 minutes
++
++        vm.expectRevert(
++            abi.encodeWithSelector(ChainlinkLib.StalePrice.selector, address(ethFeed), block.timestamp - 1 hours)
++        );
++        vault.totalAssets();
++    }
++
++    /// @notice A flash-loan style price push must not change what the vault thinks it is worth.
++    function test_valuationSurvivesPoolManipulation() public {
++        _seedPosition(1_000_000 * USDC_UNIT);
++        uint256 before = strategy.estimatedTotalAssets();
++
++        _pushPriceWithUsdc(10_000_000 * USDC_UNIT); // ~33% of the USDC reserve, ETH spot moves ~78%
++
++        // Fees earned on that swap raise k slightly, so the position is worth a touch *more*.
++        assertGe(strategy.estimatedTotalAssets(), before);
++        assertApproxEqRel(strategy.estimatedTotalAssets(), before, 0.005e18, "no manipulation repricing");
++    }
++
++    /// @notice An oracle that disagrees with the pool must stop the strategy trading, not let it
++    ///         swap at the pool's price.
++    function test_swapRevertsWhenOracleDisagreesWithPool() public {
++        _deposit(alice, 100_000 * USDC_UNIT);
++        ethFeed.setAnswer(6000e8); // pool still prices ETH at 3000
++
++        // The swap itself looks cheap against the stale-high oracle, but pairing the WETH into the
++        // pool at the real price does not, so the add-liquidity value check is what stops it.
++        vm.prank(keeper);
++        vm.expectPartialRevert(AerodromeUsdcWethStrategy.SlippageExceeded.selector);
++        vault.harvest();
++    }
++
++    // ---------------------------------------------------------------- admin
++
++    function test_slippageAndTradeSizeBounds() public {
++        vm.startPrank(owner);
++
++        vm.expectRevert(abi.encodeWithSelector(AerodromeUsdcWethStrategy.SlippageTooHigh.selector, 501));
++        strategy.setMaxSlippage(501);
++        strategy.setMaxSlippage(500);
++        assertEq(strategy.maxSlippageBps(), 500);
++
++        vm.expectRevert(abi.encodeWithSelector(AerodromeUsdcWethStrategy.SlippageTooHigh.selector, 501));
++        strategy.setUnwindBuffer(501);
++
++        vm.expectRevert(abi.encodeWithSelector(AerodromeUsdcWethStrategy.TradeSizeTooHigh.selector, 0));
++        strategy.setMaxTradeReserve(0);
++        vm.expectRevert(abi.encodeWithSelector(AerodromeUsdcWethStrategy.TradeSizeTooHigh.selector, 1_001));
++        strategy.setMaxTradeReserve(1_001);
++        strategy.setMaxTradeReserve(200);
++        assertEq(strategy.maxTradeReserveBps(), 200);
++
++        vm.stopPrank();
++    }
++
++    function test_sweepProtectsPositionTokens() public {
++        vm.startPrank(owner);
++        vm.expectRevert(abi.encodeWithSelector(AerodromeUsdcWethStrategy.ProtectedToken.selector, address(usdc)));
++        strategy.sweep(address(usdc), owner);
++        vm.expectRevert(abi.encodeWithSelector(AerodromeUsdcWethStrategy.ProtectedToken.selector, address(weth)));
++        strategy.sweep(address(weth), owner);
++        vm.expectRevert(abi.encodeWithSelector(AerodromeUsdcWethStrategy.ProtectedToken.selector, address(aero)));
++        strategy.sweep(address(aero), owner);
++        vm.expectRevert(abi.encodeWithSelector(AerodromeUsdcWethStrategy.ProtectedToken.selector, address(pool)));
++        strategy.sweep(address(pool), owner);
++        vm.stopPrank();
++    }
++
++    function test_sweepRecoversStrayTokens() public {
++        MockERC20Stray stray = new MockERC20Stray();
++        stray.mint(address(strategy), 1e18);
++
++        vm.prank(owner);
++        strategy.sweep(address(stray), owner);
++        assertEq(stray.balanceOf(owner), 1e18);
++    }
++
++    function test_strategyAdminIsOwnerOnly() public {
++        bytes memory err = abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice);
++        vm.startPrank(alice);
++        vm.expectRevert(err);
++        strategy.setMaxSlippage(10);
++        vm.expectRevert(err);
++        strategy.setEmergencyExit(true);
++        vm.expectRevert(err);
++        strategy.setRewardRoute(_route());
++        vm.expectRevert(err);
++        strategy.unwind(1);
++        vm.stopPrank();
++    }
++
++    // ---------------------------------------------------------------- helpers
++
++    function _config(address gauge_) internal view returns (AerodromeUsdcWethStrategy.Config memory) {
++        return AerodromeUsdcWethStrategy.Config({
++            vault: address(vault),
++            usdc: address(usdc),
++            weth: address(weth),
++            aero: address(aero),
++            router: address(router),
++            gauge: gauge_,
++            usdcUsdFeed: address(usdcFeed),
++            ethUsdFeed: address(ethFeed),
++            aeroUsdFeed: address(aeroFeed),
++            usdcFeedHeartbeat: 1 days,
++            ethFeedHeartbeat: 20 minutes,
++            aeroFeedHeartbeat: 1 days
++        });
++    }
++
++    function _route() internal view returns (IAerodromeRouter.Route[] memory r) {
++        r = new IAerodromeRouter.Route[](1);
++        r[0] = IAerodromeRouter.Route({from: address(aero), to: address(usdc), stable: false, factory: factory});
++    }
++}
++
++import {MockERC20} from "../mocks/MockERC20.sol";
++
++contract MockERC20Stray is MockERC20 {
++    constructor() MockERC20("Airdrop", "AIR", 18) {}
++}
+diff --git a/test/unit/YieldVault.t.sol b/test/unit/YieldVault.t.sol
+new file mode 100644
+index 0000000..cb89077
+--- /dev/null
++++ b/test/unit/YieldVault.t.sol
+@@ -0,0 +1,298 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.24;
++
++import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
++import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
++
++import {BaseTest} from "../BaseTest.sol";
++import {YieldVault} from "../../src/YieldVault.sol";
++import {IStrategy} from "../../src/interfaces/IStrategy.sol";
++import {ERC4626} from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol";
++import {MockIlliquidStrategy} from "../mocks/MockIlliquidStrategy.sol";
++
++contract YieldVaultTest is BaseTest {
++    // ---------------------------------------------------------------- metadata
++
++    function test_metadata() public view {
++        assertEq(vault.asset(), address(usdc));
++        assertEq(vault.name(), "Yield USDC");
++        assertEq(vault.symbol(), "yvUSDC");
++        assertEq(vault.decimals(), 18, "6dp asset + 12dp offset");
++        assertEq(vault.owner(), owner);
++        assertEq(vault.treasury(), treasury);
++        assertEq(address(vault.strategy()), address(strategy));
++    }
++
++    // ---------------------------------------------------------------- deposits
++
++    function test_depositMintsProportionalShares() public {
++        uint256 shares = _deposit(alice, 1_000 * USDC_UNIT);
++        assertEq(shares, 1_000 * WAD, "1 USDC == 1e12 shares at the initial price");
++        assertEq(vault.totalAssets(), 1_000 * USDC_UNIT);
++        assertEq(vault.idleAssets(), 1_000 * USDC_UNIT, "deposits stay idle until the keeper runs");
++    }
++
++    function test_secondDepositorGetsSamePrice() public {
++        _deposit(alice, 1_000 * USDC_UNIT);
++        uint256 bobShares = _deposit(bob, 2_500 * USDC_UNIT);
++        assertEq(bobShares, 2_500 * WAD);
++        assertEq(vault.totalAssets(), 3_500 * USDC_UNIT);
++    }
++
++    function test_mintRoundsInFavourOfTheVault() public {
++        usdc.mint(alice, 1_000 * USDC_UNIT);
++        vm.startPrank(alice);
++        usdc.approve(address(vault), type(uint256).max);
++        uint256 assetsIn = vault.mint(500 * WAD, alice);
++        vm.stopPrank();
++
++        assertEq(assetsIn, 500 * USDC_UNIT);
++        assertEq(vault.balanceOf(alice), 500 * WAD);
++    }
++
++    function test_depositRevertsAboveCap() public {
++        vm.prank(owner);
++        vault.setDepositCap(1_000 * USDC_UNIT);
++
++        assertEq(vault.maxDeposit(alice), 1_000 * USDC_UNIT);
++        _deposit(alice, 600 * USDC_UNIT);
++        assertEq(vault.maxDeposit(alice), 400 * USDC_UNIT);
++
++        usdc.mint(bob, 500 * USDC_UNIT);
++        vm.startPrank(bob);
++        usdc.approve(address(vault), type(uint256).max);
++        // `maxDeposit` already reflects the cap, so ERC-4626's own guard is what trips first.
++        vm.expectRevert(
++            abi.encodeWithSelector(ERC4626.ERC4626ExceededMaxDeposit.selector, bob, 500 * USDC_UNIT, 400 * USDC_UNIT)
++        );
++        vault.deposit(500 * USDC_UNIT, bob);
++        vm.stopPrank();
++    }
++
++    function test_pauseBlocksDepositsButNotWithdrawals() public {
++        _deposit(alice, 1_000 * USDC_UNIT);
++
++        vm.prank(owner);
++        vault.pause();
++        assertEq(vault.maxDeposit(alice), 0);
++        assertEq(vault.maxMint(alice), 0);
++
++        usdc.mint(bob, 100 * USDC_UNIT);
++        vm.startPrank(bob);
++        usdc.approve(address(vault), type(uint256).max);
++        vm.expectRevert(abi.encodeWithSelector(ERC4626.ERC4626ExceededMaxDeposit.selector, bob, 100 * USDC_UNIT, 0));
++        vault.deposit(100 * USDC_UNIT, bob);
++        vm.stopPrank();
++
++        uint256 aliceShares = vault.balanceOf(alice);
++        vm.prank(alice);
++        vault.redeem(aliceShares, alice, alice);
++        assertGt(usdc.balanceOf(alice), 0);
++    }
++
++    // ---------------------------------------------------------------- withdrawals & fees
++
++    function test_withdrawalFeeStaysInTheVault() public {
++        _deposit(alice, 1_000 * USDC_UNIT);
++        _deposit(bob, 1_000 * USDC_UNIT);
++
++        uint256 aliceShares = vault.balanceOf(alice);
++        uint256 expected = vault.previewRedeem(aliceShares);
++        // 50 bps of 1,000 USDC.
++        assertEq(expected, 995 * USDC_UNIT);
++
++        vm.prank(alice);
++        uint256 got = vault.redeem(aliceShares, alice, alice);
++
++        assertEq(got, expected);
++        assertEq(usdc.balanceOf(alice), expected);
++        // Bob is the only holder left and now owns the 5 USDC Alice left behind.
++        assertEq(vault.totalAssets(), 1_005 * USDC_UNIT);
++        assertEq(vault.maxWithdraw(bob), vault.previewRedeem(vault.balanceOf(bob)));
++    }
++
++    function test_withdrawDeliversTheExactRequestedAmount() public {
++        _deposit(alice, 1_000 * USDC_UNIT);
++
++        uint256 want = 500 * USDC_UNIT;
++        uint256 sharesQuoted = vault.previewWithdraw(want);
++
++        vm.prank(alice);
++        uint256 sharesBurned = vault.withdraw(want, alice, alice);
++
++        assertEq(sharesBurned, sharesQuoted);
++        assertEq(usdc.balanceOf(alice), want, "receiver gets exactly what it asked for");
++        assertGt(sharesBurned, 500 * WAD, "the fee is paid in extra shares");
++    }
++
++    /// @notice previewWithdraw must never quote fewer shares than a redeem round trip implies,
++    ///         otherwise withdraw/deposit cycling would mint value out of thin air.
++    function testFuzz_previewRoundTripCannotProfit(uint256 deposited, uint256 redeemed) public {
++        deposited = bound(deposited, 1 * USDC_UNIT, 10_000_000 * USDC_UNIT);
++        _deposit(alice, deposited);
++
++        uint256 shares = vault.balanceOf(alice);
++        redeemed = bound(redeemed, 1, shares);
++
++        uint256 assetsOut = vault.previewRedeem(redeemed);
++        vm.assume(assetsOut > 0);
++        assertLe(vault.previewWithdraw(assetsOut), redeemed, "round trip must not return shares");
++    }
++
++    function test_maxWithdrawIsNetOfFee() public {
++        _deposit(alice, 1_000 * USDC_UNIT);
++        assertEq(vault.maxWithdraw(alice), 995 * USDC_UNIT);
++        assertEq(vault.maxRedeem(alice), vault.balanceOf(alice));
++    }
++
++    function test_withdrawRevertsWhenStrategyCannotCover() public {
++        MockIlliquidStrategy stuck = new MockIlliquidStrategy(address(vault), address(usdc));
++        vm.prank(owner);
++        vault.setStrategy(stuck);
++
++        _deposit(alice, 1_000 * USDC_UNIT);
++
++        // The strategy claims to hold 4,000 USDC on top of the 1,000 idle, but cannot free any of it.
++        vm.prank(address(vault));
++        assertTrue(usdc.transfer(address(stuck), 1_000 * USDC_UNIT));
++        stuck.setReported(4_000 * USDC_UNIT);
++
++        vm.prank(alice);
++        vm.expectRevert(abi.encodeWithSelector(YieldVault.InsufficientLiquidity.selector, 500 * USDC_UNIT, 0));
++        vault.withdraw(500 * USDC_UNIT, alice, alice);
++    }
++
++    // ---------------------------------------------------------------- keeper
++
++    function test_deployIdleRespectsBuffer() public {
++        _deposit(alice, 100_000 * USDC_UNIT);
++
++        vm.prank(keeper);
++        uint256 deployed = vault.deployIdle();
++
++        // bufferBps is 5%, so 95,000 USDC goes to work.
++        assertEq(deployed, 95_000 * USDC_UNIT);
++        assertEq(vault.idleAssets(), 5_000 * USDC_UNIT);
++        assertApproxEqRel(
++            vault.totalAssets(), 100_000 * USDC_UNIT, 0.005e18, "value preserved through the LP round trip"
++        );
++    }
++
++    function test_onlyKeeperOrOwnerCanHarvest() public {
++        _deposit(alice, 10_000 * USDC_UNIT);
++
++        vm.prank(alice);
++        vm.expectRevert(abi.encodeWithSelector(YieldVault.NotKeeper.selector, alice));
++        vault.harvest();
++
++        vm.prank(keeper);
++        vault.harvest();
++
++        vm.prank(owner);
++        vault.harvest();
++    }
++
++    function test_harvestRevertsWithoutStrategy() public {
++        vm.prank(owner);
++        vault.setStrategy(IStrategy(address(0)));
++
++        vm.prank(keeper);
++        vm.expectRevert(YieldVault.ZeroAddress.selector);
++        vault.harvest();
++    }
++
++    // ---------------------------------------------------------------- admin
++
++    function test_setStrategyPullsFundsBack() public {
++        _deposit(alice, 100_000 * USDC_UNIT);
++        vm.prank(keeper);
++        vault.deployIdle();
++        assertGt(strategy.totalLpBalance(), 0);
++
++        vm.prank(owner);
++        vault.setStrategy(IStrategy(address(0)));
++
++        assertEq(strategy.totalLpBalance(), 0);
++        assertEq(address(vault.strategy()), address(0));
++        assertApproxEqRel(vault.idleAssets(), 100_000 * USDC_UNIT, 0.01e18);
++    }
++
++    function test_setStrategyRejectsForeignStrategy() public {
++        YieldVault other = new YieldVault(IERC20(address(usdc)), "Other", "oth", owner, treasury);
++        vm.prank(owner);
++        vm.expectRevert(YieldVault.StrategyMismatch.selector);
++        other.setStrategy(strategy); // strategy.vault() points at `vault`, not `other`
++    }
++
++    function test_feeAndBufferBounds() public {
++        vm.startPrank(owner);
++
++        vm.expectRevert(abi.encodeWithSelector(YieldVault.FeeTooHigh.selector, 2_001, 2_000));
++        vault.setPerformanceFee(2_001);
++        vault.setPerformanceFee(2_000);
++        assertEq(vault.performanceFeeBps(), 2_000);
++
++        vm.expectRevert(abi.encodeWithSelector(YieldVault.FeeTooHigh.selector, 101, 100));
++        vault.setWithdrawalFee(101);
++        vault.setWithdrawalFee(100);
++
++        vm.expectRevert(abi.encodeWithSelector(YieldVault.BpsTooHigh.selector, 10_001));
++        vault.setBuffer(10_001);
++
++        vm.stopPrank();
++    }
++
++    function test_adminFunctionsAreOwnerOnly() public {
++        bytes memory err = abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice);
++        vm.startPrank(alice);
++
++        vm.expectRevert(err);
++        vault.setStrategy(IStrategy(address(0)));
++        vm.expectRevert(err);
++        vault.setKeeper(alice, true);
++        vm.expectRevert(err);
++        vault.setTreasury(alice);
++        vm.expectRevert(err);
++        vault.setPerformanceFee(0);
++        vm.expectRevert(err);
++        vault.setWithdrawalFee(0);
++        vm.expectRevert(err);
++        vault.setBuffer(0);
++        vm.expectRevert(err);
++        vault.setDepositCap(0);
++        vm.expectRevert(err);
++        vault.pause();
++
++        vm.stopPrank();
++    }
++
++    function test_ownershipTransferIsTwoStep() public {
++        vm.prank(owner);
++        vault.transferOwnership(alice);
++        assertEq(vault.owner(), owner, "not transferred until accepted");
++
++        vm.prank(alice);
++        vault.acceptOwnership();
++        assertEq(vault.owner(), alice);
++    }
++
++    /// @notice The classic ERC-4626 first-depositor attack: donate to inflate the share price, then
++    ///         the victim's deposit rounds to zero shares. The 1e12 virtual offset defeats it.
++    function test_inflationAttackIsIneffective() public {
++        usdc.mint(alice, 1);
++        vm.startPrank(alice);
++        usdc.approve(address(vault), type(uint256).max);
++        vault.deposit(1, alice); // 1 wei of USDC -> 1e12 shares
++        vm.stopPrank();
++
++        usdc.mint(address(vault), 10_000 * USDC_UNIT); // donation
++
++        uint256 bobShares = _deposit(bob, 20_000 * USDC_UNIT);
++        assertGt(bobShares, 0, "victim must still receive shares");
++
++        vm.prank(bob);
++        uint256 out = vault.redeem(bobShares, bob, bob);
++        // Bob loses the 0.50% withdrawal fee and a unit of rounding, not his whole deposit.
++        assertApproxEqAbs(out, 19_900 * USDC_UNIT, 10, "attacker cannot capture the deposit");
++    }
++}
+
+# Untracked files and status
+ A .gitignore
+A  .gitmodules
+ A README.md
+ A TASK.md
+ A foundry.lock
+ A foundry.toml
+ A remappings.txt
+ A script/Deploy.s.sol
+ A src/BaseAddresses.sol
+ A src/YieldVault.sol
+ A src/interfaces/IAerodrome.sol
+ A src/interfaces/IAggregatorV3.sol
+ A src/interfaces/IStrategy.sol
+ A src/libraries/ChainlinkLib.sol
+ A src/libraries/FairLpMath.sol
+ A src/strategies/AerodromeUsdcWethStrategy.sol
+ A test/BaseTest.sol
+ A test/fork/BaseFork.t.sol
+ A test/helpers/PoolArb.sol
+ A test/integration/Lifecycle.t.sol
+ A test/mocks/MockAerodromeGauge.sol
+ A test/mocks/MockAerodromePool.sol
+ A test/mocks/MockAerodromeRouter.sol
+ A test/mocks/MockAggregator.sol
+ A test/mocks/MockERC20.sol
+ A test/mocks/MockIlliquidStrategy.sol
+ A test/unit/ChainlinkLib.t.sol
+ A test/unit/FairLpMath.t.sol
+ A test/unit/Strategy.t.sol
+ A test/unit/YieldVault.t.sol

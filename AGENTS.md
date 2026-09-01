@@ -149,19 +149,28 @@ task: gas-cost-estimate-001
 run: 2026-07-06T093000Z-claude-with-skill-1
 executor: claude
 variant: with_skill
-skill_version: 191dcc1         # git short sha of the skill source; null for no_skill
-input_sha: 4f2b9c1de803         # sha256 of the input this run was given; absent on pre-2026-08-28 runs
+skill_version: 191dcc1                # git short sha of the skill source; null for no_skill
+input_sha: 4f2b9c1de803               # sha256 of the input this run was given; absent on pre-2026-08-28 runs
 created: 2026-07-06T09:30:00Z
-executor_model: claude-opus-5   # what actually ran; null when the CLI picked its default
-executor_exit: 0                # verify refuses anything else unless --grade-failed-run
-judge:                         # who graded this run
+executor_model: claude-opus-5         # what actually ran; null when the CLI picked its default
+executor_exit: 0                      # verify refuses anything else unless --grade-failed-run
+usage:                                # what the run cost; absent on runs made before 2026-08-27
+  duration_s: 812                     # the harness's own wall clock — the one figure both stacks share
+  turns: 34                           # claude only
+  cost_usd: 4.66                      # claude only; codex exec reports no price
+  input_tokens: 12                    # claude only; the UNCACHED remainder, double digits on a real run
+  cache_creation_input_tokens: 47453  # claude only; where a skill's own prompt lands
+  cache_read_input_tokens: 203362     # claude only; the context re-read on every turn
+  output_tokens: 31748                # claude only
+  total_tokens: 282575                # both stacks; the sum of the four above on claude, codex's own line on codex
+judge:                                # who graded this run
   agent: claude
-  model: claude-opus-4-8       # null when the agent's CLI picked its own default
-  self_judged: false           # true when judge and executor are the same agent
-expects:                       # judged expect lines, in task-spec order
+  model: claude-opus-4-8              # null when the agent's CLI picked its own default
+  self_judged: false                  # true when judge and executor are the same agent
+expects:                              # judged expect lines, in task-spec order
   expect_1: pass
   expect_2: fail
-pass: false                    # true only when every expect passed
+pass: false                           # true only when every expect passed
 ```
 
 Beside it, per run: `baseline.sha` and `workspace.path` (setup; the pointer is local-only), `executor.yaml` + `transcript.md` (run-executor), `run.diff` or `output/` (verify).
@@ -208,12 +217,28 @@ variant's column — and no reviewer could have caught it without re-deriving ev
 
 State the executor, its model, the judge, and the run count at the top of every report. If any run came back `self_judged: true`, say so there — on a single-stack benchmark that is every run, and it is a caveat on the numbers, not a defect in them.
 
+Pass counts are not the whole verdict. `result.yaml` carries a `usage` block per run, so
+give the cost row real numbers rather than "no reduction observed": duration and tokens on
+both stacks, dollars on claude. Two arms that both pass every line are not equivalent if one
+of them took twice the tokens to get there, and on a saturated task that difference is the
+result. Dollars for a codex benchmark have to be derived from tokens and a published price —
+say so in the report rather than printing a figure the harness never measured.
+
+Quote `total_tokens`, never `input_tokens`. On claude the run's input is spread over three
+fields and `input_tokens` alone is the uncached leftover — a skill's whole prompt is billed
+through `cache_creation_input_tokens` and re-read every turn through
+`cache_read_input_tokens`, so a total that skips them cannot see the cost the skill adds.
+And `total_tokens` means different things on the two stacks: claude's counts every cache
+read, codex's `tokens used` line is its own accounting and comes out several times smaller
+for comparable work. Compare tokens between variants within one stack; comparing them across
+stacks is comparing two units.
+
 Every report ends with this table. Answer the last row honestly: sometimes the eval is the wrong artifact, not the skill.
 
 | Question | Answer |
 | --- | --- |
 | Did the skill improve pass rate? | raw counts, e.g. `2/3 vs 0/3` |
-| Did it reduce time/tokens? | yes/no, if observed |
+| Did it reduce time/tokens? | per-variant medians from `usage`, e.g. `808s / 283k tokens vs 1277s / 431k` |
 | Did it create negative deltas? | list them |
 | What mistakes repeated without the skill? | mistake ids |
 | What mistakes remained with the skill? | mistake ids |

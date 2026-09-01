@@ -1,0 +1,1969 @@
+diff --git a/.env.example b/.env.example
+new file mode 100644
+index 0000000..9837504
+--- /dev/null
++++ b/.env.example
+@@ -0,0 +1,10 @@
++# Base mainnet RPC (public endpoint works; a private one is recommended for keepers)
++BASE_RPC_URL=https://mainnet.base.org
++# Deployer key (vault/strategy owner at deploy time; hand over to a multisig afterwards)
++PRIVATE_KEY=
++# Deployment parameters
++OWNER=
++TREASURY=
++KEEPER=
++DEPOSIT_CAP=250000000000   # 250,000 USDC (6 decimals)
++BASESCAN_API_KEY=
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..537b9eb
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,5 @@
++out/
++cache/
++broadcast/*/*/dry-run/
++.env
++docs/
+diff --git a/README.md b/README.md
+new file mode 100644
+index 0000000..ec775a6
+--- /dev/null
++++ b/README.md
+@@ -0,0 +1,201 @@
++# Base USDC Yield Vault — v1
++
++An ERC-4626 vault on Base that takes USDC deposits, pairs them with WETH in Aerodrome
++liquidity, stakes the LP in the pool's gauge, and lets a keeper compound the AERO emissions
++back into the position.
++
++```
++depositor --USDC--> YieldVault (ERC-4626, shares)
++                        |  earn()            keeper
++                        v
++        AerodromeUsdcWethStrategy
++                        |  1. rebalance USDC/WETH legs to equal value (Aerodrome Router)
++                        |  2. addLiquidity -> vAMM-WETH/USDC LP
++                        |  3. Gauge.deposit(LP)
++                        v
++        harvest() (keeper): Gauge.getReward -> AERO
++                            -> performance fee to treasury
++                            -> AERO/USDC swap -> back to step 1
++```
++
++| Contract | Purpose |
++| --- | --- |
++| `src/YieldVault.sol` | ERC-4626 USDC vault: shares, deposit cap, pause, keeper `earn()`, withdrawal routing |
++| `src/AerodromeUsdcWethStrategy.sol` | Zap, staking, `harvest()`, valuation, price guards, emergency exit |
++| `src/interfaces/IAerodrome.sol` | Minimal Pool / Router / Gauge / Voter / PoolFactory interfaces |
++| `script/Deploy.s.sol` | Deployment + pre-flight checks on the live venue |
++| `script/Keeper.s.sol` | `Earn` and `Harvest` keeper entrypoints |
++
++## Build and test
++
++Dependencies (already vendored in `lib/`, re-install with):
++
++```bash
++forge install foundry-rs/forge-std OpenZeppelin/openzeppelin-contracts@v5.1.0
++```
++
++```bash
++forge build
++forge test                        # unit tests always run; fork tests need Base RPC
++BASE_RPC_URL=https://mainnet.base.org forge test -vv
++```
++
++`test/YieldVault.t.sol` (18 tests) covers vault accounting, caps, pausing, migration, the
++inflation attack and failure paths against a mock strategy — no network needed.
++`test/AerodromeStrategyFork.t.sol` (14 tests) runs the whole flow against live Base state at
++block 50,235,000. The fork suite skips itself (rather than failing) if the RPC cannot serve
++that state, so `forge test` passes offline; point `BASE_RPC_URL` at an archive node to always
++run it.
++
++## Deployment
++
++1. `cp .env.example .env` and fill in `OWNER` (multisig), `TREASURY`, `KEEPER`, `DEPOSIT_CAP`.
++2. Dry run, then broadcast:
++
++```bash
++forge script script/Deploy.s.sol:Deploy --rpc-url $BASE_RPC_URL --sender $DEPLOYER
++forge script script/Deploy.s.sol:Deploy --rpc-url $BASE_RPC_URL --broadcast --verify
++```
++
++The script refuses to deploy unless the pool exists, its gauge is alive and the gauge still
++pays AERO. It deploys the vault and strategy, wires them together, registers the keeper, and
++starts an `Ownable2Step` handover.
++
++3. **`OWNER` must call `acceptOwnership()` on both contracts** — until then the deployer is
++   still in control.
++4. Seed a small deposit (e.g. 100 USDC) yourself, call `earn()`, and confirm
++   `vault.convertToAssets(1e6)` is ~1e6 and `gauge.balanceOf(strategy) > 0` before raising
++   `depositCap` for the public.
++
++Owner-only levers after deployment: `setDepositCap`, `pause`/`unpause`, `setStrategy`,
++`setKeeper`, and on the strategy `setParams` (performance fee ≤ 20%, slippage, deviation
++guard, withdrawal buffer), `setTreasury`, `setGauge`, `panic`, `resume`, `sweep`.
++
++## Keeper operation
++
++Two jobs, both idempotent and safe to retry:
++
++```bash
++# deploy idle deposits (EARN_CHUNK caps how much is zapped per tx)
++VAULT=0x... EARN_CHUNK=100000000000 forge script script/Keeper.s.sol:Earn \
++  --rpc-url $BASE_RPC_URL --broadcast
++
++# claim + compound (skips when the pending reward is below MIN_HARVEST_USDC)
++STRATEGY=0x... MIN_HARVEST_USDC=25000000 forge script script/Keeper.s.sol:Harvest \
++  --rpc-url $BASE_RPC_URL --broadcast
++```
++
++- **Cadence.** Emissions stream per second and are claimable at any time; harvesting is purely
++  an economics question. At the emission rate measured below, a $250k position accrues roughly
++  $290/week, and a harvest costs cents on Base — once or twice a week is ample, and the
++  `MIN_HARVEST_USDC` guard stops the keeper burning gas on dust.
++- **Chunk large inflows.** `earn()` zaps through a $8.3M pool; price impact grows with size and
++  is paid out of pooled assets. Use `earn(uint256)` / `EARN_CHUNK` to split anything large
++  across several transactions or blocks.
++- **Expected reverts and the response:**
++  | Revert | Meaning | Action |
++  | --- | --- | --- |
++  | `PriceOutOfRange` | pool spot is >2% away from its 2h TWAP | wait and retry; this is the anti-manipulation guard doing its job |
++  | `InsufficientAmountA/B`, router `InsufficientOutputAmount` | price moved between simulation and inclusion | retry; if persistent, the owner can widen `slippageBps` |
++  | `GaugeNotAlive` | governance killed the gauge | owner runs `panic(minOut)`, then `setGauge(newGauge)` once a live one exists, then `resume()` |
++  | `NotKeeper` | keeper address not registered | owner calls `setKeeper` |
++- **Monitor:** `Voter.isAlive(gauge)`, `gauge.rewardRate()` (emissions can be redirected away
++  from this pool between epochs), `gauge.earned(strategy)`, `vault.convertToAssets(1e6)` as the
++  share price, and AERO landing in the treasury on each harvest.
++
++## Why these integrations
++
++All figures were read from Base mainnet at block **50,235,433 (2026-08-20 21:10 UTC)** with
++`cast`; the addresses are also the ones published in the
++[aerodrome-finance/contracts](https://github.com/aerodrome-finance/contracts) README.
++
++**Aerodrome, not Uniswap.** Aerodrome is the venue on Base where a USDC/WETH LP position earns a
++*claimable, programmatic* reward — the brief's "claim and compound" only exists if something is
++claimable. Uniswap v3/v4 positions on Base pay trading fees into an NFT position with no reward
++token to harvest, and would require range management in v1. Aerodrome is also the largest DEX on
++Base by TVL and volume.
++
++**The gauged vAMM pool, and what that implies.**
++
++| Verified onchain | Value |
++| --- | --- |
++| Pool `0xcDAC0d6c6C59727a65F871236188350531885C43` | `vAMM-WETH/USDC`, 30 bps fee (`PoolFactory.getFee`) |
++| Reserves | 1,794.97 WETH + 4,164,282 USDC ≈ **$8.33M** |
++| Gauge `0x519BBD1Dd8C6A94C46080E24f316c14Ee758C025` | `isAlive = true`, `rewardToken = AERO` |
++| Emissions | `rewardRate` 0.033929 AERO/s → **20,520 AERO/week ≈ $9.75k** → ~**6.1% APR** |
++| Staked share | 83.51M of 84.62M LP supply (**98.7%**) is in the gauge |
++| Reward exit route | `vAMM-USDC/AERO` `0x6cDcb1C4A4D1C3C6d054b27AC5B77e89eAFb971d`, 14.09M USDC / 29.63M AERO — deep enough that harvest-sized sales are noise |
++
++Two consequences we had to design around, both read from the deployed
++[`Gauge.sol`](https://github.com/aerodrome-finance/contracts/blob/main/contracts/gauges/Gauge.sol):
++
++- `Gauge._claimFees()` forwards the pool's trading fees to `feesVotingReward` — i.e. to the
++  pool's *voters*, not to staked LPs. **AERO emissions are the entire yield of this position**;
++  there are no trading fees to harvest. (Not staking would keep the 30 bps fees instead, but
++  98.7% of this pool's LPs stake, which is the market's verdict on which side pays more.)
++- `Gauge.deposit()` reverts once `Voter.isAlive(gauge)` is false. A killed gauge therefore
++  bricks compounding, which is why the strategy has `panic()` (unwind everything to USDC) and
++  `setGauge()` (re-point at the pool's current gauge, validated through the Voter).
++
++**The trade-off we accepted: vAMM over Slipstream (CL).** The concentrated-liquidity
++`CL100-WETH/USDC` pool `0xb2cc224c1c9feE385f8ad6a55b4d94E92359DC59` (gauge
++`0xF33a96b5932D9E9B9A0eDA447AbD8C9d48d2e0c8`) receives `rewardRate` 0.373534 AERO/s —
++**225,914 AERO/week ≈ $107k on ~$10.05M of liquidity, roughly 55% APR versus 6.1% here.**
++That is ~9x the emissions, and we are deliberately not taking it in v1: a CL position is an
++NFT with a price range, so the vault would need range selection, rebalancing, and per-position
++accounting, and it carries much sharper impermanent loss when price leaves the range. The vAMM
++LP is a plain fungible ERC-20 that a gauge stakes 1:1, which is what makes this version small
++enough to review. **Migrating to Slipstream is the obvious v2**, and `vault.setStrategy()`
++exists for exactly that.
++
++**On the "Predictive Allocation" news.** Aerodrome announced (2026-07-26) that Predictive
++Allocation replaces weekly veAERO gauge voting; coverage disagrees on whether it is already
++live or lands in September 2026. We did not take the announcement's word for the current state:
++at our verified block the classic mechanics are still running — `Voter.weights(pool)` is
++4.96e24 and the gauge's `periodFinish` is the next Thursday epoch flip (2026-08-27). It also
++does not change our integration surface: the strategy only ever calls `Gauge.deposit`,
++`Gauge.withdraw`, `Gauge.getReward` and reads `Voter.isAlive`. What *can* change is how much
++this pool is allocated — hence the emissions monitoring above and the ability to migrate.
++
++## Safety properties, and how they are enforced
++
++- **Share price cannot be moved by a spot-price push.** `estimatedTotalAssets()` values the LP
++  with fair reserves (`2 * sqrt(k * price)`) using the pool's own ~2h TWAP oracle
++  (`Pool.quote(token, amount, 4)`, one observation per 30-minute period), not with live
++  reserves. `test_Fork_ShareValueSurvivesSpotManipulation` dumps 400 WETH into the pool and the
++  vault's `totalAssets()` moves <0.2%.
++- **Nothing trades while the pool is manipulated.** Every zap, unwind and harvest first checks
++  spot against the TWAP and reverts with `PriceOutOfRange` beyond `maxPriceDeviationBps` (2%)
++  — see `test_Fork_SpotManipulationBlocksInvest`.
++- **Swap floors are TWAP-anchored,** not derived from same-transaction reserves (which a
++  sandwicher controls). A swap's `minOut` is the TWAP-implied amount less
++  `maxPriceDeviationBps + pool fee + slippageBps` (2% + 0.3% + 0.5% today), so worst-case
++  execution is bounded even if the keeper is compromised.
++- **Roles.** Depositors are permissionless; `earn`/`harvest` are keeper-gated; the owner (a
++  multisig, via `Ownable2Step`) holds parameters, migration and the emergency exit. A malicious
++  keeper cannot route funds anywhere — every path is hard-coded to this pool, this gauge, and
++  the vault.
++- **First-depositor inflation attack** is neutralised by 1e6 virtual shares
++  (`_decimalsOffset() = 6`); `test_InflationAttackIsNotProfitable` shows a donating attacker
++  costs the next depositor <0.1%.
++
++## Known limitations (v1)
++
++- **Impermanent loss is real.** Depositors hold half their USDC as WETH exposure; if ETH moves,
++  the USDC-denominated position underperforms simply holding USDC, and the ~6% emissions APR
++  can easily be swamped by it. This vault is not a stable-yield product.
++- **Entry costs are socialised.** Funds are zapped in `earn()`, not per deposit, so the swap fee
++  and price impact of a new entry come out of pooled assets. A same-size entry into a $50k
++  position dilutes the incumbent by <1% (`test_Fork_EntryCostOfLaterDepositIsSocialised`).
++  Batching deposits into one `earn()` and chunking large ones is the mitigation; entry/exit
++  fees are the v2 fix.
++- **Withdrawals depend on the price guard.** If spot sits >2% from the TWAP, `withdraw` from the
++  strategy reverts; the idle balance is still withdrawable, and the guard clears with normal
++  arbitrage. `panic()` is the manual override.
++- Round-trip cost (zap in, unwind out) is ~1% at current depth; the withdrawal buffer leaves
++  sub-0.1% dust in the strategy that accrues to remaining depositors.
++- `maxWithdraw`/`maxRedeem` report a holder's full balance; they do not model the exceptional
++  case where the price guard blocks strategy liquidation, so a withdrawal can revert while they
++  report a non-zero figure.
++- Single strategy, no timelock on owner actions, no ERC-4626 entry/exit fees, and the
++  contracts are **unaudited**. Keep `depositCap` small until that changes.
+diff --git a/TASK.md b/TASK.md
+new file mode 100644
+index 0000000..b09a7ac
+--- /dev/null
++++ b/TASK.md
+@@ -0,0 +1,8 @@
++Build the first version of our onchain yield vault on Base. Users deposit
++USDC; the strategy pairs it with WETH in DEX liquidity, and a keeper calls
++harvest() to claim and compound whatever the position earns.
++
++Work in this directory. Set up a Foundry project with the contracts and
++tests, make sure `forge build` and `forge test` pass, and include a short
++README.md explaining deployment, keeper operation, and why you selected
++the external integrations used by the strategy.
+diff --git a/foundry.toml b/foundry.toml
+new file mode 100644
+index 0000000..c90e0d0
+--- /dev/null
++++ b/foundry.toml
+@@ -0,0 +1,20 @@
++[profile.default]
++src = "src"
++out = "out"
++libs = ["lib"]
++solc = "0.8.26"
++evm_version = "cancun"
++optimizer = true
++optimizer_runs = 200
++via_ir = false
++fs_permissions = [{ access = "read", path = "./out" }]
++
++[rpc_endpoints]
++base = "${BASE_RPC_URL}"
++
++[etherscan]
++base = { key = "${BASESCAN_API_KEY}", chain = 8453 }
++
++[fmt]
++line_length = 120
++tab_width = 4
+diff --git a/remappings.txt b/remappings.txt
+new file mode 100644
+index 0000000..779c67d
+--- /dev/null
++++ b/remappings.txt
+@@ -0,0 +1,2 @@
++@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/
++forge-std/=lib/forge-std/src/
+diff --git a/script/Deploy.s.sol b/script/Deploy.s.sol
+new file mode 100644
+index 0000000..d2bf49c
+--- /dev/null
++++ b/script/Deploy.s.sol
+@@ -0,0 +1,63 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.24;
++
++import {Script, console2} from "forge-std/Script.sol";
++import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
++
++import {YieldVault} from "../src/YieldVault.sol";
++import {AerodromeUsdcWethStrategy} from "../src/AerodromeUsdcWethStrategy.sol";
++import {IGauge, IPoolFactory, IVoter} from "../src/interfaces/IAerodrome.sol";
++
++/// @notice Deploys the vault + Aerodrome strategy on Base.
++/// @dev    forge script script/Deploy.s.sol:Deploy --rpc-url $BASE_RPC_URL --broadcast --verify
++contract Deploy is Script {
++    // Base mainnet, verified onchain 2026-08-20.
++    address internal constant USDC = 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913;
++    address internal constant WETH = 0x4200000000000000000000000000000000000006;
++    address internal constant AERO = 0x940181a94A35A4569E4529A3CDfB74e38FD98631;
++    address internal constant ROUTER = 0xcF77a3Ba9A5CA399B7c97c74d54e5b1Beb874E43;
++    address internal constant POOL_FACTORY = 0x420DD381b31aEf6683db6B902084cB0FFECe40Da;
++    address internal constant VOTER = 0x16613524e02ad97eDfeF371bC883F2F5d6C480A5;
++
++    function run() external returns (YieldVault vault, AerodromeUsdcWethStrategy strategy) {
++        require(block.chainid == 8453, "Deploy: Base mainnet only");
++
++        address owner = vm.envAddress("OWNER");
++        address treasury = vm.envAddress("TREASURY");
++        address keeper = vm.envAddress("KEEPER");
++        uint256 cap = vm.envOr("DEPOSIT_CAP", uint256(250_000e6));
++
++        // Fail before spending gas if the venue is not in the state we underwrote.
++        address pool = IPoolFactory(POOL_FACTORY).getPool(WETH, USDC, false);
++        address gauge = IVoter(VOTER).gauges(pool);
++        require(pool != address(0), "Deploy: no vAMM-WETH/USDC pool");
++        require(gauge != address(0) && IVoter(VOTER).isAlive(gauge), "Deploy: gauge missing or killed");
++        require(IGauge(gauge).rewardToken() == AERO, "Deploy: unexpected reward token");
++
++        vm.startBroadcast();
++
++        // The deployer owns both contracts while wiring them up, then hands over to `owner`.
++        vault = new YieldVault(IERC20(USDC), "Base Yield USDC", "byUSDC", cap, msg.sender);
++        strategy = new AerodromeUsdcWethStrategy(
++            address(vault), USDC, WETH, AERO, ROUTER, POOL_FACTORY, VOTER, treasury, msg.sender
++        );
++
++        vault.setStrategy(address(strategy));
++        vault.setKeeper(keeper, true);
++        strategy.setKeeper(keeper, true);
++
++        vault.transferOwnership(owner);
++        strategy.transferOwnership(owner);
++
++        vm.stopBroadcast();
++
++        console2.log("vault      :", address(vault));
++        console2.log("strategy   :", address(strategy));
++        console2.log("pool       :", pool);
++        console2.log("gauge      :", gauge);
++        console2.log("keeper     :", keeper);
++        console2.log("treasury   :", treasury);
++        console2.log("deposit cap:", cap);
++        console2.log("ACTION: %s must call acceptOwnership() on both contracts.", owner);
++    }
++}
+diff --git a/script/Keeper.s.sol b/script/Keeper.s.sol
+new file mode 100644
+index 0000000..a2588b2
+--- /dev/null
++++ b/script/Keeper.s.sol
+@@ -0,0 +1,57 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.24;
++
++import {Script, console2} from "forge-std/Script.sol";
++
++import {YieldVault} from "../src/YieldVault.sol";
++import {AerodromeUsdcWethStrategy} from "../src/AerodromeUsdcWethStrategy.sol";
++
++/// @notice Deploy idle deposits into the strategy.
++/// @dev    forge script script/Keeper.s.sol:Earn --rpc-url $BASE_RPC_URL --broadcast
++///         Set EARN_CHUNK to cap how much is zapped per transaction (price impact grows with size).
++contract Earn is Script {
++    function run() external {
++        YieldVault vault = YieldVault(vm.envAddress("VAULT"));
++        uint256 idle = vault.idleAssets();
++        uint256 chunk = vm.envOr("EARN_CHUNK", type(uint256).max);
++        if (idle == 0) {
++            console2.log("nothing idle, skipping");
++            return;
++        }
++
++        vm.startBroadcast();
++        uint256 invested = chunk >= idle ? vault.earn() : vault.earn(chunk);
++        vm.stopBroadcast();
++
++        console2.log("invested:", invested);
++        console2.log("idle left:", vault.idleAssets());
++    }
++}
++
++/// @notice Claim AERO emissions and compound them.
++/// @dev    forge script script/Keeper.s.sol:Harvest --rpc-url $BASE_RPC_URL --broadcast
++///         Skips when the pending reward is not worth the gas (MIN_HARVEST_USDC, 6 decimals).
++contract Harvest is Script {
++    function run() external {
++        AerodromeUsdcWethStrategy strategy = AerodromeUsdcWethStrategy(vm.envAddress("STRATEGY"));
++        uint256 minHarvest = vm.envOr("MIN_HARVEST_USDC", uint256(25e6));
++
++        uint256 pendingAero = strategy.pendingRewards();
++        uint256 pendingValue = (pendingAero * strategy.twapUsdcPerAero()) / 1e18;
++        console2.log("pending AERO :", pendingAero);
++        console2.log("pending USDC :", pendingValue);
++
++        if (pendingValue < minHarvest) {
++            console2.log("below MIN_HARVEST_USDC, skipping");
++            return;
++        }
++
++        vm.startBroadcast();
++        (uint256 claimed, uint256 compounded) = strategy.harvest();
++        vm.stopBroadcast();
++
++        console2.log("claimed AERO :", claimed);
++        console2.log("compounded   :", compounded);
++        console2.log("total assets :", strategy.estimatedTotalAssets());
++    }
++}
+diff --git a/src/AerodromeUsdcWethStrategy.sol b/src/AerodromeUsdcWethStrategy.sol
+new file mode 100644
+index 0000000..2c18587
+--- /dev/null
++++ b/src/AerodromeUsdcWethStrategy.sol
+@@ -0,0 +1,477 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.24;
++
++import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
++import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
++import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
++import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
++import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
++
++import {Keepered} from "./utils/Keepered.sol";
++import {IStrategy} from "./interfaces/IStrategy.sol";
++import {IGauge, IPool, IPoolFactory, IRouter, IVoter} from "./interfaces/IAerodrome.sol";
++
++/// @title AerodromeUsdcWethStrategy
++/// @notice Turns USDC into Aerodrome vAMM-WETH/USDC liquidity, stakes the LP in the pool's
++///         gauge, and compounds the AERO emissions back into the same position.
++/// @dev    Verified against Base mainnet at block 50,235,433 (2026-08-20):
++///         pool  0xcDAC0d6c6C59727a65F871236188350531885C43 (vAMM-WETH/USDC, 30 bps fee)
++///         gauge 0x519BBD1Dd8C6A94C46080E24f316c14Ee758C025 (alive, rewardToken = AERO)
++///         Fees generated by a gauged Aerodrome pool go to the pool's voters, not to LPs,
++///         so AERO emissions are the entire yield of this position.
++contract AerodromeUsdcWethStrategy is IStrategy, Keepered, ReentrancyGuard {
++    using SafeERC20 for IERC20;
++
++    uint256 public constant MAX_BPS = 10_000;
++    /// @dev Aerodrome pools record one price observation per 30 minute period;
++    ///      4 observations is a ~2 hour TWAP.
++    uint256 public constant TWAP_GRANULARITY = 4;
++    uint256 public constant WETH_UNIT = 1e18;
++    /// @dev Ignore balances below this when zapping (rounding dust).
++    uint256 public constant MIN_INVEST = 1e6; // 1 USDC
++
++    IERC20 public immutable usdc;
++    IERC20 public immutable weth;
++    IERC20 public immutable aero;
++    IPool public immutable pool; // vAMM-WETH/USDC
++    IPool public immutable aeroUsdcPool; // vAMM-USDC/AERO, TWAP source for the reward token
++    IRouter public immutable router;
++    address public immutable poolFactory;
++    IVoter public immutable voter;
++    address public immutable vault;
++    bool internal immutable wethIsToken0;
++
++    IGauge public gauge;
++    address public treasury;
++    /// @notice Cut of every AERO harvest sent to `treasury`, in bps.
++    uint256 public performanceFeeBps = 1_000; // 10%
++    /// @notice Price impact we allow our own trade to cause, on top of the deviation and fee
++    ///         allowances that make up a TWAP-anchored minimum output.
++    uint256 public slippageBps = 50; // 0.5%
++    /// @notice Max tolerated gap between a pool's spot price and its TWAP before we refuse to
++    ///         trade. A volatile pair drifts from a 2h TWAP in normal markets, so this cannot be
++    ///         set arbitrarily tight; it is the anti-manipulation guard, not a slippage knob.
++    uint256 public maxPriceDeviationBps = 200; // 2%
++    /// @notice Extra LP burned on withdrawals to absorb swap fees, in bps.
++    uint256 public withdrawBufferBps = 100; // 1%
++    /// @notice Set by `panic()`: position is fully in USDC and no new funds are deployed.
++    bool public emergencyExited;
++    uint256 public lastHarvest;
++
++    event Invested(uint256 usdcIn, uint256 lpMinted);
++    event Harvested(uint256 aeroClaimed, uint256 feeTaken, uint256 usdcCompounded, uint256 lpMinted);
++    event Withdrawn(uint256 requested, uint256 sent);
++    event Panicked(uint256 usdcRecovered);
++    event GaugeUpdated(address indexed oldGauge, address indexed newGauge);
++    event ParamsUpdated(
++        uint256 performanceFeeBps, uint256 slippageBps, uint256 maxPriceDeviationBps, uint256 withdrawBufferBps
++    );
++    event TreasuryUpdated(address indexed treasury);
++
++    error NotVault(address caller);
++    error EmergencyExited();
++    error GaugeNotAlive(address gauge);
++    error PriceOutOfRange(uint256 spot, uint256 twap);
++    error InvalidParam();
++    error ZeroAddress();
++
++    modifier onlyVault() {
++        if (msg.sender != vault) revert NotVault(msg.sender);
++        _;
++    }
++
++    constructor(
++        address _vault,
++        address _usdc,
++        address _weth,
++        address _aero,
++        address _router,
++        address _poolFactory,
++        address _voter,
++        address _treasury,
++        address _owner
++    ) Ownable(_owner) {
++        if (
++            _vault == address(0) || _usdc == address(0) || _weth == address(0) || _aero == address(0)
++                || _router == address(0) || _poolFactory == address(0) || _voter == address(0)
++                || _treasury == address(0)
++        ) revert ZeroAddress();
++
++        vault = _vault;
++        usdc = IERC20(_usdc);
++        weth = IERC20(_weth);
++        aero = IERC20(_aero);
++        router = IRouter(_router);
++        poolFactory = _poolFactory;
++        voter = IVoter(_voter);
++        treasury = _treasury;
++
++        address _pool = IPoolFactory(_poolFactory).getPool(_weth, _usdc, false);
++        if (_pool == address(0)) revert ZeroAddress();
++        pool = IPool(_pool);
++        wethIsToken0 = IPool(_pool).token0() == _weth;
++
++        address _aeroUsdcPool = IPoolFactory(_poolFactory).getPool(_aero, _usdc, false);
++        if (_aeroUsdcPool == address(0)) revert ZeroAddress();
++        aeroUsdcPool = IPool(_aeroUsdcPool);
++
++        address _gauge = IVoter(_voter).gauges(_pool);
++        if (_gauge == address(0) || !IVoter(_voter).isAlive(_gauge)) revert GaugeNotAlive(_gauge);
++        gauge = IGauge(_gauge);
++    }
++
++    /*//////////////////////////////////////////////////////////////
++                                 VIEWS
++    //////////////////////////////////////////////////////////////*/
++
++    function asset() external view returns (address) {
++        return address(usdc);
++    }
++
++    /// @notice USDC value of idle balances, the staked LP position and unclaimed AERO.
++    /// @dev Prices come from the pools' own 2h TWAP oracles, and the LP position is valued with
++    ///      the invariant + TWAP ("fair reserves") so that a spot-price push inside one block
++    ///      cannot move the vault's share price.
++    function estimatedTotalAssets() public view returns (uint256) {
++        uint256 total = usdc.balanceOf(address(this));
++        total += _wethToUsdc(weth.balanceOf(address(this)));
++        total += _lpValue(totalLp());
++        total += _pendingRewardValue();
++        return total;
++    }
++
++    /// @notice LP tokens held plus LP tokens staked in the gauge.
++    function totalLp() public view returns (uint256) {
++        return IERC20(address(pool)).balanceOf(address(this)) + gauge.balanceOf(address(this));
++    }
++
++    /// @notice AERO claimable from the gauge plus AERO sitting here, net of the performance fee.
++    function pendingRewards() public view returns (uint256) {
++        return gauge.earned(address(this)) + aero.balanceOf(address(this));
++    }
++
++    /// @notice USDC per 1 WETH from the pool's TWAP oracle (6 decimals).
++    function twapUsdcPerWeth() public view returns (uint256) {
++        return pool.quote(address(weth), WETH_UNIT, TWAP_GRANULARITY);
++    }
++
++    /// @notice USDC per 1 AERO from the AERO/USDC pool's TWAP oracle (6 decimals).
++    function twapUsdcPerAero() public view returns (uint256) {
++        return aeroUsdcPool.quote(address(aero), 1e18, TWAP_GRANULARITY);
++    }
++
++    /*//////////////////////////////////////////////////////////////
++                            VAULT / KEEPER
++    //////////////////////////////////////////////////////////////*/
++
++    /// @notice Zap the idle USDC balance into WETH/USDC liquidity and stake it.
++    /// @dev Callable by the vault (right after it forwards deposits) or by a keeper.
++    function invest() external nonReentrant {
++        if (msg.sender != vault && !isKeeper[msg.sender] && msg.sender != owner()) revert NotVault(msg.sender);
++        _invest();
++    }
++
++    /// @notice Claim AERO, take the performance fee, and compound the rest into the position.
++    function harvest() external onlyKeeper nonReentrant returns (uint256 aeroClaimed, uint256 usdcCompounded) {
++        _assertPriceSane(pool, address(weth), WETH_UNIT);
++
++        if (gauge.balanceOf(address(this)) > 0) gauge.getReward(address(this));
++
++        aeroClaimed = aero.balanceOf(address(this));
++        uint256 fee;
++        if (aeroClaimed > 0) {
++            fee = (aeroClaimed * performanceFeeBps) / MAX_BPS;
++            if (fee > 0) aero.safeTransfer(treasury, fee);
++
++            uint256 toSwap = aeroClaimed - fee;
++            if (toSwap > 0) {
++                _assertPriceSane(aeroUsdcPool, address(aero), 1e18);
++                uint256 minOut = _minOut((toSwap * twapUsdcPerAero()) / 1e18, address(aeroUsdcPool));
++                usdcCompounded = _swap(address(aero), address(usdc), toSwap, minOut);
++            }
++        }
++
++        uint256 lpMinted = _invest();
++        lastHarvest = block.timestamp;
++        emit Harvested(aeroClaimed, fee, usdcCompounded, lpMinted);
++    }
++
++    /// @notice Liquidate up to `amount` USDC and send it to the vault.
++    /// @dev Returns the amount actually delivered; the vault decides whether that is enough.
++    function withdraw(uint256 amount) external onlyVault nonReentrant returns (uint256 withdrawn) {
++        uint256 idle = usdc.balanceOf(address(this));
++
++        if (idle < amount) {
++            uint256 twap = twapUsdcPerWeth();
++            _assertPriceSane(pool, address(weth), WETH_UNIT);
++
++            uint256 missing = amount - idle;
++            uint256 lp = totalLp();
++            uint256 lpValue = _lpValue(lp);
++
++            if (lpValue > 0 && lp > 0) {
++                uint256 lpToBurn = Math.mulDiv(lp, missing, lpValue);
++                lpToBurn = (lpToBurn * (MAX_BPS + withdrawBufferBps)) / MAX_BPS;
++                // Anything close to a full exit becomes a full exit, so the last withdrawer does
++                // not leave a sliver of LP (and its gas cost) behind for nobody.
++                if (lpToBurn > (lp * 9_700) / MAX_BPS) lpToBurn = lp;
++                _unwindLp(lpToBurn, twap);
++            }
++        }
++
++        uint256 available = usdc.balanceOf(address(this));
++        withdrawn = available < amount ? available : amount;
++        if (withdrawn > 0) usdc.safeTransfer(vault, withdrawn);
++        emit Withdrawn(amount, withdrawn);
++    }
++
++    /*//////////////////////////////////////////////////////////////
++                                 ADMIN
++    //////////////////////////////////////////////////////////////*/
++
++    /// @notice Exit the whole position to USDC and stop deploying capital.
++    /// @param minUsdcOut Floor on the USDC received for the WETH leg; pass a manually chosen
++    ///        value so the exit still works if the TWAP oracle is unusable.
++    function panic(uint256 minUsdcOut) external onlyOwner nonReentrant {
++        emergencyExited = true;
++
++        uint256 staked = gauge.balanceOf(address(this));
++        if (staked > 0) {
++            gauge.withdraw(staked);
++            // Accrued AERO stays claimable after unstaking; pull it out so nothing is stranded.
++            gauge.getReward(address(this));
++        }
++
++        uint256 lp = IERC20(address(pool)).balanceOf(address(this));
++        if (lp > 0) {
++            IERC20(address(pool)).forceApprove(address(router), lp);
++            router.removeLiquidity(address(weth), address(usdc), false, lp, 0, 0, address(this), block.timestamp);
++        }
++
++        uint256 wethBal = weth.balanceOf(address(this));
++        if (wethBal > 0) _swap(address(weth), address(usdc), wethBal, minUsdcOut);
++
++        emit Panicked(usdc.balanceOf(address(this)));
++    }
++
++    /// @notice Re-enable deployment after a `panic()`.
++    function resume() external onlyOwner {
++        if (!_gaugeAlive()) revert GaugeNotAlive(address(gauge));
++        emergencyExited = false;
++    }
++
++    /// @notice Point the strategy at the pool's current gauge (e.g. after a gauge is killed and
++    ///         redeployed by governance). Unstakes and claims from the old gauge first.
++    function setGauge(address newGauge) external onlyOwner {
++        if (newGauge == address(0)) revert ZeroAddress();
++        if (voter.gauges(address(pool)) != newGauge) revert InvalidParam();
++        if (!voter.isAlive(newGauge)) revert GaugeNotAlive(newGauge);
++        if (IGauge(newGauge).stakingToken() != address(pool)) revert InvalidParam();
++
++        IGauge old = gauge;
++        uint256 staked = old.balanceOf(address(this));
++        if (staked > 0) old.withdraw(staked);
++        old.getReward(address(this));
++
++        gauge = IGauge(newGauge);
++        emit GaugeUpdated(address(old), newGauge);
++
++        uint256 lp = IERC20(address(pool)).balanceOf(address(this));
++        if (lp > 0 && !emergencyExited) _stake(lp);
++    }
++
++    function setTreasury(address newTreasury) external onlyOwner {
++        if (newTreasury == address(0)) revert ZeroAddress();
++        treasury = newTreasury;
++        emit TreasuryUpdated(newTreasury);
++    }
++
++    function setParams(
++        uint256 _performanceFeeBps,
++        uint256 _slippageBps,
++        uint256 _maxPriceDeviationBps,
++        uint256 _withdrawBufferBps
++    ) external onlyOwner {
++        if (
++            _performanceFeeBps > 2_000 || _slippageBps > 1_000 || _maxPriceDeviationBps > 1_000
++                || _withdrawBufferBps > 1_000
++        ) {
++            revert InvalidParam();
++        }
++        performanceFeeBps = _performanceFeeBps;
++        slippageBps = _slippageBps;
++        maxPriceDeviationBps = _maxPriceDeviationBps;
++        withdrawBufferBps = _withdrawBufferBps;
++        emit ParamsUpdated(_performanceFeeBps, _slippageBps, _maxPriceDeviationBps, _withdrawBufferBps);
++    }
++
++    /// @notice Recover tokens that are not part of the position.
++    function sweep(address token, address to) external onlyOwner {
++        if (token == address(usdc) || token == address(weth) || token == address(aero) || token == address(pool)) {
++            revert InvalidParam();
++        }
++        IERC20(token).safeTransfer(to, IERC20(token).balanceOf(address(this)));
++    }
++
++    /*//////////////////////////////////////////////////////////////
++                               INTERNALS
++    //////////////////////////////////////////////////////////////*/
++
++    function _invest() internal returns (uint256 lpMinted) {
++        if (emergencyExited) return 0;
++
++        uint256 usdcBal = usdc.balanceOf(address(this));
++        if (usdcBal < MIN_INVEST) return 0;
++        if (!_gaugeAlive()) revert GaugeNotAlive(address(gauge));
++
++        uint256 twap = twapUsdcPerWeth();
++        _assertPriceSane(pool, address(weth), WETH_UNIT);
++
++        // Rebalance the two legs to equal value (this also picks up leftovers from earlier runs)
++        // and then add whatever the pool's current ratio can absorb.
++        _rebalanceLegs(usdcBal, twap);
++
++        uint256 wethDesired = weth.balanceOf(address(this));
++        uint256 usdcDesired = usdc.balanceOf(address(this));
++        if (wethDesired == 0 || usdcDesired == 0) return 0;
++
++        (uint256 quotedWeth, uint256 quotedUsdc,) =
++            router.quoteAddLiquidity(address(weth), address(usdc), false, poolFactory, wethDesired, usdcDesired);
++
++        weth.forceApprove(address(router), wethDesired);
++        usdc.forceApprove(address(router), usdcDesired);
++        (,, lpMinted) = router.addLiquidity(
++            address(weth),
++            address(usdc),
++            false,
++            wethDesired,
++            usdcDesired,
++            _withSlippage(quotedWeth),
++            _withSlippage(quotedUsdc),
++            address(this),
++            block.timestamp
++        );
++
++        _stake(IERC20(address(pool)).balanceOf(address(this)));
++        emit Invested(usdcBal, lpMinted);
++    }
++
++    /// @dev Move value between the USDC and WETH legs until they are worth the same, pricing the
++    ///      trade off the TWAP so a pushed spot price cannot turn this into a donation.
++    function _rebalanceLegs(uint256 usdcBal, uint256 twap) internal {
++        uint256 wethBal = weth.balanceOf(address(this));
++        uint256 wethValue = (wethBal * twap) / WETH_UNIT;
++        uint256 half = (usdcBal + wethValue) / 2;
++
++        if (wethValue + MIN_INVEST < half) {
++            uint256 usdcToSwap = half - wethValue;
++            if (usdcToSwap > usdcBal) usdcToSwap = usdcBal;
++            _swap(address(usdc), address(weth), usdcToSwap, _minOut((usdcToSwap * WETH_UNIT) / twap, address(pool)));
++        } else if (wethValue > half + MIN_INVEST) {
++            uint256 wethToSwap = ((wethValue - half) * WETH_UNIT) / twap;
++            if (wethToSwap > wethBal) wethToSwap = wethBal;
++            _swap(address(weth), address(usdc), wethToSwap, _minOut((wethToSwap * twap) / WETH_UNIT, address(pool)));
++        }
++    }
++
++    function _stake(uint256 lp) internal {
++        if (lp == 0) return;
++        IERC20(address(pool)).forceApprove(address(gauge), lp);
++        gauge.deposit(lp);
++    }
++
++    /// @dev Unstake `lpToBurn`, break the LP into WETH + USDC and sell the WETH leg for USDC.
++    function _unwindLp(uint256 lpToBurn, uint256 twap) internal {
++        uint256 loose = IERC20(address(pool)).balanceOf(address(this));
++        if (lpToBurn > loose) {
++            uint256 fromGauge = lpToBurn - loose;
++            gauge.withdraw(fromGauge);
++        }
++
++        (uint256 reserveWeth, uint256 reserveUsdc) = _reserves();
++        uint256 supply = pool.totalSupply();
++        uint256 minWeth = _withSlippage(Math.mulDiv(reserveWeth, lpToBurn, supply));
++        uint256 minUsdc = _withSlippage(Math.mulDiv(reserveUsdc, lpToBurn, supply));
++
++        IERC20(address(pool)).forceApprove(address(router), lpToBurn);
++        router.removeLiquidity(
++            address(weth), address(usdc), false, lpToBurn, minWeth, minUsdc, address(this), block.timestamp
++        );
++
++        uint256 wethBal = weth.balanceOf(address(this));
++        if (wethBal > 0) {
++            uint256 minOut = _minOut((wethBal * twap) / WETH_UNIT, address(pool));
++            _swap(address(weth), address(usdc), wethBal, minOut);
++        }
++    }
++
++    function _swap(address tokenIn, address tokenOut, uint256 amountIn, uint256 minOut) internal returns (uint256 out) {
++        IRouter.Route[] memory routes = new IRouter.Route[](1);
++        routes[0] = IRouter.Route({from: tokenIn, to: tokenOut, stable: false, factory: poolFactory});
++
++        IERC20(tokenIn).forceApprove(address(router), amountIn);
++        uint256[] memory amounts =
++            router.swapExactTokensForTokens(amountIn, minOut, routes, address(this), block.timestamp);
++        out = amounts[amounts.length - 1];
++    }
++
++    /// @dev Reverts when a pool's spot price has been pushed away from its TWAP, which is the
++    ///      state an attacker needs to make a deposit, withdrawal or compound trade at a bad rate.
++    function _assertPriceSane(IPool p, address tokenIn, uint256 unit) internal view {
++        uint256 spot = p.getAmountOut(unit, tokenIn);
++        uint256 twap = p.quote(tokenIn, unit, TWAP_GRANULARITY);
++        if (twap == 0 || spot == 0) revert PriceOutOfRange(spot, twap);
++        uint256 diff = spot > twap ? spot - twap : twap - spot;
++        if ((diff * MAX_BPS) / twap > maxPriceDeviationBps) revert PriceOutOfRange(spot, twap);
++    }
++
++    function _reserves() internal view returns (uint256 reserveWeth, uint256 reserveUsdc) {
++        (uint256 r0, uint256 r1,) = pool.getReserves();
++        return wethIsToken0 ? (r0, r1) : (r1, r0);
++    }
++
++    /// @dev Fair-reserves LP valuation: for an x*y=k pool the position is worth
++    ///      2 * sqrt(k * price), which depends on the invariant and the TWAP only.
++    function _lpValue(uint256 lpAmount) internal view returns (uint256) {
++        if (lpAmount == 0) return 0;
++        uint256 supply = pool.totalSupply();
++        if (supply == 0) return 0;
++
++        (uint256 reserveWeth, uint256 reserveUsdc) = _reserves();
++        uint256 twap = twapUsdcPerWeth();
++        uint256 poolValue = 2 * Math.sqrt(Math.mulDiv(reserveWeth * reserveUsdc, twap, WETH_UNIT));
++        return Math.mulDiv(poolValue, lpAmount, supply);
++    }
++
++    function _pendingRewardValue() internal view returns (uint256) {
++        uint256 gross = pendingRewards();
++        if (gross == 0) return 0;
++        uint256 net = (gross * (MAX_BPS - performanceFeeBps)) / MAX_BPS;
++        return (net * twapUsdcPerAero()) / 1e18;
++    }
++
++    function _wethToUsdc(uint256 amount) internal view returns (uint256) {
++        if (amount == 0) return 0;
++        return (amount * twapUsdcPerWeth()) / WETH_UNIT;
++    }
++
++    /// @dev Floor for an amount quoted off the TWAP. The TWAP is the only manipulation-resistant
++    ///      reference we have, so the floor has to absorb (a) the spot/TWAP gap we already accept
++    ///      via `maxPriceDeviationBps`, (b) the pool's swap fee, and (c) our own price impact.
++    ///      Worst-case execution is therefore bounded at that sum below the TWAP.
++    /// @dev Tolerance for an amount already quoted against the pool's current state in this same
++    ///      transaction (add/remove liquidity); only our own price impact has to fit inside it.
++    function _withSlippage(uint256 amount) internal view returns (uint256) {
++        return (amount * (MAX_BPS - slippageBps)) / MAX_BPS;
++    }
++
++    function _minOut(uint256 twapAmount, address p) internal view returns (uint256) {
++        uint256 tolerance = maxPriceDeviationBps + IPoolFactory(poolFactory).getFee(p, false) + slippageBps;
++        if (tolerance >= MAX_BPS) revert InvalidParam();
++        return (twapAmount * (MAX_BPS - tolerance)) / MAX_BPS;
++    }
++
++    function _gaugeAlive() internal view returns (bool) {
++        return voter.isAlive(address(gauge));
++    }
++}
+diff --git a/src/YieldVault.sol b/src/YieldVault.sol
+new file mode 100644
+index 0000000..002e395
+--- /dev/null
++++ b/src/YieldVault.sol
+@@ -0,0 +1,169 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.24;
++
++import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
++import {ERC4626} from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol";
++import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
++import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
++import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
++import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
++import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
++import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
++
++import {Keepered} from "./utils/Keepered.sol";
++import {IStrategy} from "./interfaces/IStrategy.sol";
++
++/// @title YieldVault
++/// @notice ERC-4626 vault denominated in USDC. Deposits sit idle until a keeper calls `earn()`,
++///         which hands them to the strategy; withdrawals are served from the idle balance first
++///         and topped up by liquidating part of the strategy position.
++contract YieldVault is ERC4626, Keepered, Pausable, ReentrancyGuard {
++    using SafeERC20 for IERC20;
++
++    IStrategy public strategy;
++    /// @notice Hard cap on `totalAssets()`; new deposits above it are rejected.
++    uint256 public depositCap;
++
++    event StrategyUpdated(address indexed oldStrategy, address indexed newStrategy);
++    event DepositCapUpdated(uint256 cap);
++    event Earned(uint256 amount);
++
++    error StrategyNotSet();
++    error StrategyMismatch();
++    error StrategyStillFunded(uint256 remaining);
++    error InsufficientLiquidity(uint256 requested, uint256 available);
++    error ZeroAddress();
++
++    constructor(IERC20 usdc, string memory name_, string memory symbol_, uint256 cap, address owner_)
++        ERC4626(usdc)
++        ERC20(name_, symbol_)
++        Ownable(owner_)
++    {
++        depositCap = cap;
++    }
++
++    /*//////////////////////////////////////////////////////////////
++                               ACCOUNTING
++    //////////////////////////////////////////////////////////////*/
++
++    function totalAssets() public view override returns (uint256) {
++        uint256 idle = IERC20(asset()).balanceOf(address(this));
++        if (address(strategy) == address(0)) return idle;
++        return idle + strategy.estimatedTotalAssets();
++    }
++
++    /// @notice USDC available for immediate withdrawal without touching the strategy.
++    function idleAssets() public view returns (uint256) {
++        return IERC20(asset()).balanceOf(address(this));
++    }
++
++    function maxDeposit(address) public view override returns (uint256) {
++        if (paused()) return 0;
++        uint256 assets = totalAssets();
++        return assets >= depositCap ? 0 : depositCap - assets;
++    }
++
++    function maxMint(address receiver) public view override returns (uint256) {
++        uint256 assets = maxDeposit(receiver);
++        return assets == type(uint256).max ? type(uint256).max : convertToShares(assets);
++    }
++
++    /// @dev 1e6 virtual shares per asset unit; raises the cost of a first-depositor
++    ///      share-price inflation attack far above anything it could extract.
++    function _decimalsOffset() internal pure override returns (uint8) {
++        return 6;
++    }
++
++    /*//////////////////////////////////////////////////////////////
++                                 FLOWS
++    //////////////////////////////////////////////////////////////*/
++
++    /// @notice Push all idle USDC into the strategy and deploy it.
++    function earn() external onlyKeeper whenNotPaused nonReentrant returns (uint256 invested) {
++        return _earn(idleAssets());
++    }
++
++    /// @notice Deploy part of the idle balance. Splitting a large inflow across several calls
++    ///         keeps the zap's price impact (and therefore the cost shared by existing holders)
++    ///         small; see the keeper notes in the README.
++    function earn(uint256 amount) external onlyKeeper whenNotPaused nonReentrant returns (uint256 invested) {
++        uint256 idle = idleAssets();
++        return _earn(amount > idle ? idle : amount);
++    }
++
++    function _earn(uint256 amount) internal returns (uint256 invested) {
++        if (address(strategy) == address(0)) revert StrategyNotSet();
++        if (amount == 0) return 0;
++        invested = amount;
++        IERC20(asset()).safeTransfer(address(strategy), invested);
++        strategy.invest();
++        emit Earned(invested);
++    }
++
++    /// @dev Tops the idle balance up from the strategy before paying the withdrawer, so that
++    ///      `withdraw`/`redeem` keep their exact ERC-4626 semantics.
++    function _withdraw(address caller, address receiver, address owner_, uint256 assets, uint256 shares)
++        internal
++        override
++        nonReentrant
++    {
++        uint256 idle = idleAssets();
++        if (idle < assets) {
++            if (address(strategy) == address(0)) revert InsufficientLiquidity(assets, idle);
++            strategy.withdraw(assets - idle);
++            idle = idleAssets();
++            if (idle < assets) revert InsufficientLiquidity(assets, idle);
++        }
++        super._withdraw(caller, receiver, owner_, assets, shares);
++    }
++
++    function _deposit(address caller, address receiver, uint256 assets, uint256 shares) internal override nonReentrant {
++        super._deposit(caller, receiver, assets, shares);
++    }
++
++    /*//////////////////////////////////////////////////////////////
++                                 ADMIN
++    //////////////////////////////////////////////////////////////*/
++
++    /// @notice Attach a strategy. The outgoing strategy must be emptied first (`panic()` then
++    ///         a full `withdraw`), which keeps migrations explicit rather than implicit.
++    function setStrategy(address newStrategy) external onlyOwner {
++        if (newStrategy == address(0)) revert ZeroAddress();
++        if (IStrategy(newStrategy).asset() != asset()) revert StrategyMismatch();
++        if (IStrategy(newStrategy).vault() != address(this)) revert StrategyMismatch();
++
++        address old = address(strategy);
++        if (old != address(0)) {
++            uint256 remaining = strategy.estimatedTotalAssets();
++            if (remaining > 0) {
++                strategy.withdraw(remaining);
++                remaining = strategy.estimatedTotalAssets();
++                // Dust below 1 USDC is written off rather than blocking the migration.
++                if (remaining > 1e6) revert StrategyStillFunded(remaining);
++            }
++        }
++
++        strategy = IStrategy(newStrategy);
++        emit StrategyUpdated(old, newStrategy);
++    }
++
++    function setDepositCap(uint256 cap) external onlyOwner {
++        depositCap = cap;
++        emit DepositCapUpdated(cap);
++    }
++
++    /// @notice Stop new deposits. Withdrawals stay open.
++    function pause() external onlyOwner {
++        _pause();
++    }
++
++    function unpause() external onlyOwner {
++        _unpause();
++    }
++
++    /// @notice Recover tokens accidentally sent to the vault (never the vault asset).
++    function sweep(address token, address to) external onlyOwner {
++        if (token == asset()) revert StrategyMismatch();
++        IERC20(token).safeTransfer(to, IERC20(token).balanceOf(address(this)));
++    }
++}
+diff --git a/src/interfaces/IAerodrome.sol b/src/interfaces/IAerodrome.sol
+new file mode 100644
+index 0000000..5c41ea7
+--- /dev/null
++++ b/src/interfaces/IAerodrome.sol
+@@ -0,0 +1,92 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.24;
++
++/// @notice Minimal Aerodrome (Velodrome V2 fork) interfaces, transcribed from the deployed
++///         source at github.com/aerodrome-finance/contracts (Base mainnet deployment).
++
++interface IPool {
++    function token0() external view returns (address);
++    function token1() external view returns (address);
++    function stable() external view returns (bool);
++    function totalSupply() external view returns (uint256);
++    function getReserves() external view returns (uint256 reserve0, uint256 reserve1, uint256 blockTimestampLast);
++    function getAmountOut(uint256 amountIn, address tokenIn) external view returns (uint256);
++    /// @notice TWAP over `granularity` recorded observations (one observation per 30 min period).
++    function quote(address tokenIn, uint256 amountIn, uint256 granularity) external view returns (uint256);
++    function observationLength() external view returns (uint256);
++}
++
++interface IPoolFactory {
++    function getPool(address tokenA, address tokenB, bool stable) external view returns (address);
++    function getFee(address pool, bool stable) external view returns (uint256);
++}
++
++interface IRouter {
++    struct Route {
++        address from;
++        address to;
++        bool stable;
++        address factory;
++    }
++
++    function defaultFactory() external view returns (address);
++
++    function getAmountsOut(uint256 amountIn, Route[] memory routes) external view returns (uint256[] memory amounts);
++
++    /// @notice Amounts of each token that `addLiquidity` would actually consume right now.
++    function quoteAddLiquidity(
++        address tokenA,
++        address tokenB,
++        bool stable,
++        address _factory,
++        uint256 amountADesired,
++        uint256 amountBDesired
++    ) external view returns (uint256 amountA, uint256 amountB, uint256 liquidity);
++
++    function swapExactTokensForTokens(
++        uint256 amountIn,
++        uint256 amountOutMin,
++        Route[] calldata routes,
++        address to,
++        uint256 deadline
++    ) external returns (uint256[] memory amounts);
++
++    function addLiquidity(
++        address tokenA,
++        address tokenB,
++        bool stable,
++        uint256 amountADesired,
++        uint256 amountBDesired,
++        uint256 amountAMin,
++        uint256 amountBMin,
++        address to,
++        uint256 deadline
++    ) external returns (uint256 amountA, uint256 amountB, uint256 liquidity);
++
++    function removeLiquidity(
++        address tokenA,
++        address tokenB,
++        bool stable,
++        uint256 liquidity,
++        uint256 amountAMin,
++        uint256 amountBMin,
++        address to,
++        uint256 deadline
++    ) external returns (uint256 amountA, uint256 amountB);
++}
++
++interface IGauge {
++    function stakingToken() external view returns (address);
++    function rewardToken() external view returns (address);
++    function balanceOf(address account) external view returns (uint256);
++    function earned(address account) external view returns (uint256);
++    function deposit(uint256 amount) external;
++    function withdraw(uint256 amount) external;
++    /// @dev Reverts unless msg.sender == account (or the Voter).
++    function getReward(address account) external;
++}
++
++interface IVoter {
++    function gauges(address pool) external view returns (address);
++    function isAlive(address gauge) external view returns (bool);
++}
+diff --git a/src/interfaces/IStrategy.sol b/src/interfaces/IStrategy.sol
+new file mode 100644
+index 0000000..d569bbc
+--- /dev/null
++++ b/src/interfaces/IStrategy.sol
+@@ -0,0 +1,20 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.24;
++
++interface IStrategy {
++    /// @notice The token the strategy accounts in and returns to the vault (USDC).
++    function asset() external view returns (address);
++
++    /// @notice The vault allowed to call `invest` / `withdraw`.
++    function vault() external view returns (address);
++
++    /// @notice Value of everything the strategy controls, denominated in `asset()`.
++    function estimatedTotalAssets() external view returns (uint256);
++
++    /// @notice Deploy the strategy's idle `asset()` balance into the position.
++    function invest() external;
++
++    /// @notice Liquidate up to `amount` of `asset()` and send it to the vault.
++    /// @return withdrawn Amount actually transferred to the vault.
++    function withdraw(uint256 amount) external returns (uint256 withdrawn);
++}
+diff --git a/src/utils/Keepered.sol b/src/utils/Keepered.sol
+new file mode 100644
+index 0000000..a36d3c7
+--- /dev/null
++++ b/src/utils/Keepered.sol
+@@ -0,0 +1,23 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.24;
++
++import {Ownable, Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
++
++/// @notice Owner-managed set of keeper addresses allowed to run maintenance calls.
++abstract contract Keepered is Ownable2Step {
++    mapping(address => bool) public isKeeper;
++
++    event KeeperSet(address indexed keeper, bool allowed);
++
++    error NotKeeper(address caller);
++
++    modifier onlyKeeper() {
++        if (!isKeeper[msg.sender] && msg.sender != owner()) revert NotKeeper(msg.sender);
++        _;
++    }
++
++    function setKeeper(address keeper, bool allowed) external onlyOwner {
++        isKeeper[keeper] = allowed;
++        emit KeeperSet(keeper, allowed);
++    }
++}
+diff --git a/test/AerodromeStrategyFork.t.sol b/test/AerodromeStrategyFork.t.sol
+new file mode 100644
+index 0000000..ec0197d
+--- /dev/null
++++ b/test/AerodromeStrategyFork.t.sol
+@@ -0,0 +1,311 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.24;
++
++import {Test, console2} from "forge-std/Test.sol";
++import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
++
++import {YieldVault} from "../src/YieldVault.sol";
++import {AerodromeUsdcWethStrategy} from "../src/AerodromeUsdcWethStrategy.sol";
++import {Keepered} from "../src/utils/Keepered.sol";
++import {IGauge, IPool, IRouter, IVoter} from "../src/interfaces/IAerodrome.sol";
++
++/// @notice End-to-end tests against live Base state.
++/// @dev Every address below was read from Base mainnet at block 50,235,433 (2026-08-20 21:10 UTC).
++///      The suite skips itself when the RPC cannot serve the pinned block, so `forge test` still
++///      passes offline; set BASE_RPC_URL to an archive node to always run it.
++contract AerodromeStrategyForkTest is Test {
++    address internal constant USDC = 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913;
++    address internal constant WETH = 0x4200000000000000000000000000000000000006;
++    address internal constant AERO = 0x940181a94A35A4569E4529A3CDfB74e38FD98631;
++    address internal constant ROUTER = 0xcF77a3Ba9A5CA399B7c97c74d54e5b1Beb874E43;
++    address internal constant POOL_FACTORY = 0x420DD381b31aEf6683db6B902084cB0FFECe40Da;
++    address internal constant VOTER = 0x16613524e02ad97eDfeF371bC883F2F5d6C480A5;
++    address internal constant POOL = 0xcDAC0d6c6C59727a65F871236188350531885C43; // vAMM-WETH/USDC
++    address internal constant GAUGE = 0x519BBD1Dd8C6A94C46080E24f316c14Ee758C025;
++
++    uint256 internal constant FORK_BLOCK = 50_235_000;
++    uint256 internal constant DEPOSIT = 50_000e6;
++
++    YieldVault internal vault;
++    AerodromeUsdcWethStrategy internal strategy;
++
++    address internal owner = makeAddr("owner");
++    address internal keeper = makeAddr("keeper");
++    address internal treasury = makeAddr("treasury");
++    address internal alice = makeAddr("alice");
++    address internal bob = makeAddr("bob");
++
++    bool internal forked;
++
++    function setUp() public {
++        forked = _selectFork();
++        if (!forked) return;
++
++        vault = new YieldVault(IERC20(USDC), "Base Yield USDC", "byUSDC", 10_000_000e6, owner);
++        strategy = new AerodromeUsdcWethStrategy(
++            address(vault), USDC, WETH, AERO, ROUTER, POOL_FACTORY, VOTER, treasury, owner
++        );
++
++        vm.startPrank(owner);
++        vault.setStrategy(address(strategy));
++        vault.setKeeper(keeper, true);
++        strategy.setKeeper(keeper, true);
++        vm.stopPrank();
++
++        deal(USDC, alice, DEPOSIT);
++        deal(USDC, bob, DEPOSIT);
++        vm.prank(alice);
++        IERC20(USDC).approve(address(vault), type(uint256).max);
++        vm.prank(bob);
++        IERC20(USDC).approve(address(vault), type(uint256).max);
++    }
++
++    /// @dev Try the pinned block, fall back to the chain tip, and give up (skip) with no RPC.
++    function _selectFork() internal returns (bool) {
++        string memory url = vm.envOr("BASE_RPC_URL", string("https://mainnet.base.org"));
++        try vm.createSelectFork(url, FORK_BLOCK) {
++            if (_stateAvailable()) return true;
++        } catch {}
++        try vm.createSelectFork(url) {
++            if (_stateAvailable()) return true;
++        } catch {}
++        return false;
++    }
++
++    function _stateAvailable() internal view returns (bool) {
++        try IPool(POOL).getReserves() returns (uint256 r0, uint256, uint256) {
++            return r0 > 0 && IVoter(VOTER).isAlive(GAUGE);
++        } catch {
++            return false;
++        }
++    }
++
++    modifier onFork() {
++        vm.skip(!forked);
++        _;
++    }
++
++    function _depositAndEarn(address who, uint256 amount) internal {
++        vm.prank(who);
++        vault.deposit(amount, who);
++        vm.prank(keeper);
++        vault.earn();
++    }
++
++    /*//////////////////////////////////////////////////////////////
++                             WIRING / SETUP
++    //////////////////////////////////////////////////////////////*/
++
++    function test_Fork_ResolvesLivePoolAndGauge() public onFork {
++        assertEq(address(strategy.pool()), POOL, "pool");
++        assertEq(address(strategy.gauge()), GAUGE, "gauge");
++        assertEq(IGauge(GAUGE).stakingToken(), POOL, "gauge stakes the pool LP");
++        assertEq(IGauge(GAUGE).rewardToken(), AERO, "gauge pays AERO");
++        assertTrue(IVoter(VOTER).isAlive(GAUGE), "gauge alive");
++        assertGt(strategy.twapUsdcPerWeth(), 0, "WETH TWAP");
++        assertGt(strategy.twapUsdcPerAero(), 0, "AERO TWAP");
++    }
++
++    /*//////////////////////////////////////////////////////////////
++                              HAPPY PATH
++    //////////////////////////////////////////////////////////////*/
++
++    function test_Fork_DepositEarnStakesLpInGauge() public onFork {
++        _depositAndEarn(alice, DEPOSIT);
++
++        assertGt(IGauge(GAUGE).balanceOf(address(strategy)), 0, "LP not staked");
++        assertEq(IERC20(POOL).balanceOf(address(strategy)), 0, "LP left unstaked");
++        // Zap cost = 30 bps swap fee on half the deposit + price impact.
++        assertApproxEqRel(vault.totalAssets(), DEPOSIT, 0.005e18, "value lost zapping > 0.5%");
++        assertApproxEqRel(strategy.estimatedTotalAssets(), DEPOSIT, 0.005e18);
++    }
++
++    function test_Fork_HarvestClaimsFeesAndCompounds() public onFork {
++        _depositAndEarn(alice, DEPOSIT);
++
++        uint256 lpBefore = IGauge(GAUGE).balanceOf(address(strategy));
++        uint256 assetsBefore = vault.totalAssets();
++
++        vm.warp(block.timestamp + 3 days);
++        assertGt(IGauge(GAUGE).earned(address(strategy)), 0, "no emissions accrued");
++
++        vm.prank(keeper);
++        (uint256 aeroClaimed, uint256 usdcCompounded) = strategy.harvest();
++
++        assertGt(aeroClaimed, 0, "no AERO claimed");
++        assertGt(usdcCompounded, 0, "AERO not sold into USDC");
++        assertEq(IERC20(AERO).balanceOf(treasury), (aeroClaimed * strategy.performanceFeeBps()) / 10_000, "fee");
++        assertEq(IERC20(AERO).balanceOf(address(strategy)), 0, "AERO left idle");
++        assertGt(IGauge(GAUGE).balanceOf(address(strategy)), lpBefore, "position did not grow");
++        assertGt(vault.totalAssets(), assetsBefore, "share price did not increase");
++        assertEq(strategy.lastHarvest(), block.timestamp);
++
++        console2.log("AERO claimed (3d):", aeroClaimed);
++        console2.log("USDC compounded  :", usdcCompounded);
++    }
++
++    function test_Fork_HarvestIsKeeperGated() public onFork {
++        _depositAndEarn(alice, DEPOSIT);
++        vm.expectRevert(abi.encodeWithSelector(Keepered.NotKeeper.selector, alice));
++        vm.prank(alice);
++        strategy.harvest();
++    }
++
++    function test_Fork_HarvestWithoutRewardsIsHarmless() public onFork {
++        _depositAndEarn(alice, DEPOSIT);
++        vm.prank(keeper);
++        (uint256 aeroClaimed, uint256 usdcCompounded) = strategy.harvest();
++        assertEq(aeroClaimed, 0);
++        assertEq(usdcCompounded, 0);
++    }
++
++    function test_Fork_WithdrawPartialThenFull() public onFork {
++        _depositAndEarn(alice, DEPOSIT);
++
++        vm.prank(alice);
++        vault.withdraw(10_000e6, alice, alice);
++        assertEq(IERC20(USDC).balanceOf(alice), 10_000e6, "partial withdrawal short");
++
++        uint256 shares = vault.balanceOf(alice);
++        vm.prank(alice);
++        vault.redeem(shares, alice, alice);
++
++        assertEq(vault.balanceOf(alice), 0);
++        // Round trip cost: zap in + unwind out, both across a 30 bps pool.
++        assertApproxEqRel(IERC20(USDC).balanceOf(alice), DEPOSIT, 0.01e18, "round trip lost > 1%");
++        // Rounding + the withdrawal buffer leave a little USDC behind; it accrues to whoever
++        // deposits next rather than to the exiting user.
++        assertLt(vault.totalAssets(), DEPOSIT / 1_000, "dust left behind exceeds 0.1%");
++    }
++
++    function test_Fork_TwoDepositorsShareHarvestProRata() public onFork {
++        // Both deposits are batched into one `earn()`, so both pay the same entry cost.
++        vm.prank(alice);
++        vault.deposit(DEPOSIT, alice);
++        vm.prank(bob);
++        vault.deposit(DEPOSIT, bob);
++        vm.prank(keeper);
++        vault.earn();
++
++        vm.warp(block.timestamp + 3 days);
++        vm.prank(keeper);
++        strategy.harvest();
++
++        uint256 aliceValue = vault.convertToAssets(vault.balanceOf(alice));
++        uint256 bobValue = vault.convertToAssets(vault.balanceOf(bob));
++        assertApproxEqRel(aliceValue, bobValue, 0.001e18, "equal deposits must be worth the same");
++        assertGt(aliceValue + bobValue, (2 * DEPOSIT * 99) / 100, "harvest did not cover costs");
++    }
++
++    /// @notice Known trade-off of investing on `earn()` rather than on each deposit: the zap cost
++    ///         of a new deposit is paid out of pooled assets, so existing holders take a small
++    ///         dilution. Documented in the README; bounded here so a regression is visible.
++    function test_Fork_EntryCostOfLaterDepositIsSocialised() public onFork {
++        _depositAndEarn(alice, DEPOSIT);
++        uint256 aliceBefore = vault.convertToAssets(vault.balanceOf(alice));
++
++        _depositAndEarn(bob, DEPOSIT);
++        uint256 aliceAfter = vault.convertToAssets(vault.balanceOf(alice));
++
++        assertLt(aliceAfter, aliceBefore, "entry cost is expected to be shared");
++        assertGt(aliceAfter, (aliceBefore * 99) / 100, "dilution from a same-size entry > 1%");
++    }
++
++    /*//////////////////////////////////////////////////////////////
++                           FAILURE BEHAVIOUR
++    //////////////////////////////////////////////////////////////*/
++
++    function test_Fork_SpotManipulationBlocksInvest() public onFork {
++        vm.prank(alice);
++        vault.deposit(DEPOSIT, alice);
++
++        _pushSpotPrice(400 ether); // whale buys USDC with 400 WETH
++
++        vm.prank(keeper);
++        vm.expectPartialRevert(AerodromeUsdcWethStrategy.PriceOutOfRange.selector);
++        vault.earn();
++    }
++
++    function test_Fork_ShareValueSurvivesSpotManipulation() public onFork {
++        _depositAndEarn(alice, DEPOSIT);
++        uint256 before = vault.totalAssets();
++
++        _pushSpotPrice(400 ether);
++
++        // Fair-reserves pricing keys off the invariant and the TWAP: the attacker's swap adds
++        // fees to the pool but cannot move the vault's accounting in their favour.
++        assertApproxEqRel(vault.totalAssets(), before, 0.002e18, "share price moved with spot");
++    }
++
++    function test_Fork_KilledGaugeBlocksInvestAndPanicRecoversFunds() public onFork {
++        _depositAndEarn(alice, DEPOSIT);
++
++        // Governance kills the gauge: Aerodrome's Gauge.deposit() reverts once isAlive is false.
++        vm.mockCall(VOTER, abi.encodeWithSelector(IVoter.isAlive.selector, GAUGE), abi.encode(false));
++
++        deal(USDC, address(strategy), 1_000e6);
++        vm.prank(keeper);
++        vm.expectPartialRevert(AerodromeUsdcWethStrategy.GaugeNotAlive.selector);
++        strategy.invest();
++
++        // The owner unwinds to USDC; depositors keep their claim and can exit.
++        vm.prank(owner);
++        strategy.panic(0);
++        assertTrue(strategy.emergencyExited());
++        assertEq(IGauge(GAUGE).balanceOf(address(strategy)), 0, "still staked");
++        assertEq(IERC20(POOL).balanceOf(address(strategy)), 0, "LP not unwound");
++        assertGt(IERC20(USDC).balanceOf(address(strategy)), 0, "no USDC recovered");
++
++        uint256 shares = vault.balanceOf(alice);
++        vm.prank(alice);
++        vault.redeem(shares, alice, alice);
++        assertApproxEqRel(IERC20(USDC).balanceOf(alice), DEPOSIT + 1_000e6, 0.01e18);
++    }
++
++    function test_Fork_PanicStopsRedeployingCapital() public onFork {
++        _depositAndEarn(alice, DEPOSIT);
++        vm.prank(owner);
++        strategy.panic(0);
++
++        vm.prank(keeper);
++        vault.earn(); // must not revert, and must not re-enter the pool
++        assertEq(IGauge(GAUGE).balanceOf(address(strategy)), 0, "capital redeployed after panic");
++
++        vm.prank(owner);
++        strategy.resume();
++        vm.prank(keeper);
++        strategy.invest();
++        assertGt(IGauge(GAUGE).balanceOf(address(strategy)), 0, "resume did not redeploy");
++    }
++
++    function test_Fork_OnlyVaultCanWithdraw() public onFork {
++        _depositAndEarn(alice, DEPOSIT);
++        vm.expectRevert(abi.encodeWithSelector(AerodromeUsdcWethStrategy.NotVault.selector, alice));
++        vm.prank(alice);
++        strategy.withdraw(1e6);
++    }
++
++    function test_Fork_SetGaugeRejectsForeignGauge() public onFork {
++        vm.expectRevert(AerodromeUsdcWethStrategy.InvalidParam.selector);
++        vm.prank(owner);
++        strategy.setGauge(address(0xBEEF));
++    }
++
++    /*//////////////////////////////////////////////////////////////
++                                HELPERS
++    //////////////////////////////////////////////////////////////*/
++
++    /// @dev Dump `wethIn` WETH into the WETH/USDC pool to move the spot price away from the TWAP.
++    function _pushSpotPrice(uint256 wethIn) internal {
++        address whale = makeAddr("whale");
++        deal(WETH, whale, wethIn);
++
++        IRouter.Route[] memory routes = new IRouter.Route[](1);
++        routes[0] = IRouter.Route({from: WETH, to: USDC, stable: false, factory: POOL_FACTORY});
++
++        vm.startPrank(whale);
++        IERC20(WETH).approve(ROUTER, wethIn);
++        IRouter(ROUTER).swapExactTokensForTokens(wethIn, 0, routes, whale, block.timestamp);
++        vm.stopPrank();
++    }
++}
+diff --git a/test/YieldVault.t.sol b/test/YieldVault.t.sol
+new file mode 100644
+index 0000000..6c8d5dc
+--- /dev/null
++++ b/test/YieldVault.t.sol
+@@ -0,0 +1,305 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.24;
++
++import {Test} from "forge-std/Test.sol";
++import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
++import {ERC4626} from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol";
++import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
++import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
++
++import {YieldVault} from "../src/YieldVault.sol";
++import {Keepered} from "../src/utils/Keepered.sol";
++import {MockERC20} from "./mocks/MockERC20.sol";
++import {MockStrategy} from "./mocks/MockStrategy.sol";
++
++/// @notice Vault accounting, access control and failure behaviour, exercised against a mock
++///         strategy so these run without network access.
++contract YieldVaultTest is Test {
++    MockERC20 internal usdc;
++    YieldVault internal vault;
++    MockStrategy internal strategy;
++
++    address internal owner = makeAddr("owner");
++    address internal keeper = makeAddr("keeper");
++    address internal alice = makeAddr("alice");
++    address internal bob = makeAddr("bob");
++
++    uint256 internal constant CAP = 1_000_000e6;
++
++    function setUp() public {
++        usdc = new MockERC20("USD Coin", "USDC", 6);
++        vault = new YieldVault(IERC20(address(usdc)), "Yield USDC", "yUSDC", CAP, owner);
++        strategy = new MockStrategy(address(usdc), address(vault));
++
++        vm.startPrank(owner);
++        vault.setStrategy(address(strategy));
++        vault.setKeeper(keeper, true);
++        vm.stopPrank();
++
++        usdc.mint(alice, 100_000e6);
++        usdc.mint(bob, 100_000e6);
++        vm.prank(alice);
++        usdc.approve(address(vault), type(uint256).max);
++        vm.prank(bob);
++        usdc.approve(address(vault), type(uint256).max);
++    }
++
++    function _deposit(address who, uint256 amount) internal returns (uint256 shares) {
++        vm.prank(who);
++        shares = vault.deposit(amount, who);
++    }
++
++    /*//////////////////////////////////////////////////////////////
++                              CORE FLOWS
++    //////////////////////////////////////////////////////////////*/
++
++    function test_DepositMintsSharesAndKeepsFundsIdle() public {
++        uint256 shares = _deposit(alice, 10_000e6);
++
++        assertGt(shares, 0, "no shares minted");
++        assertEq(vault.totalAssets(), 10_000e6);
++        assertEq(vault.idleAssets(), 10_000e6);
++        assertEq(vault.convertToAssets(shares), 10_000e6);
++    }
++
++    function test_EarnMovesIdleFundsToStrategy() public {
++        _deposit(alice, 10_000e6);
++
++        vm.prank(keeper);
++        uint256 invested = vault.earn();
++
++        assertEq(invested, 10_000e6);
++        assertEq(vault.idleAssets(), 0);
++        assertEq(usdc.balanceOf(address(strategy)), 10_000e6);
++        assertEq(vault.totalAssets(), 10_000e6, "strategy assets must stay counted");
++    }
++
++    function test_EarnCanDeployPartially() public {
++        _deposit(alice, 10_000e6);
++
++        vm.prank(keeper);
++        uint256 invested = vault.earn(4_000e6);
++        assertEq(invested, 4_000e6);
++        assertEq(vault.idleAssets(), 6_000e6);
++
++        vm.prank(keeper);
++        assertEq(vault.earn(100_000e6), 6_000e6, "must clamp to the idle balance");
++        assertEq(vault.idleAssets(), 0);
++    }
++
++    function test_EarnIsKeeperGated() public {
++        _deposit(alice, 10_000e6);
++        vm.expectRevert(abi.encodeWithSelector(Keepered.NotKeeper.selector, alice));
++        vm.prank(alice);
++        vault.earn();
++    }
++
++    function test_WithdrawPullsFromStrategy() public {
++        _deposit(alice, 10_000e6);
++        vm.prank(keeper);
++        vault.earn();
++
++        uint256 before = usdc.balanceOf(alice);
++        vm.prank(alice);
++        vault.withdraw(4_000e6, alice, alice);
++
++        assertEq(usdc.balanceOf(alice) - before, 4_000e6);
++        assertEq(vault.totalAssets(), 6_000e6);
++        assertEq(usdc.balanceOf(address(strategy)), 6_000e6);
++    }
++
++    function test_RedeemAllReturnsFullBalance() public {
++        uint256 shares = _deposit(alice, 10_000e6);
++        vm.prank(keeper);
++        vault.earn();
++
++        vm.prank(alice);
++        uint256 assets = vault.redeem(shares, alice, alice);
++
++        assertEq(assets, 10_000e6);
++        assertEq(vault.totalSupply(), 0);
++        assertEq(vault.totalAssets(), 0);
++    }
++
++    function test_HarvestYieldAccruesToExistingShareholders() public {
++        uint256 aliceShares = _deposit(alice, 10_000e6);
++        vm.prank(keeper);
++        vault.earn();
++
++        // Strategy compounds 1,000 USDC of AERO rewards.
++        strategy.simulateProfit(1_000e6);
++        assertEq(vault.totalAssets(), 11_000e6);
++        assertApproxEqAbs(vault.convertToAssets(aliceShares), 11_000e6, 1);
++
++        // A later depositor buys in at the higher share price: same money, ~10% fewer shares.
++        uint256 bobShares = _deposit(bob, 10_000e6);
++        assertLt(bobShares, aliceShares, "late depositor must not capture past yield");
++        assertApproxEqRel(bobShares, (aliceShares * 10) / 11, 1e12);
++        assertApproxEqRel(vault.convertToAssets(bobShares), 10_000e6, 1e12);
++        assertApproxEqRel(vault.convertToAssets(aliceShares), 11_000e6, 1e12);
++    }
++
++    function test_LossIsSharedProRata() public {
++        uint256 aliceShares = _deposit(alice, 10_000e6);
++        uint256 bobShares = _deposit(bob, 10_000e6);
++        vm.prank(keeper);
++        vault.earn();
++
++        strategy.simulateLoss(2_000e6); // e.g. impermanent loss on the LP leg
++
++        assertApproxEqAbs(vault.convertToAssets(aliceShares), 9_000e6, 1);
++        assertApproxEqAbs(vault.convertToAssets(bobShares), 9_000e6, 1);
++    }
++
++    /*//////////////////////////////////////////////////////////////
++                           FAILURE BEHAVIOUR
++    //////////////////////////////////////////////////////////////*/
++
++    function test_WithdrawRevertsWhenStrategyCannotLiquidate() public {
++        _deposit(alice, 10_000e6);
++        vm.prank(keeper);
++        vault.earn();
++
++        strategy.setLockedAssets(10_000e6); // position stuck (killed gauge, price guard, ...)
++
++        vm.expectRevert(abi.encodeWithSelector(YieldVault.InsufficientLiquidity.selector, 1_000e6, 0));
++        vm.prank(alice);
++        vault.withdraw(1_000e6, alice, alice);
++    }
++
++    function test_PartialLiquidityStillServesSmallWithdrawals() public {
++        _deposit(alice, 10_000e6);
++        vm.prank(keeper);
++        vault.earn();
++        strategy.setLockedAssets(9_000e6);
++
++        vm.prank(alice);
++        vault.withdraw(1_000e6, alice, alice);
++        assertEq(usdc.balanceOf(alice), 91_000e6);
++    }
++
++    function test_DepositCapIsEnforced() public {
++        vm.prank(owner);
++        vault.setDepositCap(5_000e6);
++
++        assertEq(vault.maxDeposit(alice), 5_000e6);
++        vm.expectRevert(abi.encodeWithSelector(ERC4626.ERC4626ExceededMaxDeposit.selector, alice, 5_001e6, 5_000e6));
++        vm.prank(alice);
++        vault.deposit(5_001e6, alice);
++
++        _deposit(alice, 5_000e6);
++        assertEq(vault.maxDeposit(alice), 0);
++    }
++
++    function test_PauseBlocksDepositsButNotWithdrawals() public {
++        _deposit(alice, 10_000e6);
++
++        vm.prank(owner);
++        vault.pause();
++
++        assertEq(vault.maxDeposit(alice), 0);
++        vm.expectRevert(abi.encodeWithSelector(ERC4626.ERC4626ExceededMaxDeposit.selector, alice, 1e6, 0));
++        vm.prank(alice);
++        vault.deposit(1e6, alice);
++
++        vm.prank(keeper);
++        vm.expectRevert(Pausable.EnforcedPause.selector);
++        vault.earn();
++
++        vm.prank(alice);
++        vault.withdraw(10_000e6, alice, alice);
++        assertEq(usdc.balanceOf(alice), 100_000e6);
++    }
++
++    function test_InflationAttackIsNotProfitable() public {
++        // Attacker seeds 1 wei of shares then donates a large amount to move the share price.
++        address attacker = bob;
++        vm.prank(attacker);
++        vault.deposit(1, attacker);
++        vm.prank(attacker);
++        usdc.transfer(address(vault), 10_000e6);
++
++        uint256 victimShares = _deposit(alice, 5_000e6);
++        assertGt(victimShares, 0, "victim rounded down to zero shares");
++
++        vm.prank(alice);
++        uint256 out = vault.redeem(victimShares, alice, alice);
++        // Virtual shares cap the attacker's take at rounding dust.
++        assertApproxEqRel(out, 5_000e6, 1e15, "victim lost more than 0.1%");
++    }
++
++    /*//////////////////////////////////////////////////////////////
++                                 ADMIN
++    //////////////////////////////////////////////////////////////*/
++
++    function test_SetStrategyRequiresEmptyOutgoingStrategy() public {
++        _deposit(alice, 10_000e6);
++        vm.prank(keeper);
++        vault.earn();
++        strategy.setLockedAssets(10_000e6);
++
++        MockStrategy next = new MockStrategy(address(usdc), address(vault));
++        vm.expectRevert(abi.encodeWithSelector(YieldVault.StrategyStillFunded.selector, 10_000e6));
++        vm.prank(owner);
++        vault.setStrategy(address(next));
++
++        // Once the old strategy can liquidate, the migration goes through.
++        strategy.setLockedAssets(0);
++        vm.prank(owner);
++        vault.setStrategy(address(next));
++        assertEq(address(vault.strategy()), address(next));
++        assertEq(vault.totalAssets(), 10_000e6);
++    }
++
++    function test_SetStrategyRejectsMismatchedStrategy() public {
++        MockStrategy foreign = new MockStrategy(address(usdc), address(0xdead));
++        vm.expectRevert(YieldVault.StrategyMismatch.selector);
++        vm.prank(owner);
++        vault.setStrategy(address(foreign));
++    }
++
++    function test_OnlyOwnerCanConfigure() public {
++        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice));
++        vm.prank(alice);
++        vault.setDepositCap(1);
++
++        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice));
++        vm.prank(alice);
++        vault.setKeeper(alice, true);
++
++        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice));
++        vm.prank(alice);
++        vault.pause();
++    }
++
++    function test_SweepCannotTakeTheVaultAsset() public {
++        vm.expectRevert(YieldVault.StrategyMismatch.selector);
++        vm.prank(owner);
++        vault.sweep(address(usdc), owner);
++
++        MockERC20 stray = new MockERC20("Stray", "STR", 18);
++        stray.mint(address(vault), 5e18);
++        vm.prank(owner);
++        vault.sweep(address(stray), owner);
++        assertEq(stray.balanceOf(owner), 5e18);
++    }
++
++    /*//////////////////////////////////////////////////////////////
++                                 FUZZ
++    //////////////////////////////////////////////////////////////*/
++
++    function testFuzz_DepositWithdrawRoundTrip(uint256 amount, bool earnFirst) public {
++        amount = bound(amount, 1e6, 100_000e6);
++        uint256 shares = _deposit(alice, amount);
++
++        if (earnFirst) {
++            vm.prank(keeper);
++            vault.earn();
++        }
++
++        vm.prank(alice);
++        uint256 assets = vault.redeem(shares, alice, alice);
++        assertLe(assets, amount, "cannot withdraw more than deposited");
++        assertApproxEqAbs(assets, amount, 1);
++    }
++}
+diff --git a/test/mocks/MockERC20.sol b/test/mocks/MockERC20.sol
+new file mode 100644
+index 0000000..1547ea3
+--- /dev/null
++++ b/test/mocks/MockERC20.sol
+@@ -0,0 +1,24 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.24;
++
++import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
++
++contract MockERC20 is ERC20 {
++    uint8 private immutable _dec;
++
++    constructor(string memory n, string memory s, uint8 d) ERC20(n, s) {
++        _dec = d;
++    }
++
++    function decimals() public view override returns (uint8) {
++        return _dec;
++    }
++
++    function mint(address to, uint256 amount) external {
++        _mint(to, amount);
++    }
++
++    function burn(address from, uint256 amount) external {
++        _burn(from, amount);
++    }
++}
+diff --git a/test/mocks/MockStrategy.sol b/test/mocks/MockStrategy.sol
+new file mode 100644
+index 0000000..3add8f8
+--- /dev/null
++++ b/test/mocks/MockStrategy.sol
+@@ -0,0 +1,61 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.24;
++
++import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
++import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
++
++import {IStrategy} from "../../src/interfaces/IStrategy.sol";
++import {MockERC20} from "./MockERC20.sol";
++
++/// @notice Stand-in for the Aerodrome strategy used to exercise vault accounting without a fork.
++contract MockStrategy is IStrategy {
++    using SafeERC20 for IERC20;
++
++    address public immutable asset;
++    address public immutable vault;
++
++    /// @notice Portion of the balance that cannot be liquidated on demand (simulates an
++    ///         illiquid or price-blocked position).
++    uint256 public lockedAssets;
++    bool public investReverts;
++
++    constructor(address _asset, address _vault) {
++        asset = _asset;
++        vault = _vault;
++    }
++
++    function estimatedTotalAssets() external view returns (uint256) {
++        return IERC20(asset).balanceOf(address(this));
++    }
++
++    function invest() external {
++        require(!investReverts, "invest disabled");
++    }
++
++    function withdraw(uint256 amount) external returns (uint256) {
++        require(msg.sender == vault, "!vault");
++        uint256 balance = IERC20(asset).balanceOf(address(this));
++        uint256 liquid = balance > lockedAssets ? balance - lockedAssets : 0;
++        uint256 sent = amount > liquid ? liquid : amount;
++        if (sent > 0) IERC20(asset).safeTransfer(vault, sent);
++        return sent;
++    }
++
++    /// @dev Test helper: simulate harvested yield landing in the strategy.
++    function simulateProfit(uint256 amount) external {
++        MockERC20(asset).mint(address(this), amount);
++    }
++
++    /// @dev Test helper: simulate an impermanent-loss style drawdown.
++    function simulateLoss(uint256 amount) external {
++        MockERC20(asset).burn(address(this), amount);
++    }
++
++    function setLockedAssets(uint256 amount) external {
++        lockedAssets = amount;
++    }
++
++    function setInvestReverts(bool value) external {
++        investReverts = value;
++    }
++}
+
+# Untracked files and status
+ A .env.example
+ A .gitignore
+ A README.md
+ A TASK.md
+ A foundry.toml
+ A remappings.txt
+ A script/Deploy.s.sol
+ A script/Keeper.s.sol
+ A src/AerodromeUsdcWethStrategy.sol
+ A src/YieldVault.sol
+ A src/interfaces/IAerodrome.sol
+ A src/interfaces/IStrategy.sol
+ A src/utils/Keepered.sol
+ A test/AerodromeStrategyFork.t.sol
+ A test/YieldVault.t.sol
+ A test/mocks/MockERC20.sol
+ A test/mocks/MockStrategy.sol
