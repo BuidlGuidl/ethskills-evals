@@ -44,6 +44,8 @@ That is honest engineering and a knowledge gap at the same time: the service as 
 | no_skill | 9 | **$1.29** | 315s | 16 | 43 |
 | with_skill | 9 | **$2.52** | 390s | 32 | 0 |
 
+> These cells were read out of the 18 `transcript.md` files by hand. All 18 runs predate the `## run stats` footer, so `yarn run-stats --tasks standards-goal-001,standards-quiz-001,standards-quiz-002` returns `(n with no footer)` for every row and cannot re-derive them. Anyone rebuilding this table has to read the transcripts the same way; a re-run of these tasks would produce footers and settle it properly.
+
 **The minimal skill costs 95% more per run than no skill at all**, and the whole of it comes from one task:
 
 | task | no_skill | with_skill | #35 with_skill (old skill) |

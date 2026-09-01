@@ -4,7 +4,7 @@
 **Executor / judge:** claude, `claude-opus-5`, blind judge in a fresh process per run. `self_judged: true`.
 **Runs:** 3 `with_skill`. The `no_skill` arm does not depend on the skill, so the three runs from 2026-08-26 stand as its comparison; task input is unchanged across all three benchmarks.
 
-**Records:** these three run dirs carry `result.yaml` and `transcript.md` only. `executor.yaml` — the record `run-executor` writes, and which the 60 other 08-27 runs on `main` commit — is absent from all three and is no longer on the machine that made them, so why it was never committed cannot now be recovered. Every cost, wall-clock and turn figure below was therefore read out of `transcript.md`. They are checkable, but by mining a transcript rather than by reading a record; treat them as one step weaker than the 08-26 figures beside them.
+**Records:** these three run dirs carry `result.yaml` and `transcript.md` only. `executor.yaml` — the record `run-executor` writes, and which the 60 other 08-27 runs on `main` commit — is absent from all three and is no longer on the machine that made them, so why it was never committed cannot now be recovered. Every cost, wall-clock and turn figure below was therefore read out of `transcript.md` by hand. These runs also predate the `## run stats` footer `run-executor` now writes, so `yarn run-stats --tasks standards-goal-001` reports them as `(n with no footer)` and cannot re-derive a single cell — the check AGENTS.md now requires of every cost number in a report does not reach this table. The figures are still recoverable from the transcripts, but only the way they were produced: by reading. Treat them as one step weaker than a `run-stats` table.
 
 ## Why this run exists
 
