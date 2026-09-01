@@ -4,6 +4,8 @@
 **Executor / judge:** claude, `claude-opus-5`, blind judge in a fresh process per run. `self_judged: true`.
 **Runs:** 3 `with_skill`. The `no_skill` arm does not depend on the skill, so the three runs from 2026-08-26 stand as its comparison; task input is unchanged across all three benchmarks.
 
+**Records:** these three run dirs carry `result.yaml` and `transcript.md` only. `executor.yaml` — the record `run-executor` writes, and which the 60 other 08-27 runs on `main` commit — is absent from all three and is no longer on the machine that made them, so why it was never committed cannot now be recovered. Every cost, wall-clock and turn figure below was therefore read out of `transcript.md`. They are checkable, but by mining a transcript rather than by reading a record; treat them as one step weaker than the 08-26 figures beside them.
+
 ## Why this run exists
 
 The 2026-08-26 benchmark (`reports/standards-2026-08-26.md`) charged the minimal skill a 2.75× cost regression on this task, traced to one instruction in the rewrite: *"Do not write the integration from a remembered snippet … Read the installed types"*. All three runs obeyed it with an open-ended tour of the installed packages — 33–82 shell commands each.

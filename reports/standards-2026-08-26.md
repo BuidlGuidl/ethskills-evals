@@ -71,7 +71,9 @@ expect_7 accepts either implementation, so none of this is graded. It is the ung
 
 Zero mentions of the skill, `.claude/skills`, or `SKILL.md` across all nine `with_skill` runs' graded evidence, against **4 of 9 in #35**. The rewritten quiz preambles ("show the derivation … do not quote or name the files, pages, or documents you consulted") fixed it without changing what the lines grade.
 
-That fix was per-task, and blindness is a harness invariant — `verify.ts`'s own header calls it that, while `buildEvidence()` passed executor-written files straight through. The 20 other quiz files on this branch still carry the citation-inviting preamble family, so the next benchmark of any other skill was set up to repeat #35's leak. Closed at the harness instead of by rewriting 20 task files: `verify.ts` now scans the assembled evidence for skill install paths, `SKILL.md`, and skill self-reference, and **aborts before the judge call** rather than after — the executor run is already paid for, only its grading is deferred. `--allow-skill-mention` grades anyway once an operator has read the hits, since a mention is not always a leak.
+The evidence that claim rests on is now committed. The twelve quiz runs carry a force-added `output/answer.md` (AGENTS.md, "What gets committed"), so a reader working from a clone can grep them for the patterns above and regrade them, rather than taking this section on trust. `goal-001`'s snapshots are not committed: they are scaffolded trees, five of the six 08-26 dirs carrying a `package-lock.json` of 23–109K, and force-adding a filtered subset would not be the material the judge read. The goal claims stay re-derivable from `transcript.md` only.
+
+That fix was per-task, and blindness is a harness invariant — `verify.ts`'s own header calls it that, while `buildEvidence()` passed executor-written files straight through. The 20 other quiz files on this branch still carry the citation-inviting preamble family, so the next benchmark of any other skill was set up to repeat #35's leak. Closed at the harness instead of by rewriting 20 task files: `lib/blindness.ts`, called from `verify.ts` on the shared path a fresh grade and a `--regrade` both take, scans the assembled evidence for skill install paths, `SKILL.md`, and skill self-reference, and **aborts before the judge call** rather than after — the executor run is already paid for, only its grading is deferred. `--allow-skill-mention` grades anyway once an operator has read the hits, since a mention is not always a leak.
 
 ## The new testnet line did not discriminate
 
@@ -82,6 +84,14 @@ That fix was per-task, and blindness is a harness invariant — `verify.ts`'s ow
 The skill blob these nine `with_skill` runs read stated the x402 base-units rule as "$0.35 USDC is `350000`" — the exact literal and derivation that `goal-001` expect_8 and `quiz-001` expect_5 grade, and that both task inputs price the call at. That arm was therefore confounded: a run could pass those two lines by transcription instead of derivation.
 
 **No number in this report changes.** Both lines were at ceiling on *both* variants — the only two failures in 144 judgments were `goal-001` expect_1 and expect_4 — so `no_skill` derived `350000` unaided 3/3 and the leak cannot have produced any reported delta. The skill's example has been changed to non-graded values ($0.10, $2.50); filed as `standards-eval-skill-example-matches-graded-literal`. The text as benchmarked stays recoverable at `f3ba42f`.
+
+## Changes to the skill since this benchmark
+
+The pin above (`f3ba42f`) is what the nine `with_skill` runs read. Three edits have landed on it since, so the file at HEAD is not the file benchmarked:
+
+- **`e2e50ab`** — the x402 paragraph, bounding the "read the installed types" instruction and adding the "either implementation is fine" clause. This is the one measured: re-run in `reports/standards-goal-001-2026-08-27.md`, and it is what moved the runs off the SDK.
+- **`9bcc8e0`** — the base-units example moved off the graded literal ($0.35/`350000` → $0.10 and $2.50), covered in the section above.
+- **`9bcc8e0`** — "the same pair of addresses across 40+ chains" → "across ~25 mainnets … a different pair across the testnets", matching the deployment table in `github.com/erc-8004/erc-8004-contracts` and the eval line (`quiz-001` expect_8) that grades the claim. Unmeasured: no run since reads it. The table of addresses the runs actually used is unchanged.
 
 ## Run incidents
 
