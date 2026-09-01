@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -8,9 +8,10 @@ import { expectSha } from "../lib/task.js";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 
-// The guards are the point of --regrade: it is the one path that overwrites a grade, so
-// each refusal below is a way the overwrite could have destroyed evidence instead of
-// re-reading it. Driven through the CLI because that is where the flag parsing lives.
+// --regrade writes a sibling <run-id>-regrade-<n>/ and never touches the source, so what the
+// guards protect is not the source record but the meaning of the new one: a regrade with no
+// stated reason, or over evidence no other clone has, is a grade nobody can check. Driven
+// through the CLI because that is where the flag parsing lives.
 const verify = (args: string[]) => {
   try {
     execFileSync("yarn", ["verify", ...args], { cwd: ROOT, encoding: "utf8", stdio: "pipe" });
@@ -76,6 +77,20 @@ test("--regrade refuses a run whose evidence was never captured at all", () => {
   const runDir = fixtureRun({ ...UNGRADED, pass: false }, false);
 
   assert.match(verify(["--run", runDir, "--judge-agent", "claude", "--regrade", "why"]), /nothing to regrade|no output in/);
+});
+
+// The source record is the one thing a regrade must not touch — it is the reading the
+// report's "was" column cites. A refusal is the case where that is easiest to get wrong,
+// since the guards fire at different points and two of them are past the record load.
+test("a refused regrade leaves the source result.yaml byte-identical", () => {
+  const runDir = fixtureRun({ ...UNGRADED, pass: false }, true);
+  const resultPath = path.join(runDir, "result.yaml");
+  const before = readFileSync(resultPath);
+
+  verify(["--run", runDir, "--judge-agent", "claude", "--regrade", "why"]);
+
+  assert.deepEqual(readFileSync(resultPath), before);
+  assert.equal(existsSync(`${runDir}-regrade-1`), false);
 });
 
 // Order matters as much as content: expects are addressed positionally as expect_<n>, so
