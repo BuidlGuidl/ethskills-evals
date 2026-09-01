@@ -8,10 +8,25 @@ process identity.
 
 Skill version: `43d5be6` (660 words). The cohort was run after committing the
 skill and prompt corrections, so every with-skill record points at the shipped
-revision. Each workspace had its own Git boundary, preventing commands such as
-`git status` from exposing the eval repository, sibling variants, or task specs.
+revision.
+
+Isolation, precisely: the harness of the day (`43d5be6`) still placed each
+workspace at `artifacts/<task>/<run-id>/workspace`, inside the eval repository,
+and ran `git init` there. That nested boundary is what stopped `git status` from
+resolving to the eval repo, which closes the August 24 leak — but it stops only
+git. Sibling run dirs, whose names carry `-with-skill-` / `-no-skill-`, and
+`tasks/` with its expect lines stayed reachable by a plain `ls`, since no marker
+stops one. Reading the 30 committed transcripts, two runs did step above the
+workspace, both with `find .. -name AGENTS.md`
+(`ship-quiz-001/…no-skill-2`, `ship-quiz-002/…no-skill-2`); both printed
+nothing, so no sibling name or expect line reached an executor. No run listed a
+parent directory. The out-of-tree workspace root that removes the residual
+exposure landed on this branch with the merge at `218931d`, after these runs.
+
 `verify` retained both `run.diff` and `output/` for all 30 runs and then deleted
-the workspaces.
+the workspaces. The quiz `output/answer.md` files are committed as the graded
+deliverable; the goal runs' `output/` trees are not, per AGENTS.md — their
+`run.diff` carries the same files.
 
 ## Results
 
@@ -76,4 +91,4 @@ invalidate this cohort, so it belongs in a follow-up revision and benchmark.
 | What mistakes repeated without the skill? | `ship-goal-offchain-data-gpt-5.6-sol`; single-run recurrences of `ship-goal-readme-transition-audit-gpt-5.6-sol`, `ship-goal-deployment-decision-gpt-5.6-sol`, and `ship-state-transition-incentive-gpt-5.6-sol`. |
 | What mistakes remained with the skill? | `ship-scope-token-overhead-gpt-5.6-sol`; no graded correctness mistake remained. |
 | What should change in the skill? | Make chain research, deployment commands, and the release runbook conditional on a build/deploy/launch-ready request; architecture-only answers should stop at the requested decisions. |
-| What should change in the eval? | Replace or retire saturated quizzes 001, 002, and 004 if discriminative power is required; retain them only as clearly labeled regression checks. Add first-class token extraction to the harness instead of mining transcripts. |
+| What should change in the eval? | Replace or retire saturated quizzes 001, 002, and 004 if discriminative power is required; retain them only as clearly labeled regression checks. Add first-class token extraction to the harness instead of mining transcripts — since landed on `main` as the `usage:` block in `result.yaml` (#93); it postdates these runs, so this cohort's numbers still come from the committed transcripts. |
