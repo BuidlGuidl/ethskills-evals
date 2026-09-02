@@ -55,6 +55,10 @@ export type RunUsage = {
 export type ExecutorRecord = {
   executor: Executor;
   model: string | null;
+  // codex only, and only the operator's top-level `model_reasoning_effort =`: the redirected
+  // CODEX_HOME means codex never reads it, so the harness passes it on argv and names it
+  // here. null is "none configured, codex's default ran", which is a real answer.
+  reasoning_effort?: string | null;
   started: string;
   finished: string | null;
   exit: number | null;
@@ -84,7 +88,12 @@ export type ResultRecord = {
   // recoverable from git.
   regraded_at?: string;
   executor_model?: string | null;
+  executor_reasoning_effort?: string | null;
   executor_exit?: number;
+  // Only ever set by --grade-failed-run: the run was graded over a refusal, and this says
+  // which one. Without it a shell-broken run graded by hand writes executor_exit: 0 and
+  // reads as a clean result, which is the exact condition the refusal exists to expose.
+  harness_failure?: string;
   usage?: RunUsage;
   judge?: JudgeRecord;
   // Fingerprint of the expect list this grade was made against. Two runs of one task are

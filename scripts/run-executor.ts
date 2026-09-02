@@ -5,6 +5,8 @@ import path from "node:path";
 import process from "node:process";
 import { finished } from "node:stream/promises";
 import yaml from "js-yaml";
+import { codexEnv, codexReasoningArgs, operatorCodexReasoningEffort, resolveCodexModel } from "../lib/codex-home.js";
+import { detectBrokenShell } from "../lib/executor-health.js";
 import { loadYamlFile, parseArgs, requireString } from "../lib/task.js";
 import { buildTranscript } from "../lib/transcript.js";
 import { buildUsage } from "../lib/usage.js";
@@ -24,11 +26,13 @@ const parseExecutor = (value: string): Executor => {
 };
 
 // `--setting-sources project` is load-bearing for claude: user-level config crowds the
-// skill listing and skills stop triggering. For codex the model comes from
-// ~/.codex/config.toml unless -m overrides it, and the network flag is load-bearing too:
-// workspace-write blocks network by default, so without it every live-data task fails for
-// the wrong reason. Both take the prompt on stdin — TASK.md can outgrow the argv limit.
-const buildCommand = (executor: Executor, model: string | null) => {
+// skill listing and skills stop triggering. codex gets the same isolation from a redirected
+// CODEX_HOME (lib/codex-home.ts) plus two load-bearing flags:
+// `sandbox_workspace_write.network_access=true` (workspace-write blocks network by
+// default, so without it every live-data task fails for the wrong reason) and
+// `--disable shell_snapshot` (see the block above the codex args). Both take the prompt
+// on stdin — TASK.md can outgrow the argv limit.
+const buildCommand = (executor: Executor, model: string | null, reasoningEffort: string | null) => {
   if (executor === "claude") {
     const args = ["-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN", "claude", "-p"];
 
@@ -47,7 +51,37 @@ const buildCommand = (executor: Executor, model: string | null) => {
     return { file: "env", args };
   }
 
-  const args = ["exec", "-s", "workspace-write", "-c", "sandbox_workspace_write.network_access=true"];
+  // --disable shell_snapshot keeps the operator's interactive shell out of the run. codex
+  // otherwise snapshots that shell's functions and aliases and sources the snapshot into
+  // every command, so whatever is in the operator's rc files rides into the run — and a
+  // single unparseable line in it takes the whole shell down. Seen on 2026-08-27: a snapshot
+  // that failed to re-parse ("syntax error near unexpected token `('", from extglob patterns
+  // `declare -f` dumps without the shopt that made them legal) left a with_skill run unable
+  // to read its own installed skill, which grades as a skill that did not help rather than
+  // as a broken run.
+  //
+  // Same rule as claude's --setting-sources project — the executor's environment is the
+  // benchmark's, not the operator's — but not the same mechanism, and not the same coverage:
+  // --setting-sources governs settings-file discovery only. claude snapshots the operator's
+  // interactive shell into its own Bash tool exactly as codex does, and has no equivalent
+  // flag, so that half of this exposure is still open.
+  //
+  // --ephemeral because the redirected CODEX_HOME is one dir shared by every run on this
+  // machine. Without it codex writes each session into sessions/ and history.jsonl there,
+  // and a later no_skill run that finds this repo finds an earlier with_skill run's session
+  // log with the skill text in it — the same contamination the redirect exists to close,
+  // one level down. It does not stop codex's own caches and state dbs, which are the same
+  // for every operator and carry no run content.
+  //
+  // The rest of ~/.codex is handled by CODEX_HOME below, not by a flag.
+  const args = [
+    "exec",
+    "--disable", "shell_snapshot",
+    "--ephemeral",
+    "-s", "workspace-write",
+    "-c", "sandbox_workspace_write.network_access=true",
+    ...codexReasoningArgs(reasoningEffort),
+  ];
 
   if (model) {
     args.push("-m", model);
@@ -64,7 +98,7 @@ const writeRecord = async (recordPath: string, record: ExecutorRecord) =>
 const main = async () => {
   const args = parseArgs(RUN_ARGS);
   const runDir = path.resolve(ROOT, requireString(args.run, "--run"));
-  const model = args.model === undefined ? null : requireString(args.model, "--model");
+  const requestedModel = args.model === undefined ? null : requireString(args.model, "--model");
   const resultPath = path.join(runDir, "result.yaml");
   const recordPath = path.join(runDir, "executor.yaml");
 
@@ -92,11 +126,20 @@ const main = async () => {
 
   const executor = parseExecutor(requireString(result.executor, "executor"));
   const prompt = await readFile(path.join(workspacePath, "TASK.md"), "utf8");
-  const { file, args: commandArgs } = buildCommand(executor, model);
+  // codex reads no config.toml now that CODEX_HOME is redirected, so the operator's
+  // configured model is resolved here and passed on argv — where executor.yaml can record it.
+  const model = executor === "codex" ? resolveCodexModel(requestedModel) : requestedModel;
+  // Same reasoning: it changes the answer, the redirect drops it, and a benchmark whose runs
+  // straddle the change has nothing in the record to say so. null means the operator set
+  // none and codex's own default ran.
+  const reasoningEffort = executor === "codex" ? operatorCodexReasoningEffort() : null;
+  const env = executor === "codex" ? codexEnv() : process.env;
+  const { file, args: commandArgs } = buildCommand(executor, model, reasoningEffort);
   const startedAt = Date.now();
   const record: ExecutorRecord = {
     executor,
     model,
+    reasoning_effort: reasoningEffort,
     started: new Date(startedAt).toISOString(),
     finished: null,
     exit: null,
@@ -117,7 +160,7 @@ const main = async () => {
 
   console.log(`${executor}${model ? ` (${model})` : ""} → ${workspacePath}`);
 
-  const child = spawn(file, commandArgs, { cwd: workspacePath, stdio: ["pipe", "pipe", "pipe"] });
+  const child = spawn(file, commandArgs, { cwd: workspacePath, env, stdio: ["pipe", "pipe", "pipe"] });
 
   child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");
@@ -194,6 +237,22 @@ const main = async () => {
   const tokens = usage.total_tokens === null ? "" : `, ${usage.total_tokens} tokens`;
 
   console.log(`executor exited ${exit} in ${usage.duration_s}s${price}${tokens}; transcript at ${path.join(runDir, "transcript.md")}`);
+
+  // A dead shell exits 0, so reporting the exit code alone hands the orchestrator a green
+  // light and it launches the next run before verify ever looks. The stderr is already here
+  // — say so here, at the same non-zero exit the loop already knows to stop on. verify
+  // repeats the check because a run can also be executed by hand.
+  const brokenShell = detectBrokenShell(runDir, executor);
+
+  if (brokenShell !== null) {
+    console.error(
+      `run-executor: ${brokenShell.cause}, and it still exited ${exit}. `
+        + `${brokenShell.capturePath}: "${brokenShell.evidence}". ${brokenShell.remedy}. `
+        + `Delete ${runDir} and set up a new run.`,
+    );
+    process.exit(2);
+  }
+
   process.exit(exit === 0 ? 0 : 2);
 };
 
