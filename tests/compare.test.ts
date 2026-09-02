@@ -31,6 +31,7 @@ const task = (id: string, kind: "quiz" | "goal"): Task => ({
   id,
   skill: "addresses",
   kind,
+  status: "live",
   input: "do it",
   expect: ["a"],
   runs: 3,
@@ -74,18 +75,18 @@ const runs: Run[] = [
   run("addresses-quiz-002", null, "rubric-kept", true),
 ];
 
-test("a row is comparable only when both skilled columns share a rubric", () => {
+test("a row says so when the two skilled columns were graded on different expect lines", () => {
   const comparison = compareSkill(skill, tasks, runs);
   const [rewritten, kept] = comparison.rows;
 
   assert.equal(rewritten.task, "addresses-quiz-001");
-  assert.equal(rewritten.comparable, false, "rewritten expects must not read as a comparison");
-  assert.deepEqual(rewritten.original, { passed: 1, total: 2, rubrics: ["rubric-old"] });
-  assert.deepEqual(rewritten.reduced, { passed: 2, total: 2, rubrics: ["rubric-new"] });
+  assert.equal(rewritten.rubricMoved, true, "rewritten expects must not read as a comparison");
+  assert.deepEqual(rewritten.before, { passed: 1, total: 2, rubrics: ["rubric-old"] });
+  assert.deepEqual(rewritten.after, { passed: 2, total: 2, rubrics: ["rubric-new"] });
 
-  assert.equal(kept.comparable, true);
-  assert.deepEqual(kept.original, { passed: 1, total: 1, rubrics: ["rubric-kept"] });
-  assert.deepEqual(kept.reduced, { passed: 0, total: 1, rubrics: ["rubric-kept"] });
+  assert.equal(kept.rubricMoved, false);
+  assert.deepEqual(kept.before, { passed: 1, total: 1, rubrics: ["rubric-kept"] });
+  assert.deepEqual(kept.after, { passed: 0, total: 1, rubrics: ["rubric-kept"] });
 });
 
 test("the unaided column follows the rubric the newest skilled column was graded on", () => {
@@ -94,24 +95,39 @@ test("the unaided column follows the rubric the newest skilled column was graded
   assert.deepEqual(rewritten.noSkill, { passed: 1, total: 1, rubrics: ["rubric-new"] });
 });
 
-test("a skill with one version reports nothing measured rather than an empty column", () => {
+test("a skill measured at one version gets no after column rather than an empty one", () => {
   const single: Skill = { ...skill, latest_measured: "big", current: "big", versions: [version("big", 547, 6)] };
   const comparison = compareSkill(single, tasks, runs);
 
-  assert.equal(comparison.measured, false);
-  assert.equal(comparison.reduced, null);
-  assert.ok(comparison.rows.every(row => row.reduced === null));
+  assert.equal(comparison.after, null);
+  assert.equal(comparison.before?.id, "big");
+  assert.ok(comparison.rows.every(row => row.after === null));
 });
 
-test("a version the repo holds but no run saw is surfaced, not silently shown as zero", () => {
+test("a repo edited after its benchmark is flagged, not shown as a column of zeroes", () => {
   const edited: Skill = {
     ...skill,
     current: "edited",
     versions: [...skill.versions, version("edited", 39, 0)],
   };
+  const comparison = compareSkill(edited, tasks, runs);
 
-  assert.deepEqual(compareSkill(edited, tasks, runs).unmeasuredInRepo?.id, "edited");
-  assert.equal(compareSkill(skill, tasks, runs).unmeasuredInRepo, null);
+  assert.equal(comparison.editedAfterBenchmark, true);
+  assert.equal(comparison.current?.id, "edited");
+  assert.equal(comparison.after?.id, "small", "the after column stays on the version that was measured");
+  assert.equal(compareSkill(skill, tasks, runs).editedAfterBenchmark, false);
+});
+
+test("measured versions between the two columns are surfaced, not dropped in silence", () => {
+  const many: Skill = {
+    ...skill,
+    versions: [version("big", 547, 6), version("mid", 120, 6), version("small", 39, 6)],
+  };
+  const comparison = compareSkill(many, tasks, runs);
+
+  assert.equal(comparison.before?.id, "big");
+  assert.equal(comparison.after?.id, "small");
+  assert.deepEqual(comparison.between.map(entry => entry.id), ["mid"]);
 });
 
 test("ungraded runs are left out of a tally instead of counting as failures", () => {

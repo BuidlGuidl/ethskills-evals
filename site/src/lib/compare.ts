@@ -1,10 +1,9 @@
 import type { Index, Run, Skill, SkillVersion, Task } from "./types.js";
 
-// The one place this site can lie. Two pass counts are only a comparison when both were
-// graded against the same expect lines, and those get rewritten between benchmarks — the
-// hand-written reports mark such cells '‡' and tell the reader not to read them. Every
-// cell here carries the rubrics it was tallied from, and a row says outright whether the
-// two columns share one.
+// Where the site decides what may be set next to what. Two pass counts are a comparison
+// only when both were graded against the same expect lines, and those get rewritten between
+// benchmarks — the hand-written reports mark such cells '‡' and tell the reader not to read
+// them. Every cell carries the rubrics it was tallied from so a row can say when they moved.
 
 export type Cell = { passed: number; total: number; rubrics: string[] };
 
@@ -32,57 +31,67 @@ export const shareRubric = (left: Cell | null, right: Cell | null) =>
 export const versionById = (skill: Skill, id: string | null) =>
   id === null ? null : (skill.versions.find(version => version.id === id) ?? null);
 
-export type ComparisonRow = {
+export type Row = {
   task: string;
   kind: "quiz" | "goal";
   noSkill: Cell | null;
-  original: Cell | null;
-  reduced: Cell | null;
-  comparable: boolean;
+  before: Cell | null;
+  after: Cell | null;
+  /** the two skilled cells were graded against different expect lines, so they are not a comparison */
+  rubricMoved: boolean;
 };
 
-export type Comparison = {
-  original: SkillVersion | null;
-  reduced: SkillVersion | null;
-  /** a second version exists and was benchmarked — otherwise the reduced column is "not measured" */
-  measured: boolean;
-  /** the repo holds a version no run ever saw, so its text is shown but its numbers do not exist */
-  unmeasuredInRepo: SkillVersion | null;
-  rows: ComparisonRow[];
-  totals: { noSkill: Cell | null; original: Cell | null; reduced: Cell | null };
+export type SkillComparison = {
+  /** the first version anyone measured — the vendored file, for every skill so far */
+  before: SkillVersion | null;
+  /** the newest measured version; null when only one was ever benchmarked */
+  after: SkillVersion | null;
+  /** what the repo holds today, which is not always what was measured */
+  current: SkillVersion | null;
+  /** the repo was edited after the benchmark, so `current` carries no numbers of its own */
+  editedAfterBenchmark: boolean;
+  /** measured versions between before and after — real runs that no column shows */
+  between: SkillVersion[];
+  rows: Row[];
+  totals: { noSkill: Cell | null; before: Cell | null; after: Cell | null };
 };
 
-export const compareSkill = (skill: Skill, tasks: Task[], runs: Run[]): Comparison => {
-  const original = versionById(skill, skill.original);
-  const reduced = skill.latest_measured === skill.original ? null : versionById(skill, skill.latest_measured);
+export const compareSkill = (skill: Skill, tasks: Task[], runs: Run[]): SkillComparison => {
+  const measured = skill.versions.filter(version => version.runs > 0);
+  const before = measured[0] ?? null;
+  const after = measured.length > 1 ? measured[measured.length - 1] : null;
   const current = versionById(skill, skill.current);
 
   const mine = runs.filter(run => run.skill === skill.name);
-  const rows: ComparisonRow[] = tasks
+  const rows: Row[] = tasks
     .filter(task => task.skill === skill.name)
     .sort((a, b) => a.id.localeCompare(b.id))
     .map(task => {
       const forTask = mine.filter(run => run.task === task.id);
-      const originalCell = original === null ? null : tally(forTask.filter(run => run.skill_content === original.id));
-      const reducedCell = reduced === null ? null : tally(forTask.filter(run => run.skill_content === reduced.id));
+      const cellFor = (version: SkillVersion | null) =>
+        version === null ? null : tally(forTask.filter(run => run.skill_content === version.id));
 
-      // the unaided variant was graded on a rubric too; show the runs that share one with
-      // the newest skilled column, so the three cells on a row are read against each other
-      const target = reducedCell ?? originalCell;
+      const beforeCell = cellFor(before);
+      const afterCell = cellFor(after);
+
+      // The unaided variant was graded on a rubric too. Align it with the newest skilled
+      // column on the row so the three cells are read against each other, and fall back to
+      // every unaided run when nothing overlaps rather than showing an empty cell.
+      const target = afterCell ?? beforeCell;
       const unaided = forTask.filter(run => run.variant === "no_skill");
-      const matching = target === null ? unaided : unaided.filter(run => run.rubric !== null && target.rubrics.includes(run.rubric));
+      const aligned = target === null ? unaided : unaided.filter(run => run.rubric !== null && target.rubrics.includes(run.rubric));
 
       return {
         task: task.id,
         kind: task.kind,
-        noSkill: tally(matching.length > 0 ? matching : unaided),
-        original: originalCell,
-        reduced: reducedCell,
-        comparable: shareRubric(originalCell, reducedCell),
+        noSkill: tally(aligned.length > 0 ? aligned : unaided),
+        before: beforeCell,
+        after: afterCell,
+        rubricMoved: beforeCell !== null && afterCell !== null && !shareRubric(beforeCell, afterCell),
       };
     });
 
-  const sum = (pick: (row: ComparisonRow) => Cell | null): Cell | null => {
+  const sum = (pick: (row: Row) => Cell | null): Cell | null => {
     const cells = rows.map(pick).filter((cell): cell is Cell => cell !== null);
 
     if (cells.length === 0) {
@@ -97,12 +106,13 @@ export const compareSkill = (skill: Skill, tasks: Task[], runs: Run[]): Comparis
   };
 
   return {
-    original,
-    reduced,
-    measured: reduced !== null,
-    unmeasuredInRepo: current !== null && current.runs === 0 ? current : null,
+    before,
+    after,
+    current,
+    editedAfterBenchmark: current !== null && current.runs === 0,
+    between: measured.slice(1, -1),
     rows,
-    totals: { noSkill: sum(row => row.noSkill), original: sum(row => row.original), reduced: sum(row => row.reduced) },
+    totals: { noSkill: sum(row => row.noSkill), before: sum(row => row.before), after: sum(row => row.after) },
   };
 };
 
@@ -111,11 +121,10 @@ export type SkillSummary = {
   tasks: number;
   runs: number;
   noSkill: Cell | null;
-  withSkill: Cell | null;
-  original: SkillVersion | null;
-  reduced: SkillVersion | null;
-  measured: boolean;
-  unmeasuredInRepo: SkillVersion | null;
+  before: Cell | null;
+  after: Cell | null;
+  beforeVersion: SkillVersion | null;
+  afterVersion: SkillVersion | null;
 };
 
 export const summarize = (index: Index): SkillSummary[] =>
@@ -126,13 +135,12 @@ export const summarize = (index: Index): SkillSummary[] =>
     return {
       name: skill.name,
       tasks: index.tasks.filter(task => task.skill === skill.name).length,
-      runs: mine.length,
-      noSkill: tally(mine.filter(run => run.variant === "no_skill")),
-      withSkill: tally(mine.filter(run => run.variant === "with_skill")),
-      original: comparison.original,
-      reduced: comparison.reduced,
-      measured: comparison.measured,
-      unmeasuredInRepo: comparison.unmeasuredInRepo,
+      runs: tally(mine)?.total ?? 0,
+      noSkill: comparison.totals.noSkill,
+      before: comparison.totals.before,
+      after: comparison.totals.after,
+      beforeVersion: comparison.before,
+      afterVersion: comparison.after,
     };
   });
 

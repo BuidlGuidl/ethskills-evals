@@ -20,7 +20,13 @@ const Task = () => {
       <p className="muted">
         <Link to={`/skill/${task.skill}`}>skills/{task.skill}</Link> · {task.kind} · {task.runs} runs per variant
         {task.template === null ? " · bare workspace" : ` · template ${task.template}`}
+        {task.status === "retired" && <span className="tag warnTag">retired</span>}
       </p>
+      {task.status === "retired" && (
+        <p className="note">
+          This task is retired: it is not run again, and the runs below are kept for what they measured at the time.
+        </p>
+      )}
 
       <h2>Prompt</h2>
       <pre className="block">{task.input}</pre>
@@ -49,7 +55,7 @@ const Task = () => {
             <th>model</th>
             <th>result</th>
             <th>expects</th>
-            <th />
+            <th>model transcript</th>
           </tr>
         </thead>
         <tbody>
@@ -86,7 +92,7 @@ const Task = () => {
                   : "—"}
               </td>
               <td className="small">
-                {run.transcript_url && <a href={run.transcript_url}>transcript</a>}
+                {run.transcript_url ? <a href={run.transcript_url}>open</a> : <span className="muted">—</span>}
               </td>
             </tr>
           ))}
@@ -94,10 +100,10 @@ const Task = () => {
       </table>
 
       {task.notes !== null && (
-        <>
-          <h2>Why this task exists</h2>
+        <details className="why">
+          <summary>Why this task exists, and how its checks were chosen</summary>
           <pre className="block muted">{task.notes}</pre>
-        </>
+        </details>
       )}
     </>
   );

@@ -43,6 +43,7 @@ const Tasks = () => {
                     <tr key={task.id}>
                       <th scope="row">
                         <Link to={`/task/${task.id}`}>{task.id.replace(`${skill}-`, "")}</Link>
+                        {task.status === "retired" && <span className="tag warnTag">retired</span>}
                       </th>
                       <td>{task.kind}</td>
                       <td className="num">{task.expect.length}</td>

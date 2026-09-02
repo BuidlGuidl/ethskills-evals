@@ -5,18 +5,25 @@ import { useIndex } from "../lib/data.js";
 const Summary = () => {
   const index = useIndex();
   const rows = summarize(index);
-  const measured = rows.filter(row => row.measured);
+  const rewritten = rows.filter(row => row.after !== null);
 
   return (
     <>
-      <h1>Does the model already pass without the skill?</h1>
+      <h1>Does the skill earn its place?</h1>
       <p className="lede">
-        Every skill in the ethskills library, run as the same task with the skill and without it, a fresh executor per
-        run and a blind judge. {index.runs.length} graded runs across {index.tasks.length} tasks.
+        Every skill in the <a href="https://ethskills.com">ethskills</a> library is checked the same way: the same task
+        run twice, once with the skill installed and once without. A fresh executor for each run, and a blind judge that
+        reads the work but never learns which variant produced it.
       </p>
-      <p className="muted">
-        {measured.length} of {rows.length} skills have been benchmarked twice — once at full length and once after being
-        cut down. Those are the rows with a <strong>reduced</strong> column; the rest say <em>not measured</em>.
+      <p>
+        Tasks come in two kinds. A <strong>quiz</strong> asks the skill's question outright and measures whether the
+        model already knows the answer. A <strong>goal</strong> asks for something to be built and measures whether the
+        discipline surfaces unprompted — the harder claim, and usually the one a skill exists for.
+      </p>
+      <p>
+        When a skill is rewritten the same tasks run again, so a rewrite has a before and an after.{" "}
+        {rewritten.length} of {rows.length} skills have been through that twice; the rest have been measured once, and
+        their <em>new skill</em> cell is a dash.
       </p>
 
       <table className="grid">
@@ -25,11 +32,9 @@ const Summary = () => {
             <th>skill</th>
             <th className="num">tasks</th>
             <th className="num">runs</th>
-            <th className="num">no_skill</th>
-            <th className="num">with_skill</th>
-            <th className="num">original</th>
-            <th className="num">reduced</th>
-            <th>state</th>
+            <th className="num">no skill</th>
+            <th className="num">old skill</th>
+            <th className="num">new skill</th>
           </tr>
         </thead>
         <tbody>
@@ -43,24 +48,17 @@ const Summary = () => {
               </td>
               <td className="num">{row.runs}</td>
               <td className="num">{formatCell(row.noSkill)}</td>
-              <td className="num">{formatCell(row.withSkill)}</td>
-              <td className="num">{row.original ? `${row.original.lines} l` : "—"}</td>
-              <td className="num">{row.reduced ? `${row.reduced.lines} l` : "—"}</td>
-              <td>
-                {row.runs === 0 ? (
-                  <span className="tag idle">no runs</span>
-                ) : row.measured ? (
-                  <span className="tag good">reduction measured</span>
-                ) : row.unmeasuredInRepo ? (
-                  <span className="tag warnTag">reduced, not measured</span>
-                ) : (
-                  <span className="tag idle">one version</span>
-                )}
-              </td>
+              <td className="num">{formatCell(row.before)}</td>
+              <td className="num">{formatCell(row.after)}</td>
             </tr>
           ))}
         </tbody>
       </table>
+
+      <p className="muted small">
+        Counts are runs, not records: a regrade re-reads one run's stored evidence against rewritten expect lines, and
+        only the newest reading of a run is counted.
+      </p>
     </>
   );
 };

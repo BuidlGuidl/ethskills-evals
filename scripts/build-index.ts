@@ -194,6 +194,7 @@ const main = async () => {
         id: spec.id,
         skill: spec.skill.replace(/^skills\//, ""),
         kind: spec.id.includes("-goal-") ? "goal" : "quiz",
+        status: spec.status,
         input: spec.input,
         expect: spec.expect,
         runs: spec.runs,

@@ -1,8 +1,10 @@
 import { useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { compareSkill, formatCell, versionById } from "../lib/compare.js";
+import { compareSkill, formatCell } from "../lib/compare.js";
 import { useIndex } from "../lib/data.js";
 import { alignedDiff } from "../lib/diff.js";
+
+const size = (lines: number, words: number) => `${lines} lines / ${words} words`;
 
 const Skill = () => {
   const index = useIndex();
@@ -16,22 +18,25 @@ const Skill = () => {
   );
 
   const rows = useMemo(() => {
-    if (skill === null || comparison?.original === undefined || comparison?.original === null) {
+    if (comparison?.before == null) {
       return [];
     }
 
-    const right = versionById(skill, skill.current) ?? comparison.original;
+    const target = comparison.after ?? comparison.current;
 
-    return alignedDiff(comparison.original.text, right.text);
-  }, [skill, comparison]);
+    return target === null || target.id === comparison.before.id ? [] : alignedDiff(comparison.before.text, target.text);
+  }, [comparison]);
 
   if (skill === null || comparison === null) {
     return <h1>No such skill</h1>;
   }
 
-  const current = versionById(skill, skill.current);
+  const { before, after, current, between } = comparison;
+  // Nothing to put side by side when the repo still holds the one version that was measured.
+  const right = after ?? (current !== null && current.id !== before?.id ? current : null);
   const reports = index.reports.filter(report => report.skill.startsWith(skill.name));
   const prs = index.prs.filter(pr => pr.skill === skill.name);
+  const moved = comparison.rows.some(row => row.rubricMoved);
 
   return (
     <>
@@ -42,66 +47,33 @@ const Skill = () => {
         </a>
       </h1>
 
-      <h2>Versions</h2>
-      <table className="grid narrow">
-        <thead>
-          <tr>
-            <th>version</th>
-            <th className="num">lines</th>
-            <th className="num">words</th>
-            <th className="num">runs</th>
-            <th>role</th>
-          </tr>
-        </thead>
-        <tbody>
-          {skill.versions.map(version => (
-            <tr key={version.id}>
-              <th scope="row">
-                <code>{version.sha}</code>
-              </th>
-              <td className="num">{version.lines}</td>
-              <td className="num">{version.words}</td>
-              <td className="num">{version.runs}</td>
-              <td>
-                {version.id === comparison.original?.id && <span className="tag idle">original</span>}
-                {version.id === comparison.reduced?.id && <span className="tag good">reduced</span>}
-                {version.in_repo && <span className="tag">in repo now</span>}
-                {version.runs === 0 && <span className="tag warnTag">never benchmarked</span>}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      {after === null ? (
+        <p className="lede">
+          Measured once, at {before ? size(before.lines, before.words) : "an unknown size"}. It has not been rewritten
+          and re-run, so there is no before and after to compare.
+        </p>
+      ) : (
+        <p className="lede">
+          Rewritten from <strong>{size(before!.lines, before!.words)}</strong> to{" "}
+          <strong>{size(after.lines, after.words)}</strong>, and both versions were put through the same tasks.
+        </p>
+      )}
 
-      {comparison.unmeasuredInRepo !== null && (
+      {comparison.editedAfterBenchmark && current !== null && (
         <p className="note">
-          The file in the repo today ({comparison.unmeasuredInRepo.lines} lines) is not the text any run was graded on.
-          The numbers below belong to the versions above; the diff shows what the repo holds now.
+          The file in the repo today is {size(current.lines, current.words)} — it was edited after the benchmark, so no
+          run was graded on exactly this text. The numbers below belong to the versions that were measured.
         </p>
       )}
 
       <h2>Results</h2>
-      {comparison.measured ? (
-        <p className="muted">
-          {comparison.original?.lines} lines → {comparison.reduced?.lines} lines ({comparison.original?.words} →{" "}
-          {comparison.reduced?.words} words). A row is only a comparison when both skilled columns were graded against
-          the same <code>expect:</code> lines — where they were not, the site says so instead of putting the numbers
-          next to each other.
-        </p>
-      ) : (
-        <p className="note">
-          Only one version of this skill has been benchmarked, so there is nothing to compare it against yet.
-        </p>
-      )}
-
       <table className="grid">
         <thead>
           <tr>
             <th>task</th>
-            <th className="num">no_skill</th>
-            <th className="num">original</th>
-            <th className="num">reduced</th>
-            <th>comparable</th>
+            <th className="num">no skill</th>
+            <th className="num">old skill</th>
+            <th className="num">new skill</th>
           </tr>
         </thead>
         <tbody>
@@ -112,15 +84,13 @@ const Skill = () => {
                 <span className="muted small">{row.kind}</span>
               </th>
               <td className="num">{formatCell(row.noSkill)}</td>
-              <td className="num">{formatCell(row.original)}</td>
-              <td className="num">{comparison.measured ? formatCell(row.reduced) : <span className="muted">not measured</span>}</td>
-              <td>
-                {row.original === null || row.reduced === null ? (
-                  <span className="muted small">—</span>
-                ) : row.comparable ? (
-                  <span className="tag good">same expects</span>
-                ) : (
-                  <span className="tag warnTag">expects rewritten — not a comparison</span>
+              <td className="num">{formatCell(row.before)}</td>
+              <td className="num">
+                {formatCell(row.after)}
+                {row.rubricMoved && (
+                  <abbr className="moved" title="graded against different expect lines — not a like-for-like comparison">
+                    {" ‡"}
+                  </abbr>
                 )}
               </td>
             </tr>
@@ -128,47 +98,30 @@ const Skill = () => {
           <tr className="total">
             <th scope="row">total</th>
             <td className="num">{formatCell(comparison.totals.noSkill)}</td>
-            <td className="num">{formatCell(comparison.totals.original)}</td>
-            <td className="num">{comparison.measured ? formatCell(comparison.totals.reduced) : "—"}</td>
-            <td className="muted small">
-              {comparison.rows.some(row => row.original !== null && row.reduced !== null && !row.comparable)
-                ? "contains rows graded by different rules — read per row"
-                : ""}
-            </td>
+            <td className="num">{formatCell(comparison.totals.before)}</td>
+            <td className="num">{formatCell(comparison.totals.after)}</td>
           </tr>
         </tbody>
       </table>
 
-      <h2>
-        The skill, then and now
-        <button className="toggle" onClick={() => setShowDiff(!showDiff)}>
-          {showDiff ? "hide" : "show"}
-        </button>
-      </h2>
-      {showDiff && (
-        <>
-          <div className="cols">
-            <div className="colhead">
-              original — <code>{comparison.original?.sha}</code>, {comparison.original?.lines} lines
-            </div>
-            <div className="colhead">
-              in the repo now — <code>{current?.sha}</code>, {current?.lines} lines
-            </div>
-          </div>
-          <div className="diff">
-            {rows.map((row, position) => (
-              <div className={`drow ${row.state}`} key={position}>
-                <pre className={row.left === null ? "gap" : ""}>{row.left ?? ""}</pre>
-                <pre className={row.right === null ? "gap" : ""}>{row.right ?? ""}</pre>
-              </div>
-            ))}
-          </div>
-        </>
+      {moved && (
+        <p className="muted small">
+          ‡ the task's <code>expect:</code> lines were rewritten between the two runs, so those two cells were graded by
+          different rules and are not a comparison. Read them per column.
+        </p>
+      )}
+
+      {between.length > 0 && (
+        <p className="muted small">
+          {between.length} more measured {between.length === 1 ? "version" : "versions"} sit between these two and are
+          not shown above:{" "}
+          {between.map(version => `${version.lines} lines (${version.runs} runs)`).join(", ")}.
+        </p>
       )}
 
       {(reports.length > 0 || prs.length > 0) && (
         <>
-          <h2>Write-ups</h2>
+          <h2>{right === null ? "Reports and write-ups" : "Why it changed"}</h2>
           <ul className="docs">
             {reports.map(report => (
               <li key={report.file}>
@@ -187,6 +140,36 @@ const Skill = () => {
           </ul>
         </>
       )}
+
+      {right !== null && (
+        <>
+          <h2>
+            The skill, then and now
+            <button className="toggle" onClick={() => setShowDiff(!showDiff)}>
+              {showDiff ? "hide" : "show"}
+            </button>
+          </h2>
+          {showDiff && (
+            <>
+              <div className="cols">
+                <div className="colhead">before — {before ? size(before.lines, before.words) : "—"}</div>
+                <div className="colhead">
+                  {after === null ? "in the repo now" : "after"} — {size(right.lines, right.words)}
+                </div>
+              </div>
+              <div className="diff">
+                {rows.map((row, position) => (
+                  <div className={`drow ${row.state}`} key={position}>
+                    <pre className={row.left === null ? "gap" : ""}>{row.left ?? ""}</pre>
+                    <pre className={row.right === null ? "gap" : ""}>{row.right ?? ""}</pre>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </>
+      )}
+
     </>
   );
 };

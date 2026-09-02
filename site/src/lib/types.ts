@@ -45,6 +45,8 @@ export type Task = {
   id: string;
   skill: string;
   kind: "quiz" | "goal";
+  /** retired tasks are kept for the runs that were graded on them, and are not run again */
+  status: "live" | "retired";
   input: string;
   expect: string[];
   runs: number;
