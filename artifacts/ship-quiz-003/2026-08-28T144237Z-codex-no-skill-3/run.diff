@@ -1,0 +1,130 @@
+diff --git a/plan.md b/plan.md
+new file mode 100644
+index 0000000..119dcf0
+--- /dev/null
++++ b/plan.md
+@@ -0,0 +1,121 @@
++# Onchain susu: contract and unattended-operation plan
++
++## Bottom line
++
++An Ethereum contract does not wake itself up each month. A running circle can hold funds safely while both builders are away, but monthly collection, default processing, and payout happen only when transactions call the contract. Members can make those calls, or an automation service can submit them. If the present contracts require an owner/operator to advance a round, they will stall during the six-week absence. If they use an owner-only payout, the recipient will not be paid. No funds should be lost merely because time passes, but their availability depends on the contract having permissionless settlement and escape hatches.
++
++There is no contract source, deployment address, ABI, or chain configuration in this repository, so it is not possible to assert that any existing deployment will continue to work. The checklist below is what must be verified on the deployed bytecode and current state before leaving. A green result means the builders can be absent; a red result identifies exactly what must change or be operated.
++
++There is also an important solvency constraint. If every month's collected $1,200 is immediately paid to that month's recipient, a member's earlier $100 contributions are no longer in the contract and cannot cover that member's later missed payment. Forfeiting the defaulter's future turn may make the group whole eventually, but it cannot guarantee the current recipient $1,200. A contract promising an on-time, full pot therefore needs collateral or full pre-funding. Accounting alone cannot solve this timing problem.
++
++## Recommended contract design
++
++Use one immutable `Circle` contract per group, deployed by a small factory. Avoid upgradeability for an active circle. Record:
++
++- the USDC token address and its decimal units (native USDC normally uses 6 decimals);
++- exactly 12 unique member addresses in immutable payout order;
++- `contribution = 100e6`, `pot = 1_200e6`, `period = 30 days` (or explicit calendar deadlines agreed offchain), start time, payment window, and grace period;
++- current round, each member's payments, defaults, eligibility, collateral balance, and whether each round has settled;
++- a unique circle ID and chain ID in signed messages/events so actions cannot be replayed across circles or chains.
++
++Do not use `block.timestamp / 30 days` as a calendar-month definition. Store all 12 due and grace deadlines at creation, or derive each deadline from the fixed start and period without ever resetting it when somebody calls late. A delayed transaction must not shift every later round.
++
++### Funding model
++
++The safest and simplest model is **full pre-funding**: before activation, every member deposits all twelve contributions ($1,200 each, $14,400 total). The contract then has enough to pay $1,200 in every round without monthly approvals, keepers, or credit risk. Monthly dates only control when each recipient can withdraw. In this model nobody can miss a later payment, so the stated default rule is unnecessary; a member who does not pre-fund never joins the active circle.
++
++If monthly payments and default are essential, require separately locked collateral before activation. Each member deposits enough to cover all of their still-unpaid contributions, ideally $1,200 at the start with the required collateral declining by $100 after each successful monthly payment. A missed payment is taken from that member's collateral. Their scheduled payout is forfeited according to the agreed rule. This is economically very close to pre-funding, but preserves visible monthly payment behavior.
++
++Do **not** advertise a full, on-time $1,200 payout if collateral is smaller. With only “earlier contributions,” an early-round defaulter has little or no reserve, and previous contributions may already have left the contract. The honest alternative is a best-effort design: pay only funds available now, record a debt, and reimburse the recipient later from the defaulter's forfeited turn. That changes the promised product and exposes recipients to delay.
++
++The recommended collateralized monthly flow is:
++
++1. Before activation, all 12 members approve and deposit the required collateral. Activate only when the contract holds the exact required reserve and the member/order/deadline configuration is final.
++2. During round `r`'s payment window, each member calls `pay(r)`. Use `SafeERC20.safeTransferFrom`; credit a payment from the actual balance increase, and reject fee-on-transfer/rebasing tokens. Pin the intended canonical USDC address for the selected chain.
++3. After the grace deadline, **any address** may call `settle(r)`. For each unpaid member, settlement consumes $100 of that member's locked collateral and marks the member defaulted. A repeated call must be harmless or revert cleanly.
++4. Settlement reserves exactly $1,200 for the round. Use pull payments: the eligible recipient calls `withdrawPayout(r)`. If the scheduled recipient has defaulted, apply a rule fixed at activation—recommended: skip them and send that round's pot pro rata to members who covered obligations, or retain it to reimburse prior shortfalls. The phrase “forfeit their turn” is not sufficient by itself; the destination of the forfeited $1,200 must be specified.
++5. Permit `settle` for multiple overdue rounds in bounded batches, and also one round at a time, so gas growth cannot lock the circle. Never loop over an unbounded member list; here the list is fixed at 12.
++6. At completion, each member withdraws unused collateral. Anyone can finalize after round 12. Unclaimed payouts remain attributable to their recipients and cannot be swept by an admin.
++
++Separating `settle` from `withdrawPayout` means a recipient can pull funds even if automation is down. If settlement computation is deterministic, `withdrawPayout` can first settle an overdue round and then transfer, reducing the number of required transactions.
++
++### State and safety properties
++
++The contract should enforce these invariants in tests and, where practical, runtime checks:
++
++- an active circle's USDC liabilities never exceed its USDC balance;
++- a member is charged at most $100 for a round and a round reserves/pays at most $1,200;
++- every round has exactly one fixed scheduled recipient, and no address can receive the same round twice;
++- membership, order, token, amounts, and deadlines cannot change after activation;
++- settlement is permissionless, deterministic, ordered, and idempotent;
++- checks-effects-interactions and a reentrancy guard protect all withdrawals; USDC calls use safe wrappers;
++- no admin can withdraw participant money, change payout order, fabricate a default, or pause withdrawals indefinitely;
++- direct USDC transfers do not alter internal credits. Excess tokens have a narrowly defined recovery path that cannot touch accounted liabilities;
++- emergency cancellation is allowed before activation with full refunds. After activation, cancellation requires a clearly specified unanimous/member-supermajority process and preserves already reserved claims.
++
++Emit events for creation, activation, payment, collateral use, default, settlement, payout withdrawal, and finalization. Provide view functions returning the current round, next deadline, who has paid, who may settle, collateral coverage, recipient, and claimable amount.
++
++### USDC and transaction details
++
++Support ordinary allowance plus an optional signed authorization route only if the selected USDC deployment supports the exact authorization standard being used. Never assume generic ERC-20 permit support. A recurring allowance does not submit transactions: with `transferFrom`, either the member still calls `pay`, or an authorized relayer calls a function whose authorization and replay protection are explicit. Never let an arbitrary caller pull arbitrary amounts merely because a member granted the circle a large allowance.
++
++Test unusual token behavior relevant to the selected deployment: paused transfers, blacklist/freeze behavior, allowance changes, and failed transfers. A frozen recipient should not block settlement for everyone; their claim should remain recorded for later withdrawal or a pre-agreed alternate address procedure.
++
++## Will circles run for the next six weeks?
++
++They will run **without the builders**, but not literally without transactions, only if all of the following are true:
++
++- the circle is already funded/collateralized enough to remain solvent;
++- no required function is restricted to either builder, an owner, multisig, backend signer, or paused automation account;
++- members can submit their own payments and withdrawals;
++- `settle`/`advance`/`markDefault` is permissionless after an objective onchain deadline;
++- one missed or reverted automated transaction can be retried later without corrupting the schedule;
++- late settlement does not prevent later rounds and bounded catch-up is supported;
++- the frontend/backend is not required to discover parameters or construct calls (publish the address, ABI, chain, RPC-independent instructions, and a block-explorer write link);
++- no upgrade, key rotation, subscription renewal, or token allowance expires during the absence;
++- there is a non-builder caller with enough native gas, or funded automation with a backup.
++
++If those conditions hold, six weeks of builder absence is operationally fine. Automation improves punctuality but must not be a correctness dependency: register at least one scheduled automation job, fund it for more than six weeks, alert on failure/low balance, and give members permissionless manual fallback instructions. Two independent submitters may be used, since idempotent settlement makes duplicate calls safe.
++
++If nobody calls anything for six weeks, the correct behavior is: funds remain escrowed; deadlines pass; payments not made before their deadlines become defaults; no payout transaction occurs; and on return any user can settle overdue rounds in order and recipients can withdraw. Payouts will be late, not lost. Smart contracts cannot initiate the payout themselves.
++
++## Exactly what breaks in common existing designs
++
++| Existing dependency | What happens while both builders are away | Required remedy |
++|---|---|---|
++| `onlyOwner`/operator advances the month or marks defaults | The state remains on the old round; payments may be rejected for the new round and payouts stop | Make post-deadline settlement permissionless and deterministic; deploy/migrate before leaving if immutability prevents the change |
++| Owner pushes the $1,200 payout | Recipient is unpaid even though funds exist | Store a claim and allow recipient pull-withdrawal; optionally let anyone settle first |
++| Backend/cron is the sole transaction sender | Its outage, depleted gas, expired credential, or billing failure delays every round | Fund and monitor automation, add a second caller, and expose manual permissionless calls |
++| Monthly `transferFrom` is expected to happen “automatically” | Nothing calls it; missing allowance/balance makes it revert | Require members to call `pay`, use narrowly authorized signed relaying, or pre-fund |
++| Prior contributions are immediately paid out but are counted as default reserve | Contract becomes insolvent when a member misses; current recipient receives less than $1,200 or settlement reverts | Add real collateral/full pre-funding, or explicitly change to delayed/best-effort reimbursement |
++| Settlement loops across arbitrary circles/members/history | Gas growth can make advancing impossible | One circle per contract, fixed 12-member loops, and bounded per-round catch-up |
++| Deadlines are based on the last settlement call | A six-week delay shifts the year and may let late payers avoid default | Derive deadlines from the immutable start schedule |
++| Global pause controlled only by the builders | A paused contract remains unusable; an unpaused exploit cannot be contained | Avoid a global pause for normal operation; if retained, use a multisig with independent available signers and a time-limited/unpause escape hatch |
++| Upgrade/admin key is one of the two builders | Emergency actions and upgrades are unavailable; key compromise is catastrophic | Active circles should not need upgrades; use a properly distributed multisig/timelock for factory governance only |
++| Frontend or proprietary RPC is the only interface | Members cannot pay or withdraw if that service fails | Publish verified source/ABI and direct block-explorer or CLI instructions with redundant RPC options |
++
++## Pre-departure verification for every live circle
++
++For each deployed address, record chain, contract version/code hash, USDC address, current round, next two deadlines, scheduled recipients, contract USDC balance, total recorded liabilities, each member's payment/collateral status, claimable payouts, paused state, roles, and automation balance/status. Then execute a fork test from current chain state that advances time by six weeks and demonstrates:
++
++1. a normal member can pay without either builder;
++2. an unrelated address can settle after the grace deadline;
++3. a missed payment is covered by actual escrowed funds and the contract still reserves exactly $1,200;
++4. the recipient can withdraw without an admin;
++5. two overdue rounds can be caught up safely;
++6. duplicate settlement/withdrawal cannot double-spend; and
++7. total contract balance remains at least total collateral plus unpaid payout claims.
++
++Also perform the same flow on a public test environment, run unit/fuzz/invariant tests, and obtain an independent security review before real funds are committed.
++
++Any live circle that fails a check should not be described as autonomous. If it is upgradeable, make the smallest reviewed change and test it against a fork. If it is immutable, do not improvise an admin workaround: announce the limitation, stop new circles, and use its documented cancellation/refund path to migrate funds and members to a corrected deployment. Existing participant funds and payout order must be reconciled explicitly during migration.
++
++## Six-week runbook
++
++Before leaving, assign at least one non-builder incident contact and multisig signer, fund automation and relayer gas with margin, set alerts for missed `Payment`/`RoundSettled` events and low reserves, and give every member manual pay/settle/withdraw instructions. Alerts should go to people who will actually be available; alerting the two absent builders is not coverage.
++
++The incident contact should have no power to redirect funds. Their job is to submit permissionless calls, notify members, and escalate token/network outages. The contract—not an operator's discretion—must determine deadlines, defaults, collateral seizure, payout amount, and recipient.
++
++## Decisions to finalize before implementation
++
++The group must approve in writing/onchain: exact deadline and grace-period semantics; whether all 12 members owe in a recipient's own month; what happens to a forfeited pot and any surplus collateral; whether a late payment after default is accepted; recipient-address recovery; cancellation rules; and treatment of prolonged chain or USDC outages. These are economic rules, not implementation details, and they must be immutable for an active circle.
+
+# Untracked files and status
+ A plan.md
