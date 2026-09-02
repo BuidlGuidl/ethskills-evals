@@ -78,6 +78,13 @@ export const parseArgs = (allowed: Set<string>) => {
   return parsed;
 };
 
+// Grades are only comparable across runs of a task while its expect lines stand still.
+// Hashing the list — order included, since expects are addressed as expect_<n> — turns a
+// rubric edit from something a reader has to notice in git log into something a record
+// carries. Truncated because it is an equality check, not a security boundary.
+export const expectSha = (expect: string[]) =>
+  createHash("sha256").update(JSON.stringify(expect)).digest("hex").slice(0, 12);
+
 const parseStatus = (value: unknown): TaskStatus => {
   if (value === undefined) {
     return "live";
