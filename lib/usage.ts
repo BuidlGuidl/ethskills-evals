@@ -154,3 +154,73 @@ export const parseUsageRecord = (value: unknown): RunUsage | undefined => {
     total_tokens: numberOrNull(value.total_tokens),
   };
 };
+
+// A transcript records its run stats one of two ways. Current runs carry the "## run stats"
+// footer transcript.ts writes; the 147 runs made before that footer existed carry the raw
+// result event instead, under different labels in a "## result" block. Both are the same
+// claude result event, so both are readable — and a cost table that only knew the footer
+// reported "no footer" for runs whose cost was sitting in the committed transcript.
+const readMatch = (text: string, pattern: RegExp) => {
+  const match = text.match(pattern);
+
+  return match === null ? null : toNumber(match[1]);
+};
+
+const parseFooter = (text: string) => {
+  if (!/^## run stats$/m.test(text)) {
+    return null;
+  }
+
+  // in/out is the three-way input sum and the output, the same pair claudeTokens returns;
+  // "?" is what the footer prints for a field the result event did not carry.
+  const inputTotal = readMatch(text, /^- tokens in\/out: (\d+)\/\d+$/m);
+  const output = readMatch(text, /^- tokens in\/out: \d+\/(\d+)$/m);
+
+  return {
+    duration_s: readMatch(text, /^- duration: (\d+)s$/m),
+    turns: readMatch(text, /^- turns: (\d+)$/m),
+    cost_usd: readMatch(text, /^- cost: \$([\d.]+)$/m),
+    input_tokens: null,
+    cache_creation_input_tokens: readMatch(text, /^- of which cache write\/read: (\d+)\/\d+$/m),
+    cache_read_input_tokens: readMatch(text, /^- of which cache write\/read: \d+\/(\d+)$/m),
+    output_tokens: output,
+    total_tokens: sum([inputTotal, output]),
+  };
+};
+
+const parseResultBlock = (text: string) => {
+  // No /m: the block runs to the next heading or to the end of the file, and a multiline `$`
+  // would end it at the first line break instead.
+  const block = text.match(/(?:^|\n)## result\n([\s\S]*?)(?=\n#{1,3} |$)/);
+
+  if (block === null) {
+    return null;
+  }
+
+  const body = block[1];
+  const usageLine = body.match(/^usage: (\{.*)$/m);
+  let tokens: ClaudeTokens = { input: null, cacheCreation: null, cacheRead: null, inputTotal: null, output: null, total: null };
+
+  if (usageLine !== null) {
+    try {
+      tokens = claudeTokens(JSON.parse(usageLine[1]) as Record<string, unknown>);
+    } catch {
+      // A truncated or malformed line leaves the token fields absent, not zero.
+    }
+  }
+
+  const durationMs = readMatch(body, /^duration_ms: (\d+)$/m);
+
+  return {
+    duration_s: durationMs === null ? null : Math.round(durationMs / 1000),
+    turns: readMatch(body, /^num_turns: (\d+)$/m),
+    cost_usd: readMatch(body, /^total_cost_usd: ([\d.]+)$/m),
+    input_tokens: tokens.input,
+    cache_creation_input_tokens: tokens.cacheCreation,
+    cache_read_input_tokens: tokens.cacheRead,
+    output_tokens: tokens.output,
+    total_tokens: tokens.total,
+  };
+};
+
+export const parseTranscriptStats = (text: string): RunUsage | null => parseFooter(text) ?? parseResultBlock(text);

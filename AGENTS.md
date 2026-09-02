@@ -223,12 +223,20 @@ key per measurement instead of the two bare variant lines — see
 **Every cost or duration number in a report comes out of `yarn run-stats`, never off a keyboard.**
 
 ```bash
-yarn run-stats --tasks <id>,<id> [--since 2026-08-27] [--variant no_skill] [--runs]
+yarn run-stats --tasks <id>,<id> [--since 2026-08-27] [--variant no_skill] [--skill-version <sha>] [--runs]
 ```
 
 It reads the `## run stats` footer `run-executor` writes into each committed `transcript.md`,
-prints per-task medians per variant with the cost range beside them, and says `(n with no footer)`
-for runs made before that footer existed — whose cost and duration this repo simply does not have.
+falling back to the raw `## result` block older transcripts carry instead — the same result event
+under different labels, so those runs are derivable too — and to `result.yaml`'s `usage` block for
+what neither holds, which on codex is the token total. It prints per-task medians per variant with
+the cost range beside them and the median `total_tokens`, and says `(n with no stats)` for runs
+that carry none of the three — whose cost and duration this repo simply does not have.
+
+`--skill-version` filters on `result.yaml`'s `skill_version`. Two `with_skill` arms of one task
+differ only by which revision of the skill they read, and the run directory name does not say, so
+an arm is one command rather than a date range a reader has to know the boundaries of.
+
 Print the range as well as the median: at `n=3` a goal task's cheapest and dearest run can differ by
 more than the delta the median is being read for, and a median that carries a headline needs its
 spread printed next to it. A number that `run-stats` cannot produce does not go in the table; write
