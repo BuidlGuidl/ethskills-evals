@@ -85,14 +85,13 @@ const Skill = () => {
                 <span className="muted small">{row.kind}</span>
               </th>
               <td className="num">{formatCell(row.noSkill)}</td>
-              <td className="num">{formatCell(row.before)}</td>
+              <td className="num">
+                {formatCell(row.before)}
+                {row.rubricMoved && <span className="moved">{" ‡"}</span>}
+              </td>
               <td className="num">
                 {formatCell(row.after)}
-                {row.rubricMoved && (
-                  <abbr className="moved" title="graded against different expect lines — not a like-for-like comparison">
-                    {" ‡"}
-                  </abbr>
-                )}
+                {row.rubricMoved && <span className="moved">{" ‡"}</span>}
               </td>
             </tr>
           ))}
@@ -129,8 +128,9 @@ const Skill = () => {
 
       {moved && (
         <p className="muted small">
-          ‡ the task's <code>expect:</code> lines were rewritten between the two runs, so those two cells were graded by
-          different rules and are not a comparison. Read them per column.
+          ‡ the task's <code>expect:</code> lines were rewritten between the two runs, so those two cells were graded
+          by different rules and are not a comparison — read them per column. On those rows the unaided cell is the one
+          graded on the <em>newer</em> version's expect lines, so it faces the new skill and not the old one.
         </p>
       )}
 

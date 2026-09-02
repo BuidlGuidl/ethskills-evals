@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { formatCell, tally } from "../lib/compare.js";
+import { countRuns, formatCell, tally } from "../lib/compare.js";
 import { useIndex } from "../lib/data.js";
 
 const Tasks = () => {
@@ -47,7 +47,7 @@ const Tasks = () => {
                       </th>
                       <td>{task.kind}</td>
                       <td className="num">{task.expect.length}</td>
-                      <td className="num">{runs.length}</td>
+                      <td className="num">{countRuns(runs)}</td>
                       <td className="num">{formatCell(tally(runs.filter(run => run.variant === "no_skill")))}</td>
                       <td className="num">{formatCell(tally(runs.filter(run => run.variant === "with_skill")))}</td>
                       <td className="small muted">{task.template === null ? "bare" : task.template}</td>

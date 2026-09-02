@@ -1,4 +1,5 @@
 import { Link, Route, Routes } from "react-router-dom";
+import { countRuns } from "./lib/compare.js";
 import { useIndex } from "./lib/data.js";
 import Doc from "./pages/Doc.js";
 import Skill from "./pages/Skill.js";
@@ -22,7 +23,7 @@ const App = () => {
           <a href={`https://github.com/${index.generated.repo}`}>repo</a>
           <span className="grow" />
           <span className="muted small">
-            {index.runs.length} runs · {index.generated.commit ? index.generated.commit.slice(0, 7) : "unknown"} ·{" "}
+            {countRuns(index.runs)} runs · {index.generated.commit ? index.generated.commit.slice(0, 7) : "unknown"} ·{" "}
             {index.generated.at.slice(0, 10)}
           </span>
         </nav>

@@ -11,8 +11,10 @@ export const tally = (runs: Run[]): Cell | null => {
   // A regrade and the run it re-read are one run read twice. Whenever both are in the set
   // being counted, the newer reading wins; a set holding only the source still counts it,
   // which is what makes a per-rubric column come out right.
-  const present = new Set(runs.map(run => run.run));
-  const graded = runs.filter(run => run.pass !== null && !(run.superseded_by !== null && present.has(run.superseded_by)));
+  const present = new Set(runs.map(run => `${run.task}/${run.run}`));
+  const graded = runs.filter(
+    run => run.pass !== null && !(run.superseded_by !== null && present.has(`${run.task}/${run.superseded_by}`)),
+  );
 
   if (graded.length === 0) {
     return null;
@@ -23,6 +25,15 @@ export const tally = (runs: Run[]): Cell | null => {
     total: graded.length,
     rubrics: [...new Set(graded.map(run => run.rubric).filter((id): id is string => id !== null))].sort(),
   };
+};
+
+// Records, not runs: a regrade and the run it re-read are one run read twice, and a headline
+// that counts records says 896 where the tables say 805. Ungraded runs are counted here and
+// not in a tally — they happened, they just have no verdict.
+export const countRuns = (runs: Run[]) => {
+  const present = new Set(runs.map(run => `${run.task}/${run.run}`));
+
+  return runs.filter(run => !(run.superseded_by !== null && present.has(`${run.task}/${run.superseded_by}`))).length;
 };
 
 export const shareRubric = (left: Cell | null, right: Cell | null) =>
@@ -180,7 +191,7 @@ export const summarize = (index: Index): SkillSummary[] =>
     return {
       name: skill.name,
       tasks: index.tasks.filter(task => task.skill === skill.name).length,
-      runs: tally(mine)?.total ?? 0,
+      runs: countRuns(mine),
       noSkill: comparison.totals.noSkill,
       before: comparison.totals.before,
       after: comparison.totals.after,

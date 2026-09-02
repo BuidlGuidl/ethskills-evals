@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { compareSkill, shareRubric, tally } from "../site/src/lib/compare.js";
+import { compareSkill, countRuns, shareRubric, tally } from "../site/src/lib/compare.js";
 import type { Run, Skill, Task } from "../site/src/lib/types.js";
 
 // The site's only load-bearing computation: whether an original-vs-reduced cell is a
@@ -228,4 +228,24 @@ test("a partial re-run does not displace the version that was benchmarked in ful
     "touched",
     "unless that is the version the repo actually holds",
   );
+});
+
+test("a lineage is keyed by task as well as run, because run ids repeat across tasks", () => {
+  // The same timestamp-and-variant run id exists under indexing-quiz-001, -002 and -003. Keyed
+  // on the id alone, a run is dropped from a skill-wide tally because a different task happens
+  // to contribute a record whose id matches its superseded_by.
+  const here = { ...run("addresses-quiz-001", "small", "rubric-new", true), run: "r1", superseded_by: "r1-regrade-1" };
+  const elsewhere = { ...run("addresses-quiz-002", "small", "rubric-kept", true), run: "r1-regrade-1" };
+
+  assert.equal(tally([here, elsewhere])?.total, 2, "a namesake in another task must not supersede this run");
+  assert.equal(countRuns([here, elsewhere]), 2);
+});
+
+test("counting runs drops superseded readings but keeps ungraded runs", () => {
+  const source = { ...run("addresses-quiz-001", "small", "rubric-new", false), run: "r1", superseded_by: "r1-regrade-1" };
+  const regrade = { ...run("addresses-quiz-001", "small", "rubric-new", true), run: "r1-regrade-1", regrade_of: "r1" };
+  const dead = { ...run("addresses-quiz-002", "small", "rubric-kept", false), run: "r2", pass: null };
+
+  assert.equal(countRuns([source, regrade, dead]), 2, "one run read twice is one run; an ungraded run still ran");
+  assert.equal(tally([source, regrade, dead])?.total, 1, "but only the graded reading is tallied");
 });

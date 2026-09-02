@@ -15,7 +15,9 @@ const Writeups = () => {
 
       <h2>Reports</h2>
       <ul className="docs">
-        {[...index.reports].reverse().map(report => (
+        {[...index.reports]
+          .sort((a, b) => (b.date ?? "").localeCompare(a.date ?? "") || a.file.localeCompare(b.file))
+          .map(report => (
           <li key={report.file}>
             <Link to={`/report/${report.file}`}>{report.title}</Link>{" "}
             <span className="muted small">{report.date}</span>
