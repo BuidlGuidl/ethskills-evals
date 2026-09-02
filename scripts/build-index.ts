@@ -217,7 +217,21 @@ const main = async () => {
   const addingCommit = (filePath: string) => {
     if (addedCache === null) {
       addedCache = new Map();
-      const log = gitOrNull("log", "--diff-filter=A", "--format=%x01%H", "--name-only", "--", "artifacts");
+      // --diff-merges=first-parent because a merge shows no diff by default, and some runs
+      // arrive with one: gas-goal-001's regrades exist first in `Merge origin/main into
+      // fix/minimal-gas-skill` and nowhere earlier in the reachable graph. Without it those
+      // runs have no commit, so their rubric falls back to the task file as it stands and
+      // --strict refuses the build. A file added on a branch still resolves to the branch
+      // commit, since the walk keeps the oldest sighting.
+      const log = gitOrNull(
+        "log",
+        "--diff-filter=A",
+        "--diff-merges=first-parent",
+        "--format=%x01%H",
+        "--name-only",
+        "--",
+        "artifacts",
+      );
       let current: string | null = null;
 
       for (const line of (log ?? "").split("\n")) {
