@@ -1,0 +1,312 @@
+diff --git a/FINDINGS.md b/FINDINGS.md
+new file mode 100644
+index 0000000..567c1dc
+--- /dev/null
++++ b/FINDINGS.md
+@@ -0,0 +1,180 @@
++# UsdtYieldVault security review
++
++## Sign-off decision
++
++**Do not deploy this contract to mainnet.** A deposit using real mainnet USDT
++reverts before reaching Aave. Independently, the vault does not account for Aave
++yield and erases retained withdrawal fees from its share accounting, permanently
++orphaning assets.
++
++The original 39 tests still pass when run alone. The added evidence is in
++`test/UsdtYieldVaultAudit.t.sol` and `test/UsdtYieldVaultMainnetAudit.t.sol`. No
++file under `src/`, `test/UsdtYieldVault.t.sol`, or `test/mocks/` was changed.
++
++## Finding 1 — Critical: deposits revert with real mainnet USDT
++
++### Cause and impact
++
++`deposit()` calls `usdt.approve(address(aavePool), amount)` directly. Mainnet
++USDT's `approve` succeeds with empty return data (the trace shows `[Stop]` rather
++than a returned boolean). Because the vault calls it through the standard
++`IERC20` interface, Solidity attempts to decode a `bool` and reverts. The whole
++transaction rolls back. Consequently, nobody can deposit into the proposed
++mainnet vault.
++
++The fork test uses the exact USDT, aUSDT, and Aave pool addresses from the release
++configuration. The depositor-to-vault approval deliberately uses
++`SafeERC20.forceApprove`, so execution reaches the faulty approval inside the
++vault. The block is pinned for reproducibility.
++
++### Reproduction and verbatim output
++
++```text
++$ forge test --match-test testFork_DepositRealUsdtMustSucceed --fork-url https://ethereum-rpc.publicnode.com --fork-block-number 25883940 -vvvv 2>&1 | sed -n '/UsdtYieldVault::deposit/,/Backtrace:/p'
++stty: 'standard input': Inappropriate ioctl for device
++    ├─ [64468] UsdtYieldVault::deposit(1000000000 [1e9])
++    │   ├─ [35224] 0xdAC17F958D2ee523a2206206994597C13D831ec7::transferFrom(mainnetDepositor: [0x09fAA1fAA9F189022Bce4267f44EB3004C38E3aC], UsdtYieldVault: [0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f], 1000000000 [1e9])
++    │   │   ├─ emit Transfer(from: mainnetDepositor: [0x09fAA1fAA9F189022Bce4267f44EB3004C38E3aC], to: UsdtYieldVault: [0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f], value: 1000000000 [1e9])
++    │   │   └─ ← [Stop]
++    │   ├─ [24953] 0xdAC17F958D2ee523a2206206994597C13D831ec7::approve(0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2, 1000000000 [1e9])
++    │   │   ├─ emit Approval(owner: UsdtYieldVault: [0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f], spender: 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2, value: 1000000000 [1e9])
++    │   │   └─ ← [Stop]
++    │   └─ ← [Revert] EvmError: Revert
++    └─ ← [Revert] EvmError: Revert
++
++Backtrace:
++```
++
++### Recommended fix
++
++Replace the raw approval with OpenZeppelin `SafeERC20.forceApprove` (or an
++equivalent safe allowance flow that accepts missing return data and handles
++USDT's zero-before-nonzero rule). Add a pinned mainnet-fork deposit and withdrawal
++test using the exact production addresses.
++
++## Finding 2 — High: all Aave yield is omitted from shareholder accounting
++
++### Cause and impact
++
++Every conversion and `totalAssets()` reads `totalAssetsStored`, a counter changed
++only by deposits and withdrawals. The immutable `aUsdt` is never read by the
++contract. Aave yield manifests as growth in the vault's redeemable aUSDT balance,
++but that growth never changes `totalAssetsStored`. It therefore never raises the
++share price and cannot be withdrawn by users. This defeats the vault's purpose
++and strands all yield in the contract, which has no rescue or sweep function.
++
++The test models Aave's rebasing aUSDT balance increasing by 100 USDT and also
++funds the mock pool, making the full 1,100 USDT genuinely redeemable. The vault
++continues to report 1,000 USDT.
++
++### Reproduction and verbatim output
++
++```text
++$ forge test --match-test test_AaveYieldMustAccrueToDepositor -vv
++stty: 'standard input': Inappropriate ioctl for device
++Compiling 1 files with Solc 0.8.28
++Solc 0.8.28 finished in 926.18ms
++Compiler run successful!
++2026-09-01T17:28:09.533784Z  WARN evm::traces::external: etherscan config not found
++
++Ran 1 test for test/UsdtYieldVaultAudit.t.sol:UsdtYieldVaultAuditTest
++[FAIL: Aave yield is omitted from totalAssets: 1000000000 != 1100000000] test_AaveYieldMustAccrueToDepositor() (gas: 249235)
++Suite result: FAILED. 0 passed; 1 failed; 0 skipped; finished in 997.87µs (141.40µs CPU time)
++
++Ran 1 test suite in 7.54ms (997.87µs CPU time): 0 tests passed, 1 failed, 0 skipped (1 total tests)
++
++Failing tests:
++Encountered 1 failing test in test/UsdtYieldVaultAudit.t.sol:UsdtYieldVaultAuditTest
++[FAIL: Aave yield is omitted from totalAssets: 1000000000 != 1100000000] test_AaveYieldMustAccrueToDepositor() (gas: 249235)
++
++Encountered a total of 1 failing tests, 0 tests succeeded
++
++Tip: Run `forge test --rerun` to retry only the 1 failed test
++```
++
++### Recommended fix
++
++Use the vault's live redeemable aUSDT balance as the source of truth for asset/share
++conversions and `totalAssets()` (with careful ordering around transfers), rather
++than a principal-only counter. A standard ERC-4626-style accounting model is a
++safer basis. Test interest accrual, loss/rounding behavior, and deposits and
++withdrawals before and after accrual.
++
++## Finding 3 — High: withdrawal fees are erased from accounting and orphaned
++
++### Cause and impact
++
++On withdrawal, the vault removes `grossAssets` from `totalAssetsStored`, but asks
++Aave to withdraw only `netAssets`. The fee remains as aUSDT owned by the vault
++while disappearing from its accounting. This directly contradicts the contract
++documentation that the fee "stay[s] supplied in Aave and accrue[s] to the
++remaining shareholders."
++
++With Alice and Bob each depositing 1,000 USDT at a zero deposit fee, Alice's full
++withdrawal leaves 1,003 aUSDT in the vault (Bob's 1,000 plus the 3 USDT fee), yet
++the vault reports Bob owns only 1,000. If the last shareholder exits, the same
++bug leaves 3 aUSDT while both `totalShares` and tracked assets are zero. There is
++no path in the contract to claim it.
++
++### Reproduction and verbatim output: remaining shareholder loses the fee
++
++```text
++$ forge test --match-test test_WithdrawalFeeMustAccrueToRemainingShareholder -vv
++stty: 'standard input': Inappropriate ioctl for device
++No files changed, compilation skipped
++2026-09-01T17:28:14.733449Z  WARN evm::traces::external: etherscan config not found
++
++Ran 1 test for test/UsdtYieldVaultAudit.t.sol:UsdtYieldVaultAuditTest
++[FAIL: withdrawal fee was erased from accounting: 1000000000 != 1003000000] test_WithdrawalFeeMustAccrueToRemainingShareholder() (gas: 346162)
++Suite result: FAILED. 0 passed; 1 failed; 0 skipped; finished in 1.21ms (204.74µs CPU time)
++
++Ran 1 test suite in 7.64ms (1.21ms CPU time): 0 tests passed, 1 failed, 0 skipped (1 total tests)
++
++Failing tests:
++Encountered 1 failing test in test/UsdtYieldVaultAudit.t.sol:UsdtYieldVaultAuditTest
++[FAIL: withdrawal fee was erased from accounting: 1000000000 != 1003000000] test_WithdrawalFeeMustAccrueToRemainingShareholder() (gas: 346162)
++
++Encountered a total of 1 failing tests, 0 tests succeeded
++
++Tip: Run `forge test --rerun` to retry only the 1 failed test
++```
++
++### Reproduction and verbatim output: final exit orphans the fee
++
++```text
++$ forge test --match-test test_LastWithdrawalMustNotOrphanAUsdt -vv
++stty: 'standard input': Inappropriate ioctl for device
++No files changed, compilation skipped
++2026-09-01T17:28:19.743202Z  WARN evm::traces::external: etherscan config not found
++
++Ran 1 test for test/UsdtYieldVaultAudit.t.sol:UsdtYieldVaultAuditTest
++[FAIL: 3 USDT is orphaned in Aave after the last exit: 3000000 != 0] test_LastWithdrawalMustNotOrphanAUsdt() (gas: 250940)
++Suite result: FAILED. 0 passed; 1 failed; 0 skipped; finished in 860.07µs (151.19µs CPU time)
++
++Ran 1 test suite in 7.34ms (860.07µs CPU time): 0 tests passed, 1 failed, 0 skipped (1 total tests)
++
++Failing tests:
++Encountered 1 failing test in test/UsdtYieldVaultAudit.t.sol:UsdtYieldVaultAuditTest
++[FAIL: 3 USDT is orphaned in Aave after the last exit: 3000000 != 0] test_LastWithdrawalMustNotOrphanAUsdt() (gas: 250940)
++
++Encountered a total of 1 failing tests, 0 tests succeeded
++
++Tip: Run `forge test --rerun` to retry only the 1 failed test
++```
++
++### Recommended fix
++
++If fees are meant to benefit remaining shareholders, value shares from the live
++aUSDT balance so the retained fee remains in `totalAssets`. Define the final-exit
++policy explicitly: waive the fee when no shares remain, send it to a declared fee
++recipient, or represent its owner with shares. Never leave assets in the vault
++with zero shares. Add an invariant that a zero share supply implies a zero vault
++aUSDT balance, plus multi-user withdrawal-order tests.
++
++## Why the existing green suite missed these failures
++
++The mock USDT is OpenZeppelin ERC20, whose `approve` returns `bool`; real USDT
++returns no data. The mock aToken balance changes only through mock supply and
++withdraw, so no test introduces Aave interest. Existing withdrawal assertions
++check only the withdrawing user's payout and share burn, not reconciliation of
++live aUSDT against assets attributed to remaining shares.
+diff --git a/test/UsdtYieldVaultAudit.t.sol b/test/UsdtYieldVaultAudit.t.sol
+new file mode 100644
+index 0000000..c115d7a
+--- /dev/null
++++ b/test/UsdtYieldVaultAudit.t.sol
+@@ -0,0 +1,78 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.28;
++
++import {Test} from "forge-std/Test.sol";
++
++import {UsdtYieldVault} from "../src/UsdtYieldVault.sol";
++import {MockUSDT} from "./mocks/MockUSDT.sol";
++import {MockAavePool, MockAToken} from "./mocks/MockAavePool.sol";
++
++contract UsdtYieldVaultAuditTest is Test {
++    MockUSDT internal usdt;
++    MockAavePool internal pool;
++    MockAToken internal aUsdt;
++    UsdtYieldVault internal vault;
++
++    address internal alice = makeAddr("alice");
++    address internal bob = makeAddr("bob");
++
++    function setUp() public {
++        usdt = new MockUSDT();
++        pool = new MockAavePool(address(usdt));
++        aUsdt = pool.aToken();
++        vault = new UsdtYieldVault(address(usdt), address(aUsdt), address(pool), 0, address(this));
++
++        usdt.mint(alice, 1_000e6);
++        usdt.mint(bob, 1_000e6);
++        vm.prank(alice);
++        usdt.approve(address(vault), type(uint256).max);
++        vm.prank(bob);
++        usdt.approve(address(vault), type(uint256).max);
++    }
++
++    function _deposit(address account, uint256 amount) internal returns (uint256 shares) {
++        vm.prank(account);
++        shares = vault.deposit(amount);
++    }
++
++    /// Aave yield increases the vault's redeemable aUSDT balance. It must also
++    /// increase the assets attributed to the existing depositor.
++    function test_AaveYieldMustAccrueToDepositor() public {
++        _deposit(alice, 1_000e6);
++
++        // Model aUSDT's rebasing balance after 100 USDT of Aave interest, and
++        // fund the mock pool so all 1,100 USDT really are withdrawable.
++        usdt.mint(address(pool), 100e6);
++        vm.prank(address(pool));
++        aUsdt.mint(address(vault), 100e6);
++
++        assertEq(vault.totalAssets(), 1_100e6, "Aave yield is omitted from totalAssets");
++        assertEq(vault.balanceOfUnderlying(alice), 1_100e6, "Aave yield is not credited to Alice");
++    }
++
++    /// The contract documentation says withdrawal fees remain supplied and
++    /// accrue to remaining shareholders. The accounting must retain that fee.
++    function test_WithdrawalFeeMustAccrueToRemainingShareholder() public {
++        uint256 aliceShares = _deposit(alice, 1_000e6);
++        _deposit(bob, 1_000e6);
++
++        vm.prank(alice);
++        vault.withdraw(aliceShares);
++
++        assertEq(aUsdt.balanceOf(address(vault)), 1_003e6, "sanity: fee remains supplied to Aave");
++        assertEq(vault.totalAssets(), 1_003e6, "withdrawal fee was erased from accounting");
++        assertEq(vault.balanceOfUnderlying(bob), 1_003e6, "Bob was not credited the retained fee");
++    }
++
++    /// Once the only shareholder exits, any retained fee must remain accounted
++    /// for rather than becoming permanently detached from all shares.
++    function test_LastWithdrawalMustNotOrphanAUsdt() public {
++        uint256 shares = _deposit(alice, 1_000e6);
++
++        vm.prank(alice);
++        vault.withdraw(shares);
++
++        assertEq(vault.totalShares(), 0, "sanity: all shares burned");
++        assertEq(aUsdt.balanceOf(address(vault)), 0, "3 USDT is orphaned in Aave after the last exit");
++    }
++}
+diff --git a/test/UsdtYieldVaultMainnetAudit.t.sol b/test/UsdtYieldVaultMainnetAudit.t.sol
+new file mode 100644
+index 0000000..128838d
+--- /dev/null
++++ b/test/UsdtYieldVaultMainnetAudit.t.sol
+@@ -0,0 +1,31 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.28;
++
++import {Test} from "forge-std/Test.sol";
++import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
++import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
++
++import {UsdtYieldVault} from "../src/UsdtYieldVault.sol";
++
++contract UsdtYieldVaultMainnetAuditTest is Test {
++    using SafeERC20 for IERC20;
++
++    address internal constant USDT = 0xdAC17F958D2ee523a2206206994597C13D831ec7;
++    address internal constant A_USDT = 0x23878914EFE38d27C4D67Ab83ed1b93A74D4086a;
++    address internal constant AAVE_POOL = 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2;
++
++    function testFork_DepositRealUsdtMustSucceed() public {
++        address depositor = makeAddr("mainnetDepositor");
++        UsdtYieldVault vault = new UsdtYieldVault(USDT, A_USDT, AAVE_POOL, 0, address(this));
++
++        deal(USDT, depositor, 1_000e6);
++        vm.startPrank(depositor);
++        // SafeERC20 accepts USDT's non-standard empty return data. This gets
++        // execution into vault.deposit, where the vault uses raw approve.
++        IERC20(USDT).forceApprove(address(vault), 1_000e6);
++        vault.deposit(1_000e6);
++        vm.stopPrank();
++
++        assertEq(IERC20(A_USDT).balanceOf(address(vault)), 1_000e6);
++    }
++}
+
+# Untracked files and status
+ A FINDINGS.md
+ A test/UsdtYieldVaultAudit.t.sol
+ A test/UsdtYieldVaultMainnetAudit.t.sol
