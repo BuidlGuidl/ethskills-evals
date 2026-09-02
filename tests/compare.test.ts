@@ -173,3 +173,59 @@ test("a run read three times counts once, as its newest reading", () => {
   assert.deepEqual(tally([source, first, second]), { passed: 1, total: 1, rubrics: ["rubric-new"] });
   assert.deepEqual(tally([source, first]), { passed: 0, total: 1, rubrics: ["rubric-mid"] });
 });
+
+test("totals cover the tasks both versions ran, so the two share a denominator", () => {
+  const comparison = compareSkill(skill, tasks, runs);
+
+  assert.deepEqual(comparison.coverage, { counted: 2, total: 2 });
+  assert.deepEqual(comparison.totals.before, { passed: 2, total: 3, rubrics: ["rubric-kept", "rubric-old"] });
+  assert.deepEqual(comparison.totals.after, { passed: 2, total: 3, rubrics: ["rubric-kept", "rubric-new"] });
+});
+
+test("a task only one version ran is left out of the totals, not added to one side", () => {
+  const partial = runs.filter(run => !(run.task === "addresses-quiz-002" && run.skill_content === "small"));
+  const comparison = compareSkill(skill, tasks, partial);
+
+  // quiz-002 keeps its `before` cell in the table but drops out of the totals: counting it
+  // would put a run in the old column with nothing facing it in the new one.
+  assert.deepEqual(comparison.coverage, { counted: 1, total: 2 });
+  assert.deepEqual(comparison.totals.before, { passed: 1, total: 2, rubrics: ["rubric-old"] });
+  assert.deepEqual(comparison.totals.after, { passed: 2, total: 2, rubrics: ["rubric-new"] });
+  assert.equal(comparison.rows[1].before?.total, 1, "the row itself still shows what ran");
+});
+
+test("the after column is the version that shipped, not the widest-covering intermediate", () => {
+  // skills/tools: an intermediate covers every task, but a later version is what the repo
+  // holds. The column has to be the one that shipped or the page describes a version nobody has.
+  const withIntermediate: Skill = {
+    ...skill,
+    current: "shipped",
+    versions: [version("big", 547, 6), version("wide", 60, 6), version("shipped", 44, 6)],
+  };
+
+  assert.equal(compareSkill(withIntermediate, tasks, runs).after?.id, "shipped");
+});
+
+test("a partial re-run does not displace the version that was benchmarked in full", () => {
+  // skills/standards: the newest measured version ran one task of three. Facing the original
+  // with that single row would throw away the full benchmark sitting right behind it.
+  const three = [...tasks, task("addresses-quiz-003", "quiz")];
+  const full = [
+    ...runs,
+    run("addresses-quiz-003", "big", "rubric-kept", true),
+    run("addresses-quiz-003", "small", "rubric-kept", true),
+    run("addresses-quiz-001", "touched", "rubric-new", true),
+  ];
+  const versions: Skill = {
+    ...skill,
+    current: "edited",
+    versions: [version("big", 547, 6), version("small", 39, 6), version("touched", 39, 1)],
+  };
+
+  assert.equal(compareSkill(versions, three, full).after?.id, "small", "one task of three is not the after column");
+  assert.equal(
+    compareSkill({ ...versions, current: "touched" }, three, full).after?.id,
+    "touched",
+    "unless that is the version the repo actually holds",
+  );
+});

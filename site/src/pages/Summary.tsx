@@ -5,7 +5,7 @@ import { useIndex } from "../lib/data.js";
 const Summary = () => {
   const index = useIndex();
   const rows = summarize(index);
-  const rewritten = rows.filter(row => row.after !== null);
+  const rewritten = rows.filter(row => row.afterVersion !== null);
 
   return (
     <>
@@ -49,12 +49,22 @@ const Summary = () => {
               <td className="num">{row.runs}</td>
               <td className="num">{formatCell(row.noSkill)}</td>
               <td className="num">{formatCell(row.before)}</td>
-              <td className="num">{formatCell(row.after)}</td>
+              <td className="num">
+                {formatCell(row.after)}
+                {row.afterVersion !== null && (!row.comparable || row.coverage.counted < row.coverage.total) && (
+                  <span className="moved">{" *"}</span>
+                )}
+              </td>
             </tr>
           ))}
         </tbody>
       </table>
 
+      <p className="muted small">
+        Pass counts are totalled over the tasks every column was graded on, under the same <code>expect:</code> lines,
+        so the three read against each other. <span className="moved">*</span> marks a skill where that leaves out some
+        of its tasks — the skill's own page shows every row.
+      </p>
       <p className="muted small">
         Counts are runs, not records: a regrade re-reads one run's stored evidence against rewritten expect lines, and
         only the newest reading of a run is counted.

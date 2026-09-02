@@ -55,7 +55,8 @@ const Skill = () => {
       ) : (
         <p className="lede">
           Rewritten from <strong>{size(before!.lines, before!.words)}</strong> to{" "}
-          <strong>{size(after.lines, after.words)}</strong>, and both versions were put through the same tasks.
+          <strong>{size(after.lines, after.words)}</strong>
+          {comparison.comparable ? ", and both versions were put through the same tasks." : "."}
         </p>
       )}
 
@@ -96,13 +97,35 @@ const Skill = () => {
             </tr>
           ))}
           <tr className="total">
-            <th scope="row">total</th>
+            <th scope="row">
+              total{" "}
+              <span className="muted small">
+                {comparison.coverage.counted === comparison.coverage.total
+                  ? `all ${comparison.coverage.total} tasks`
+                  : `${comparison.coverage.counted} of ${comparison.coverage.total} tasks`}
+              </span>
+            </th>
             <td className="num">{formatCell(comparison.totals.noSkill)}</td>
             <td className="num">{formatCell(comparison.totals.before)}</td>
             <td className="num">{formatCell(comparison.totals.after)}</td>
           </tr>
         </tbody>
       </table>
+
+      {!comparison.comparable && (
+        <p className="note">
+          The two versions were never run on the same task — the newer one was benchmarked on work the older one never
+          saw. Each total is that version's own, and the two are not a before and after.
+        </p>
+      )}
+
+      {comparison.comparable && comparison.coverage.counted < comparison.coverage.total && (
+        <p className="muted small">
+          The total covers only the tasks every column was graded on, under the same{" "}
+          <code>expect:</code> lines. Rows left out of it are still shown above — added up they would be three
+          different measurements, not a comparison.
+        </p>
+      )}
 
       {moved && (
         <p className="muted small">
@@ -113,8 +136,8 @@ const Skill = () => {
 
       {between.length > 0 && (
         <p className="muted small">
-          {between.length} more measured {between.length === 1 ? "version" : "versions"} sit between these two and are
-          not shown above:{" "}
+          {between.length} more measured {between.length === 1 ? "version was" : "versions were"} benchmarked and
+          {between.length === 1 ? " is" : " are"} not shown above:{" "}
           {between.map(version => `${version.lines} lines (${version.runs} runs)`).join(", ")}.
         </p>
       )}
