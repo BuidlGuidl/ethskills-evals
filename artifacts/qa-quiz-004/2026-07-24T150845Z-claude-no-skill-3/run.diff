@@ -1,0 +1,92 @@
+diff --git a/answer.md b/answer.md
+new file mode 100644
+index 0000000..47e0e70
+--- /dev/null
++++ b/answer.md
+@@ -0,0 +1,83 @@
++# Mobile WalletConnect deep-linking on Stake
++
++## 1. Why nothing auto-opened before the patch
++
++On mobile the dApp runs in a browser tab and Rainbow is a **separate app**. There is no shared process, no injected `window.ethereum`. The WalletConnect v2 connection is a session over the WC **relay** (a websocket to a relay server). When you call `writeContractAsync`, wagmi asks the WalletConnect provider to send an `eth_sendTransaction` JSON-RPC request; that request is serialized, encrypted, and **published to the relay**, which pushes it to Rainbow. That part works — which is exactly why the request "is waiting inside" when the user switches manually.
++
++What is missing is **foregrounding the wallet app**. WC v2 sessions carry `peer.metadata.redirect` (a `native` scheme like `rainbow://` and/or a `universal` https link) precisely so the SDK can deep-link back to the wallet on each request. RainbowKit does attempt this. The reason it silently fails:
++
++- Mobile OSes (iOS especially) only allow a page to navigate to another app's scheme **inside a live user-activation (tap) context**.
++- `writeContractAsync` is **async**: it encodes args, estimates gas, and only then dispatches the RPC request over the relay. All of that happens *after* one or more `await`s.
++- By the time the redirect would fire, the user-activation from the "Stake" tap has already been **consumed / expired**, so the OS refuses the app switch.
++
++Net result: request delivered to Rainbow over the relay ✅, wallet never brought to the foreground ❌ → "tapping Stake does nothing, but the request is there if I open Rainbow myself."
++
++## 2. Why the patch made it worse
++
++```js
++window.location.href = "rainbow://"   // fires immediately on tap
++await writeContractAsync(...)          // request not sent yet
++```
++
++Two problems, both fatal:
++
++1. **Ordering / race.** The deep link fires *before* `writeContractAsync` has produced and published the `eth_sendTransaction` to the relay. Rainbow foregrounds to a home screen with **no pending request** — there is genuinely nothing to sign yet.
++2. **Backgrounding the dApp kills the send.** Navigating away suspends/throttles the browser tab's JS. The async work in `writeContractAsync` (gas estimation, relay publish) may stall or never complete, so the request often never even reaches the relay. Bare `rainbow://` also has no request path — it just opens the app home.
++
++So the patch converted "opens late/never, but request exists" into "opens instantly, request never exists."
++
++## 3. The correct pattern
++
++**Fire the request first, then deep-link after a short delay — do not await before linking.**
++
++```js
++async function onStake() {
++  if (!shouldDeepLink()) {            // see skip rules below
++    return writeContractAsync(txArgs);
++  }
++
++  const scheme = await getWalletScheme(); // from session metadata, not hardcoded
++
++  // 1. kick off the write — DON'T await it here
++  const txPromise = writeContractAsync(txArgs);
++
++  // 2. give WalletConnect time to publish the request to the relay,
++  //    then foreground the wallet
++  setTimeout(() => {
++    if (scheme) window.location.href = scheme;
++  }, 300);
++
++  return txPromise;
++}
++```
++
++**Ordering.** Start `writeContractAsync` *before* the deep link so the `eth_sendTransaction` is in flight to the relay. Do **not** `await` it before linking — the promise only resolves after the user signs, which is far too late to switch apps.
++
++**The delay and why its length matters.** The `setTimeout` must be:
++- **long enough** for the WC client to encode and publish the request over the relay (a network hop to the relay server — tens to low-hundreds of ms), so the request is already present/arriving when Rainbow comes forward;
++- **short enough** to still fire the app-switch while the tap's user activation is usable and before the browser fully suspends the tab.
++
++`~200–300 ms` is the practical sweet spot. `0` (the patch) opens before the request exists; multi-second delays lose the gesture and feel broken.
++
++**Which scheme to open.** `connector.id` is always the generic `"walletConnect"` — it tells you nothing about *which* wallet. Read the actual wallet from the **session peer metadata** instead of hardcoding `rainbow://`:
++
++```js
++async function getWalletScheme() {
++  const provider = await connector.getProvider();
++  const redirect = provider?.session?.peer?.metadata?.redirect;
++  // prefer universal (https) link — works whether or not the app is installed
++  // and avoids the "cannot open page" error a bad custom scheme throws
++  return redirect?.universal || redirect?.native || null;
++}
++```
++
++Use `redirect.universal` first, fall back to `redirect.native`. This makes it work for Rainbow, MetaMask mobile, Trust, etc. without a hardcoded map. If there is no `redirect`, don't guess a scheme — skip.
++
++**When to skip the deep link entirely:**
++- **Not WalletConnect.** Injected / browser-extension connectors (`connector.id !== "walletConnect"`, e.g. MetaMask extension, Coinbase Wallet extension) — the wallet is in-process; deep-linking would break the flow.
++- **Desktop.** No wallet app to foreground; the QR/modal handles it. Gate on mobile UA / touch.
++- **In-app browser.** The dApp is already running inside the wallet's own dApp browser (provider is injected, `isInAppBrowser`-style). The request surfaces automatically; a scheme switch is wrong/redundant.
++- **No redirect metadata available.** Unknown wallet with no `session.peer.metadata.redirect` — skip rather than guess.
++- **Smart-wallet / popup flows** (e.g. Coinbase Smart Wallet) that use their own popup/redirect mechanism.
++
++**Better still:** most of this is what RainbowKit's own request-time redirect already tries to do. Before adding manual deep-link code, upgrade RainbowKit/`@walletconnect` — the reliable long-term fix is keeping the SDK's built-in redirect working rather than racing it by hand. If you must patch manually, use the ordering + metadata-driven scheme + skip rules above.
+
+# Untracked files and status
+ A answer.md

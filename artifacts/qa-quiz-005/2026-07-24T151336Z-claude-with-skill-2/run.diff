@@ -1,0 +1,115 @@
+diff --git a/answer.md b/answer.md
+new file mode 100644
+index 0000000..e7a297c
+--- /dev/null
++++ b/answer.md
+@@ -0,0 +1,106 @@
++# Why production RPC traffic lands on `mainnet.base.org`
++
++## The exact chain
++
++**1. `NEXT_PUBLIC_RPC_URL` is a build-time constant, not a runtime read.**
++In Next.js, `process.env.NEXT_PUBLIC_*` references are not read from the
++environment at runtime. During `next build`, webpack's DefinePlugin does a
++static *textual* substitution: every occurrence of
++`process.env.NEXT_PUBLIC_RPC_URL` in the code is replaced with the literal
++string value that was present **in the build environment** at the moment
++`next build` ran. The value comes from the process env plus any
++`.env` / `.env.local` / `.env.production` files present in the repo at build
++time. If the var is unset at build time, the reference is inlined as the
++literal `undefined`.
++
++**2. The value that gets baked in differs between dev and prod.**
++- Developer machines have `.env.local` (gitignored, so it is *not* in the
++  repo or CI) containing `NEXT_PUBLIC_RPC_URL=<paid RPC>`. `next dev`/`next
++  build` inlines the paid URL → all dev traffic uses the paid RPC → no 429s.
++- The production build (CI / hosting build step) runs without that file and,
++  evidently, without the var set in its build env. So
++  `process.env.NEXT_PUBLIC_RPC_URL` inlines to `undefined`.
++
++**3. This is a static export on generic hosting — there is no runtime to fix it.**
++A static Next.js build has no Node server, so there is no runtime env
++injection. Whatever was baked at build time is frozen into the JS bundle the
++host serves. Setting the var in the host's runtime env panel does nothing.
++
++**4. So `rpcOverrides[base.id]` is `undefined` in the shipped bundle.**
++```ts
++rpcOverrides: { [chains.base.id]: undefined }   // as compiled into prod
++```
++
++**5. `wagmiConfig.tsx` then falls through to a bare `http()`.**
++In `client({ chain })`:
++```ts
++let rpcFallbacks = [http()];
++const rpcOverrideUrl = scaffoldConfig.rpcOverrides?.[chain.id]; // undefined
++if (rpcOverrideUrl) { ... }        // skipped
++else { /* alchemy override, none configured for Base → stays [http()] */ }
++transport: fallback(rpcFallbacks)  // fallback([http()])
++```
++`http()` called with **no URL argument** makes viem use the chain's default
++public endpoint, `chain.rpcUrls.default` — for Base that is
++`https://mainnet.base.org`.
++
++**6. Every production visitor hammers the public endpoint → 429.**
++Dev looked fine only because dev had the paid URL inlined; nobody noticed the
++prod bundle was built without it.
++
++## The one operational check that settles whether the fix is real
++
++**Inspect the deployed artifact, not the host's env settings.** Because the
++value is inlined at build time, the built bundle is the source of truth. After
++adding `NEXT_PUBLIC_RPC_URL` to the **build** environment and **rebuilding +
++redeploying**, verify against the live site:
++
++```bash
++# grep the deployed static JS for the hosts
++curl -s https://<your-site>/_next/static/chunks/*.js | grep -o 'mainnet\.base\.org'      # should be gone as primary
++curl -s https://<your-site>/_next/static/chunks/*.js | grep -o '<paid-rpc-host>'         # should appear
++```
++Equivalently: open the live site, watch the browser Network tab, and confirm
++the `eth_*` JSON-RPC POSTs go to the paid host, not `mainnet.base.org`.
++
++The point of the check: a fix applied in the host's *runtime* env is a no-op;
++only the presence of the paid host **inside the shipped bundle** proves the
++rebuild picked up the var. If the bundle still contains `mainnet.base.org` as
++the request target, the fix did not take.
++
++## The second, transport-level trap (survives fixing the env var)
++
++Even with the override correctly set, the transport is built as a **fallback
++with the bare public endpoint still wired in as the backup**:
++
++```ts
++if (rpcOverrideUrl) {
++  rpcFallbacks = [http(rpcOverrideUrl), http()];   // <-- second http() = public mainnet.base.org
++}
++...
++transport: fallback(rpcFallbacks)
++```
++
++viem's `fallback` transport automatically fails over to the **next** transport
++whenever the current one errors — and that includes your paid RPC returning
++429/5xx, timing out, or hiccuping under load. So the moment the paid endpoint
++is rate-limited or slow, requests silently spill onto `http()` →
++`mainnet.base.org`, producing exactly the 429s ops is seeing — now from the
++*fallback* path rather than the missing-override path. (If `rank` were enabled,
++viem would also periodically ping every endpoint, sending baseline traffic to
++the public RPC regardless of health.)
++
++**Fix:** for chains where you have a paid RPC, don't leave a bare public
++`http()` as the fallback — either drop it (`fallback([http(rpcOverrideUrl)])`)
++or make the fallback a second authenticated/paid endpoint. Otherwise the public
++RPC is never actually removed from the request path; it's just demoted.
++
++## Summary
++- Root cause: `NEXT_PUBLIC_RPC_URL` inlined as `undefined` because the prod
++  **build** ran without it; static export has no runtime to inject it later.
++  Missing override → bare `http()` → Base public RPC.
++- Definitive check: the paid host must appear in the **deployed bundle** /
++  live Network requests after a rebuild — runtime env changes don't count.
++- Second trap: `fallback([http(override), http()])` keeps the public RPC as an
++  auto-failover, so paid-RPC errors/timeouts still leak requests to
++  `mainnet.base.org`.
+
+# Untracked files and status
+ A answer.md

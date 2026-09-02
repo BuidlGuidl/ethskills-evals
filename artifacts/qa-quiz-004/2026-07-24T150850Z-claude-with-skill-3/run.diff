@@ -1,0 +1,137 @@
+diff --git a/answer.md b/answer.md
+new file mode 100644
+index 0000000..fb820bd
+--- /dev/null
++++ b/answer.md
+@@ -0,0 +1,128 @@
++# Mobile WalletConnect deep-linking on Scaffold-ETH 2 / RainbowKit
++
++## (1) Why nothing auto-opened before the patch
++
++The transaction request *did* reach Rainbow — that's why it's sitting there waiting when
++the user switches manually. What failed was **foregrounding the wallet**, and that is a
++separate thing from delivering the request.
++
++WalletConnect v2 is a **relay transport**, not an app switcher. When
++`writeContractAsync` runs, wagmi hands `eth_sendTransaction` to the WalletConnect
++connector, which serializes it and publishes it to the WC relay (a websocket relay
++network). Rainbow, subscribed to that session, receives it in the background. The relay
++does **not** and cannot force the wallet app to the foreground — the dApp is a web page
++in a mobile browser, and no web page can pull another app forward on its own.
++
++Bringing the wallet forward requires a **deep link** (`rainbow://`, or better a universal
++link). And mobile browsers — iOS Safari especially — only allow navigation to an app
++scheme while there is **transient user activation**: a live, recent user gesture (the tap).
++
++Here is the timing problem. The user taps "Stake". `writeContractAsync` is *async*: it
++simulates the call, estimates gas, fetches the nonce, builds the request, then publishes
++it over the relay. All of that is RPC round-trips. By the time the request is actually on
++the wire and RainbowKit/wagmi would fire the redirect, **the user-activation window from
++the tap has expired**, so the browser silently drops the navigation. On the *connect*
++step this doesn't happen, because RainbowKit fires the deep link synchronously inside the
++tap handler from its own modal — it's in the gesture loop. On a *subsequent signing
++request* the redirect is initiated from application code, after async work, outside the
++gesture. Result: request published fine, wallet never foregrounds → "tapping Stake does
++nothing."
++
++## (2) Why the patch made it worse
++
++```js
++window.location.href = "rainbow://";   // line 1 of the handler
++await writeContractAsync(...);         // line 2
++```
++
++Two independent failures, both caused by ordering:
++
++- **Nothing to sign, because the request doesn't exist yet.** The redirect fires *before*
++  `writeContractAsync` has built and published anything. Rainbow opens to its **home
++  screen** (bare `rainbow://` targets the app, not a signing screen) with an empty
++  session queue. There is genuinely nothing waiting.
++- **The request may never get published at all.** Navigating `window.location.href` away
++  begins tearing down / backgrounding the page. Mobile browsers throttle and suspend JS
++  in a backgrounded tab, so the `await writeContractAsync` that was supposed to run *after*
++  the redirect can stall or never complete — and it can interrupt the relay websocket
++  mid-publish. So the transaction never lands onchain.
++
++Before, the request reliably arrived and could at least be found by switching manually.
++The patch trades a foregrounding bug for a **correctness** bug: it races the app-switch
++against request creation and the request loses.
++
++## (3) The correct pattern
++
++Dispatch the request **first**, then foreground the wallet **after** the request is on the
++relay — and only when a deep link is actually appropriate.
++
++```tsx
++import { useAccount } from "wagmi";
++
++const { connector } = useAccount();
++
++async function handleStake() {
++  const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
++  const isWalletConnect = connector?.id === "walletConnect";
++
++  // Resolve the redirect target from the SESSION, not a hardcode (see below).
++  let target: string | undefined;
++  if (isMobile && isWalletConnect) {
++    const provider: any = await connector!.getProvider();
++    const redirect = provider?.session?.peer?.metadata?.redirect;
++    target = redirect?.universal || redirect?.native; // prefer universal link
++  }
++
++  // 1. Kick off the request FIRST — this is what publishes eth_sendTransaction.
++  const txPromise = writeContractAsync({ /* address, abi, functionName, args */ });
++
++  // 2. Foreground the wallet AFTER the request is on the wire.
++  if (target) {
++    setTimeout(() => { window.location.href = target!; }, 150);
++  }
++
++  await txPromise;
++}
++```
++
++**Ordering.** Request before redirect. The wallet must have something in its queue at the
++moment it comes to the foreground; that only holds if the publish happens first.
++
++**The delay and why its length matters.** `writeContractAsync` isn't synchronous — the
++`eth_sendTransaction` frame only hits the relay after gas estimation / nonce fetch /
++serialization. The delay exists to let that frame land before the app switches.
++- Too short (0 ms — the patch): wallet foregrounds to an empty session. This is exactly
++  the bug above.
++- Too long: you risk exceeding the browser's transient-activation window (~a few seconds
++  on iOS), after which the navigation is blocked; and the UX lags.
++- ~**100–300 ms** is the practical window: long enough for a single websocket publish
++  after local prep, short enough to stay inside user activation. It's a pragmatic
++  heuristic, not a guarantee — on a slow RPC the publish can outrun a fixed delay, which is
++  why modern RainbowKit/wagmi wire the redirect to the *provider's own request/display
++  event* rather than a timer. If you're on a recent RainbowKit + wagmi/WC v2, prefer
++  letting it handle the redirect and don't hand-roll this at all.
++
++**Which scheme to open.** `connector.id === "walletConnect"` for **every** wallet reached
++over WalletConnect — Rainbow, MetaMask, Trust, Zerion, all of them. It tells you the
++*transport*, never the *wallet*. So `rainbow://` is wrong the moment a MetaMask user taps
++Stake. Read the target from the connected session instead:
++`provider.session.peer.metadata.redirect` — the wallet supplies its own `native` and
++`universal` links at connect time. **Prefer `universal`** (an https link like Rainbow's
++`https://rnbwapp.com`): universal links won't dead-end if the app is missing, and iOS
++handles them more reliably than custom schemes.
++
++**When to skip the deep link entirely:**
++- **Not WalletConnect** — `injected` / browser-extension / in-app-browser connectors
++  (MetaMask or Coinbase in-app browser, where the wallet *is* the browser). No app switch
++  exists; navigating away just breaks the page.
++- **Desktop** — extension or QR flow; a deep link does nothing useful and can navigate the
++  user off the dApp.
++- **No redirect metadata in the session** — unknown wallet, no reliable scheme to open;
++  guessing one produces "cannot open" and a dead end.
++- **No transient user activation** — anything not driven by a direct tap (auto-retry,
++  timer-triggered send) will be blocked anyway; don't attempt it.
++
++**Unresolved questions**
++- Which RainbowKit / wagmi versions is the dApp pinned to? If recent, the manual redirect
++  may be redundant (or conflict with the built-in one) and the real fix is to remove the
++  teammate's patch, not replace it.
+
+# Untracked files and status
+ A answer.md
