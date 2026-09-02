@@ -4,7 +4,7 @@ import { access, cp, mkdir, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import yaml from "js-yaml";
-import { loadTaskSpec, parseArgs, requireString } from "../lib/task.js";
+import { inputSha, loadTaskSpec, parseArgs, requireString } from "../lib/task.js";
 import type { Executor, ResultRecord, Variant } from "../lib/types.js";
 import { WORKSPACE_MANIFEST, WORKSPACE_POINTER, copyTree, pruneEmptyParent, removeTree, seedWorkspaceRepo, workspaceRoot } from "../lib/workspace.js";
 
@@ -139,6 +139,14 @@ const main = async () => {
     const run = requireString(args.run, "--run");
     const taskPath = resolveRootPath(taskArg);
     const spec = loadTaskSpec(taskPath);
+
+    // A retired spec's notes say why it was retired, and its stored grades were produced under
+    // wording it no longer carries. Building a workspace for one would draw a fresh sample that
+    // cannot be tabled beside those grades, so refuse before anything is written.
+    if (spec.status === "retired") {
+      await fail(`task is retired: ${spec.id} — see its notes; retired tasks keep their artifacts but are not run again`);
+    }
+
     const timestamp = utcRunTimestamp(new Date());
     const runId = `${timestamp}-${executor}-${variant.replaceAll("_", "-")}-${run}`;
     const runDir = path.join(ROOT, "artifacts", spec.id, runId);
@@ -195,6 +203,7 @@ const main = async () => {
         executor,
         variant,
         skill_version: skillVersion,
+        input_sha: inputSha(spec.input),
         created: new Date().toISOString(),
       };
 

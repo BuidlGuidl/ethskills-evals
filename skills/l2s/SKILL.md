@@ -54,7 +54,7 @@ description: Ethereum Layer 2 landscape — Arbitrum, Optimism, Base, zkSync, Sc
 
 ## L2 Selection Guide
 
-> **Before choosing an L2:** Mainnet is ~$0.004/transfer, ~$0.04/swap at current gas — cheap enough for most apps. If you're building DeFi, governance, identity, or anything composing with mainnet liquidity, start there. See `ship/SKILL.md` and `gas/SKILL.md` for the full chain selection framework.
+> **Before choosing an L2:** Mainnet may fit apps that prioritize its liquidity and trust model. See `ship/SKILL.md` for the product-fit decision and `gas/SKILL.md` for current cost measurement; do not rely on remembered fee quotes.
 
 | Need | Choose | Why |
 |------|--------|-----|
