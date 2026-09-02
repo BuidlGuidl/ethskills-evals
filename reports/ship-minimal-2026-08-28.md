@@ -16,15 +16,17 @@ and ran `git init` there. That nested boundary is what stopped `git status` from
 resolving to the eval repo, which closes the August 24 leak — but it stops only
 git. Sibling run dirs, whose names carry `-with-skill-` / `-no-skill-`, and
 `tasks/` with its expect lines stayed reachable by a plain `ls`, since no marker
-stops one. Reading the 30 committed transcripts, two runs did step above the
-workspace, both with `find .. -name AGENTS.md`
-(`ship-quiz-001/…no-skill-2`, `ship-quiz-002/…no-skill-2`); both printed
-nothing, so no sibling name or expect line reached an executor. No run listed a
-parent directory. The out-of-tree workspace root that removes the residual
-exposure landed on this branch with the merge at `218931d`, after these runs.
+stops one. Reading the 30 committed transcripts, three runs did step above the
+workspace: `ship-quiz-001/…no-skill-2` and `ship-quiz-002/…no-skill-2` with
+`find .. -name AGENTS.md`, and `ship-quiz-003/…with-skill-2` with
+`rg --files -g 'AGENTS.md' -g '!node_modules' -g '!vendor' . ..`. All three
+printed nothing — `..` is the run directory, which holds only the workspace —
+so no sibling name or expect line reached an executor, on either variant. No
+run went higher than that. The out-of-tree workspace root that removes the
+residual exposure landed on this branch with the merge at `218931d`, after these runs.
 
 `verify` retained both `run.diff` and `output/` for all 30 runs and then deleted
-the workspaces. The quiz `output/answer.md` files are committed as the graded
+the workspaces. The quiz `output/plan.md` files are committed as the graded
 deliverable; the goal runs' `output/` trees are not, per AGENTS.md — their
 `run.diff` carries the same files.
 
