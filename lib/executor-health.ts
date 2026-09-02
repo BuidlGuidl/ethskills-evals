@@ -53,6 +53,11 @@ export const SHELL_FAILURES: Record<Executor, ShellFailure[]> = {
 // the first one is the run talking, not the harness. The cost is a shell that dies after
 // working for a while, which no run has shown; the alternative is a false refusal that this
 // repo's own test suite guarantees.
+//
+// This leans on codex's current output shape, and nothing in CI pins it there. The failure
+// is quiet: if "succeeded in <n>ms" ever shows up earlier for some other reason, the scan
+// window closes before the signature and the guard switches off rather than erroring. If
+// you are editing this line, check a fresh capture rather than trusting the regex.
 const SHELL_ALIVE = /\bsucceeded in \d/;
 
 const beforeFirstSuccess = (captured: string) => {
