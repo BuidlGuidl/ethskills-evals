@@ -1,8 +1,9 @@
+import { PatchDiff } from "@pierre/diffs/react";
 import { useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { compareSkill, formatCell } from "../lib/compare.js";
 import { useIndex } from "../lib/data.js";
-import { alignedDiff } from "../lib/diff.js";
+import { patchBetween } from "../lib/diff.js";
 import { NO_SHARED_TASKS, PARTIAL_COVERAGE, RUBRIC_MOVED } from "../lib/notes.js";
 
 const size = (lines: number, words: number) => `${lines} lines / ${words} words`;
@@ -18,14 +19,14 @@ const Skill = () => {
     [skill, index],
   );
 
-  const rows = useMemo(() => {
-    if (comparison?.before == null) {
-      return [];
+  const patch = useMemo(() => {
+    const target = comparison?.after ?? comparison?.current ?? null;
+
+    if (comparison?.before == null || target === null || target.id === comparison.before.id) {
+      return null;
     }
 
-    const target = comparison.after ?? comparison.current;
-
-    return target === null || target.id === comparison.before.id ? [] : alignedDiff(comparison.before.text, target.text);
+    return patchBetween(comparison.before, target);
   }, [comparison]);
 
   if (skill === null || comparison === null) {
@@ -174,22 +175,25 @@ const Skill = () => {
               {showDiff ? "hide" : "show"}
             </button>
           </h2>
-          {showDiff && (
+          {showDiff && patch !== null && (
             <>
-              <div className="cols">
-                <div className="colhead">before — {before ? size(before.lines, before.words) : "—"}</div>
-                <div className="colhead">
-                  {after === null ? "in the repo now" : "after"} — {size(right.lines, right.words)}
-                </div>
-              </div>
-              <div className="diff">
-                {rows.map((row, position) => (
-                  <div className={`drow ${row.state}`} key={position}>
-                    <pre className={row.left === null ? "gap" : ""}>{row.left ?? ""}</pre>
-                    <pre className={row.right === null ? "gap" : ""}>{row.right ?? ""}</pre>
-                  </div>
-                ))}
-              </div>
+              <p className="footnote">
+                Left: {before ? size(before.lines, before.words) : "—"}. Right:{" "}
+                {after === null ? "the file in the repo now" : "the version measured after the rewrite"},{" "}
+                {right !== null ? size(right.lines, right.words) : "—"}. Unchanged stretches are collapsed.
+              </p>
+                <PatchDiff
+                patch={patch}
+                className="patch"
+                options={{
+                  diffStyle: "split",
+                  lineDiffType: "word",
+                  overflow: "scroll",
+                  disableFileHeader: true,
+                  expandUnchanged: false,
+                  theme: { light: "github-light", dark: "github-dark" },
+                }}
+              />
             </>
           )}
         </>
