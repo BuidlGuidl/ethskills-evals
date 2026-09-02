@@ -1,4 +1,5 @@
 import { Link } from "react-router-dom";
+import Marker from "../components/Marker.js";
 import { formatCell, summarize } from "../lib/compare.js";
 import { useIndex } from "../lib/data.js";
 import { NO_SHARED_TASKS, PARTIAL_COVERAGE } from "../lib/notes.js";
@@ -53,9 +54,7 @@ const Summary = () => {
               <td className="num">
                 {formatCell(row.after)}
                 {row.afterVersion !== null && (!row.comparable || row.coverage.counted < row.coverage.total) && (
-                  <span className="moved" title={row.comparable ? PARTIAL_COVERAGE : NO_SHARED_TASKS}>
-                    {" *"}
-                  </span>
+                  <Marker symbol="*" note={row.comparable ? PARTIAL_COVERAGE : NO_SHARED_TASKS} />
                 )}
               </td>
             </tr>

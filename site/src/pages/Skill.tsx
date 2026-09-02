@@ -1,4 +1,5 @@
 import { PatchDiff } from "@pierre/diffs/react";
+import Marker from "../components/Marker.js";
 import { useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { compareSkill, formatCell } from "../lib/compare.js";
@@ -89,19 +90,11 @@ const Skill = () => {
               <td className="num">{formatCell(row.noSkill)}</td>
               <td className="num">
                 {formatCell(row.before)}
-                {row.rubricMoved && (
-                  <span className="moved" title={RUBRIC_MOVED}>
-                    {" ‡"}
-                  </span>
-                )}
+                {row.rubricMoved && <Marker symbol="‡" note={RUBRIC_MOVED} />}
               </td>
               <td className="num">
                 {formatCell(row.after)}
-                {row.rubricMoved && (
-                  <span className="moved" title={RUBRIC_MOVED}>
-                    {" ‡"}
-                  </span>
-                )}
+                {row.rubricMoved && <Marker symbol="‡" note={RUBRIC_MOVED} />}
               </td>
             </tr>
           ))}
