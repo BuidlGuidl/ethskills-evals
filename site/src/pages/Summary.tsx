@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import { formatCell, summarize } from "../lib/compare.js";
 import { useIndex } from "../lib/data.js";
+import { NO_SHARED_TASKS, PARTIAL_COVERAGE } from "../lib/notes.js";
 
 const Summary = () => {
   const index = useIndex();
@@ -52,7 +53,9 @@ const Summary = () => {
               <td className="num">
                 {formatCell(row.after)}
                 {row.afterVersion !== null && (!row.comparable || row.coverage.counted < row.coverage.total) && (
-                  <span className="moved">{" *"}</span>
+                  <span className="moved" title={row.comparable ? PARTIAL_COVERAGE : NO_SHARED_TASKS}>
+                    {" *"}
+                  </span>
                 )}
               </td>
             </tr>
@@ -60,13 +63,13 @@ const Summary = () => {
         </tbody>
       </table>
 
-      <p className="muted small">
-        Pass counts are totalled over the tasks every column was graded on, under the same <code>expect:</code> lines,
-        so the three read against each other. <span className="moved">*</span> marks a skill where that leaves out some
-        of its tasks — the skill's own page shows every row.
+      <p className="footnote">
+        <strong className="moved">*</strong> {PARTIAL_COVERAGE} Hover the mark on a row, or open the skill, to see
+        which tasks that leaves.
       </p>
-      <p className="muted small">
-        Counts are runs, not records: a regrade re-reads one run's stored evidence against rewritten expect lines, and
+      <p className="footnote">
+        Pass counts are totalled over the tasks both versions ran, so the three columns read against each other. Counts
+        are runs rather than records: a regrade re-reads one run's stored evidence against rewritten expect lines, and
         only the newest reading of a run is counted.
       </p>
     </>

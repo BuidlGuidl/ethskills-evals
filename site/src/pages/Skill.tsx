@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { compareSkill, formatCell } from "../lib/compare.js";
 import { useIndex } from "../lib/data.js";
 import { alignedDiff } from "../lib/diff.js";
+import { NO_SHARED_TASKS, PARTIAL_COVERAGE, RUBRIC_MOVED } from "../lib/notes.js";
 
 const size = (lines: number, words: number) => `${lines} lines / ${words} words`;
 
@@ -87,11 +88,19 @@ const Skill = () => {
               <td className="num">{formatCell(row.noSkill)}</td>
               <td className="num">
                 {formatCell(row.before)}
-                {row.rubricMoved && <span className="moved">{" ‡"}</span>}
+                {row.rubricMoved && (
+                  <span className="moved" title={RUBRIC_MOVED}>
+                    {" ‡"}
+                  </span>
+                )}
               </td>
               <td className="num">
                 {formatCell(row.after)}
-                {row.rubricMoved && <span className="moved">{" ‡"}</span>}
+                {row.rubricMoved && (
+                  <span className="moved" title={RUBRIC_MOVED}>
+                    {" ‡"}
+                  </span>
+                )}
               </td>
             </tr>
           ))}
@@ -112,30 +121,23 @@ const Skill = () => {
       </table>
 
       {!comparison.comparable && (
-        <p className="note">
-          The two versions were never run on the same task — the newer one was benchmarked on work the older one never
-          saw. Each total is that version's own, and the two are not a before and after.
-        </p>
+        <p className="note">{NO_SHARED_TASKS}</p>
       )}
 
       {comparison.comparable && comparison.coverage.counted < comparison.coverage.total && (
-        <p className="muted small">
-          The total covers only the tasks every column was graded on, under the same{" "}
-          <code>expect:</code> lines. Rows left out of it are still shown above — added up they would be three
-          different measurements, not a comparison.
+        <p className="footnote">
+          <strong className="moved">*</strong> {PARTIAL_COVERAGE}
         </p>
       )}
 
       {moved && (
-        <p className="muted small">
-          ‡ the task's <code>expect:</code> lines were rewritten between the two runs, so those two cells were graded
-          by different rules and are not a comparison — read them per column. On those rows the unaided cell is the one
-          graded on the <em>newer</em> version's expect lines, so it faces the new skill and not the old one.
+        <p className="footnote">
+          <strong className="moved">‡</strong> {RUBRIC_MOVED}
         </p>
       )}
 
       {between.length > 0 && (
-        <p className="muted small">
+        <p className="footnote">
           {between.length} more measured {between.length === 1 ? "version was" : "versions were"} benchmarked and
           {between.length === 1 ? " is" : " are"} not shown above:{" "}
           {between.map(version => `${version.lines} lines (${version.runs} runs)`).join(", ")}.

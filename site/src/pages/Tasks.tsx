@@ -1,9 +1,19 @@
-import { Link } from "react-router-dom";
+import { useEffect } from "react";
+import { Link, useLocation } from "react-router-dom";
 import { countRuns, formatCell, tally } from "../lib/compare.js";
 import { useIndex } from "../lib/data.js";
 
 const Tasks = () => {
   const index = useIndex();
+  const { hash } = useLocation();
+
+  // A hash arriving with the navigation scrolls nothing on its own: the element it names is
+  // rendered by this component, so it does not exist yet when the browser looks for it.
+  useEffect(() => {
+    if (hash.length > 1) {
+      document.getElementById(decodeURIComponent(hash.slice(1)))?.scrollIntoView({ block: "start" });
+    }
+  }, [hash]);
   const bySkill = [...new Set(index.tasks.map(task => task.skill))].sort();
 
   return (
@@ -19,7 +29,7 @@ const Tasks = () => {
         const tasks = index.tasks.filter(task => task.skill === skill).sort((a, b) => a.id.localeCompare(b.id));
 
         return (
-          <section key={skill} id={skill}>
+          <section key={skill} id={skill} className="anchored">
             <h2>
               <Link to={`/skill/${skill}`}>{skill}</Link>
             </h2>
