@@ -1,6 +1,6 @@
 # eval: minimal gas (codex)
 
-**Skill:** `skills/gas` at `9eeb31c` (36 lines, 256 words)
+**Skill:** `skills/gas` at `2bd2e9e` (36 lines, 256 words)
 
 **Tasks:** `gas-goal-001`, then `gas-goal-002` · **Executor:** codex, CLI default model · **Judge:** codex, CLI default model · **Runs:** 3 per variant per task
 **Date:** 2026-08-10 · **Trigger:** content-only
