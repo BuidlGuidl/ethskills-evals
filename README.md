@@ -46,7 +46,7 @@ ethskills-evals/
 │                                (workspaces live outside the repo, under ~/.cache/)
 ├─ mistakes/                     mistake records mined from failures
 ├─ reports/                      markdown comparisons per benchmark
-└─ templates/                    workspace seeds (gitignored; tasks record how to regenerate)
+└─ templates/                    workspace seeds (committed; templates/README.md has the recipes)
 
 # there is no runner. the orchestrator is
 # whatever agent you happen to open here
