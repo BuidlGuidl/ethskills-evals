@@ -61,7 +61,7 @@ Runs are append-only. A re-run after a patch is a new run id, never an overwrite
 yarn run-executor --run artifacts/<id>/<run-id> --model <model>
 ```
 
-The script builds the executor's command, so the flags that matter cannot be forgotten: `--setting-sources project` for claude (user-level config crowds the skill listing and skills stop triggering), and for codex `sandbox_workspace_write.network_access=true` (`workspace-write` blocks network by default, so without it every live-data task fails for the wrong reason) plus `--disable shell_snapshot` (codex otherwise sources a snapshot of the operator's interactive shell into every command; one unparseable line in it takes the executor's shell down for the whole run, and a run that cannot open a file grades as a skill that did not help). Omit `--model` to let the CLI pick its own default; whatever ran is recorded in `executor.yaml` and copied into `result.yaml`.
+The script builds the executor's command, so the flags that matter cannot be forgotten: `--setting-sources project` for claude (user-level config crowds the skill listing and skills stop triggering), and for codex `sandbox_workspace_write.network_access=true` (`workspace-write` blocks network by default, so without it every live-data task fails for the wrong reason) plus `--disable shell_snapshot` (codex otherwise dumps the operator's interactive shell functions and aliases into a snapshot and sources it ahead of every command; one line in it that does not re-parse takes the executor's shell down for the whole run, and a run that cannot open a file grades as a skill that did not help). The codex flag is the narrower of the two: codex still runs every command through `/bin/bash -lc`, so `/etc/profile` and the operator's `~/.bash_profile` are sourced with it on — it removes the snapshot, not the login shell. It does not fail open either: an unrecognised feature name exits 1 before the run starts, and `verify` refuses a non-zero exit, so a codex rename surfaces as a dead run rather than as a flag that quietly stopped applying. Omit `--model` to let the CLI pick its own default; whatever ran is recorded in `executor.yaml` and copied into `result.yaml`.
 
 It writes `<run-dir>/transcript.md` beside the raw capture, and `<run-dir>/executor.yaml` with `started`, `finished`, `exit`. A run whose `finished` is still null was killed — including by Ctrl-C, which leaves the record untouched on purpose: it is a dead run, not a zero. Delete it and set up a new one. A run that finished with a non-zero exit is refused by `verify` unless you pass `--grade-failed-run`, so a CLI that was missing or crashed cannot be recorded as a model failure.
 
@@ -134,6 +134,8 @@ To force the trigger, prepend one line to the spawn prompt (`Use the <name> skil
 ## Records
 
 `artifacts/<task-id>/<run-id>/result.yaml`, one per run. `setup` writes the top half, `verify` the rest.
+
+`skill_version` is the repo's HEAD at setup time, not a hash of the skill, so it only identifies the text as long as that commit stays reachable. A rebase, an amend or a squash-merge orphans it and the run stops being able to say what it was given. Before a branch merges, check every `skill_version` it adds with `git merge-base --is-ancestor <sha> HEAD`; where one is unreachable, restamp it to a reachable commit whose `skills/<name>/SKILL.md` blob is byte-identical (`git rev-parse <sha>:skills/<name>/SKILL.md`) and say so in the report. Restamping to a commit with different text is falsifying the record.
 
 ```yaml
 task: gas-cost-estimate-001

@@ -6,6 +6,7 @@ import process from "node:process";
 import { finished } from "node:stream/promises";
 import yaml from "js-yaml";
 import { loadYamlFile, parseArgs, requireString } from "../lib/task.js";
+import { buildCommand } from "../lib/executor-command.js";
 import { buildTranscript } from "../lib/transcript.js";
 import { buildUsage } from "../lib/usage.js";
 import type { Executor, ExecutorRecord } from "../lib/types.js";
@@ -21,49 +22,6 @@ const parseExecutor = (value: string): Executor => {
   }
 
   return value as Executor;
-};
-
-// `--setting-sources project` is load-bearing for claude: user-level config crowds the
-// skill listing and skills stop triggering. For codex the model comes from
-// ~/.codex/config.toml unless -m overrides it, and the network flag is load-bearing too:
-// workspace-write blocks network by default, so without it every live-data task fails for
-// the wrong reason. Both take the prompt on stdin — TASK.md can outgrow the argv limit.
-const buildCommand = (executor: Executor, model: string | null) => {
-  if (executor === "claude") {
-    const args = ["-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN", "claude", "-p"];
-
-    if (model) {
-      args.push("--model", model);
-    }
-
-    args.push(
-      "--setting-sources", "project",
-      "--dangerously-skip-permissions",
-      "--strict-mcp-config",
-      "--output-format", "stream-json",
-      "--verbose",
-    );
-
-    return { file: "env", args };
-  }
-
-  // --disable shell_snapshot for the same reason claude gets --setting-sources project: the
-  // executor's shell must not be the operator's. codex otherwise snapshots the interactive
-  // shell's functions and aliases and sources that into every command, so whatever is in the
-  // operator's rc files rides into the run — and a single unparseable line in it takes the
-  // whole shell down. Seen on 2026-08-27: a snapshot that failed to re-parse ("syntax error
-  // near unexpected token `('", from extglob patterns `declare -f` dumps without the shopt
-  // that made them legal) left a with_skill run unable to read its own installed skill, which
-  // grades as a skill that did not help rather than as a broken run.
-  const args = ["exec", "--disable", "shell_snapshot", "-s", "workspace-write", "-c", "sandbox_workspace_write.network_access=true"];
-
-  if (model) {
-    args.push("-m", model);
-  }
-
-  args.push("-");
-
-  return { file: "codex", args };
 };
 
 const writeRecord = async (recordPath: string, record: ExecutorRecord) =>
