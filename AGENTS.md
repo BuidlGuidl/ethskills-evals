@@ -25,7 +25,7 @@ Then write `tasks/<id>.yaml` and run the loop. Report back at the end, not durin
 
 The skills under `skills/` are vendored at a pinned commit, and a task spec may already exist under `tasks/`. When it does:
 
-1. Ask exactly one question: the stack. Detect which harness you are running on and propose running everything on it — executor and judge both (claude → opus, codex → the model in `~/.codex/config.toml`). One skill runs on one stack, start to finish. A second stack is a separate benchmark with its own runs and report, never blended into one table.
+1. Ask exactly one question: the stack. Detect which harness you are running on and propose running everything on it — executor and judge both (claude → opus, codex → the model the harness reads out of `~/.codex/config.toml` and passes explicitly, see "The three roles"). One skill runs on one stack, start to finish. A second stack is a separate benchmark with its own runs and report, never blended into one table.
 2. Run the loop as written, grading every run with `--judge-agent <your agent> --judge-model <your model>`.
 3. File the results PR titled `eval: <skill> (<stack>)`, report included.
 
@@ -41,6 +41,12 @@ The skills under `skills/` are vendored at a pinned commit, and a task spec may 
 8. Recommend skill edits only where a mistake record shows a real gap.
 
 Runs are append-only. A re-run after a patch is a new run id, never an overwrite.
+
+**Editing an expect line is the one exception**, and it is still not an overwrite — see
+"Revising expect lines" below. A rubric fix is not a new measurement, so re-running the
+executor to answer it pays for the wrong thing, and paying it is what makes editing a
+task's `input` look cheaper than editing its `expect`, which is the more destructive of
+the two.
 
 ## Hard rules
 
@@ -61,9 +67,13 @@ Runs are append-only. A re-run after a patch is a new run id, never an overwrite
 yarn run-executor --run artifacts/<id>/<run-id> --model <model>
 ```
 
-The script builds the executor's command, so the flags that matter cannot be forgotten: `--setting-sources project` for claude (user-level config crowds the skill listing and skills stop triggering), and for codex `sandbox_workspace_write.network_access=true` (`workspace-write` blocks network by default, so without it every live-data task fails for the wrong reason) plus `--disable shell_snapshot` (codex otherwise dumps the operator's interactive shell functions and aliases into a snapshot and sources it ahead of every command; one line in it that does not re-parse takes the executor's shell down for the whole run, and a run that cannot open a file grades as a skill that did not help). The codex flag is the narrower of the two: codex still runs every command through `/bin/bash -lc`, so `/etc/profile` and the operator's `~/.bash_profile` are sourced with it on — it removes the snapshot, not the login shell. It does not fail open either: an unrecognised feature name exits 1 before the run starts, and `verify` refuses a non-zero exit, so a codex rename surfaces as a dead run rather than as a flag that quietly stopped applying. Omit `--model` to let the CLI pick its own default; whatever ran is recorded in `executor.yaml` and copied into `result.yaml`.
+The script builds the executor's command, so the flags that matter cannot be forgotten: `--setting-sources project` for claude (user-level config crowds the skill listing and skills stop triggering), and for codex `sandbox_workspace_write.network_access=true` (`workspace-write` blocks network by default, so without it every live-data task fails for the wrong reason) plus `--disable shell_snapshot` (codex otherwise sources a snapshot of the operator's interactive shell into every command; one unparseable line in it takes the executor's shell down for the whole run, and a run that cannot open a file grades as a skill that did not help) and `--ephemeral` (the codex home below is shared by every run on the machine, and without it each run's session log lands there for the next run to find). The codex judge carries both flags too. The same exposure on the claude side is still open: `--setting-sources project` governs settings-file discovery only, and claude snapshots the operator's shell the same way. Two limits on that codex flag worth stating: it removes the snapshot, not the login shell — codex still runs every command through `/bin/bash -lc`, so `/etc/profile` and the operator's `~/.bash_profile` are sourced with it on — and it does not fail open, because an unrecognised feature name exits 1 before the run starts and `verify` refuses a non-zero exit, so a codex rename surfaces as a dead run rather than as a flag that quietly stopped applying.
 
-It writes `<run-dir>/transcript.md` beside the raw capture, and `<run-dir>/executor.yaml` with `started`, `finished`, `exit`. A run whose `finished` is still null was killed — including by Ctrl-C, which leaves the record untouched on purpose: it is a dead run, not a zero. Delete it and set up a new one. A run that finished with a non-zero exit is refused by `verify` unless you pass `--grade-failed-run`, so a CLI that was missing or crashed cannot be recorded as a model failure.
+Codex also runs with `CODEX_HOME` pointed at `.codex-home/` in this repo, built by `lib/codex-home.ts`: the harness puts a generated `config.toml` and a symlink to the operator's `auth.json` there, and nothing of the operator's beyond that. Flags do not cover this: `--ignore-user-config` drops `config.toml` alone, while `~/.codex/skills`, `plugins/`, `rules/` and `memories` load by directory discovery, so an operator with a global codex skill on the task's subject contaminates the `no_skill` variant and nothing in the record shows it. Codex fills the rest of the dir in itself as it runs — its own bundled skills, plugin cache and state dbs — which is machine-local and the same for every operator, and `--ephemeral` keeps run content (`sessions/`, `history.jsonl`) out of it so one run's skill text cannot reach the next one. The judge runs under the same home. Delete `.codex-home/` any time; the next run rebuilds it.
+
+Omit `--model` to let the CLI pick its own default; whatever ran is recorded in `executor.yaml` and copied into `result.yaml`. For codex that default is now the harness's business: since the redirect means codex reads no `~/.codex/config.toml`, `run-executor` and `verify` read the operator's top-level `model =` out of it themselves and pass it on the command line, so the model in the record is the model that ran. The operator's top-level `model_reasoning_effort =` travels the same way, on argv and into `executor.yaml` as `reasoning_effort`, because it moves the answer as much as the model does and a benchmark cannot straddle a silent change to it. A value set only under a `[profile]` table is not picked up — the harness says so and records `null` rather than naming a setting the run never used.
+
+It writes `<run-dir>/transcript.md` beside the raw capture, and `<run-dir>/executor.yaml` with `started`, `finished`, `exit`. A run whose `finished` is still null was killed — including by Ctrl-C, which leaves the record untouched on purpose: it is a dead run, not a zero. Delete it and set up a new one. A run that finished with a non-zero exit is refused by `verify` unless you pass `--grade-failed-run`, so a CLI that was missing or crashed cannot be recorded as a model failure. The same refusal covers the runs the exit code cannot see: `executor.err` is scanned for the signatures of an executor that had no working shell (`Shell snapshot validation failed`, `bwrap:`), because those exit 0 and read as a model that chose not to look at anything. `run-executor` scans first and exits non-zero itself, so the loop stops on the run that broke rather than on the `verify` two steps later; `verify` scans again for runs launched by hand. Only the executor's own signatures are matched, and only up to its first successful command — past that the capture is the run's output, and this repo's own files hold both signatures verbatim. `--grade-failed-run` overrides both refusals and writes `harness_failure:` into `result.yaml` so a run graded over one is never mistaken for a clean one. Add a signature to `SHELL_FAILURES` in `lib/executor-health.ts` whenever a new way of losing the shell turns up.
 
 `transcript.md` means the same thing on both stacks, which takes assembling: claude streams the whole session as stream-json on stdout, while codex writes the session log to stderr and leaves only the final message on stdout. Mine transcripts from `transcript.md` alone; the raw streams beside it are gitignored.
 
@@ -82,12 +92,22 @@ Omit `--judge-model` to let that agent's CLI pick its own default. Keep one judg
 When you change a task's `expect:` lines after runs exist, the question is whether the new wording grades the same answers differently. Re-running executors answers a different question, because it changes the grading surface and draws fresh samples at once.
 
 ```bash
-yarn verify --run artifacts/<id>/<run-id> --regrade --judge-agent claude --judge-model <model>
+yarn verify --run artifacts/<id>/<run-id> --regrade --reason "<what changed in the rubric and why>" \
+  --judge-agent claude --judge-model <model>
 ```
 
-`--regrade` re-judges a run's stored evidence (`run.diff`, `output/`) against the task spec as it stands now. It never re-executes, never touches the source run dir, and writes `<run-id>-regrade-<n>/result.yaml` with `regrade_of` naming the run it re-read. Grade every run of the task, not the failures only — a wording change that flips a fail to a pass usually flips something the other way too. Hold the judge fixed at whatever graded the run originally; changing the wording and the judge together tells you nothing about either. A regrade is a second reading of one run, never a second run: never add it to a pass tally beside its source.
+`--regrade` re-judges a run's stored evidence (`run.diff`, `output/`) against the task spec as it stands now. It never re-executes, never touches the source run dir, and writes `<run-id>-regrade-<n>/result.yaml` with `regrade_of` naming the run it re-read and `regrade_reason` saying why. Grade every run of the task, not the failures only — a wording change that flips a fail to a pass usually flips something the other way too. Hold the judge fixed at whatever graded the run originally; changing the wording and the judge together tells you nothing about either. A regrade is a second reading of one run, never a second run: never add it to a pass tally beside its source.
+
+It refuses a run that was never graded, a graded run without the flag, a regrade with no stated reason, and — the one that decides whether any of this works — evidence git does not track. Two fields make a mixed rubric visible rather than something a reader reconstructs from git log:
+
+- `expect_sha` fingerprints the expect list a grade was made against, and is written on every grade, first or re-reading. Runs are comparable only where it matches; a grade written before the field existed shows it as absent, which means "unknown, probably an older rubric". A regrade dir and its source disagreeing on it is the normal case — that disagreement is the regrade's whole point.
+- `retracted: <reason>` marks a grade that measures the harness rather than the model — a killed CLI, or a deliverable that never reached the judge. It is carried into a regrade of that run, because the deliverable did not reappear. Keep the record and exclude it from the counts in the report, saying so; deleting it hides that the run happened.
+
+**A source run's `result.yaml` does not know it was regraded.** The pointer runs one way — `regrade_of` names the source, nothing in the source names the regrade — so a reader who opens the run dir, or a tool that walks `artifacts/*/*/result.yaml`, sees the superseded grade with nothing marking it stale. `run-stats` skips `-regrade-` dirs for its cost tables, which is right (a regrade spawned no executor and has no cost), and it never reads `pass` at all. Pass tallies are read by hand, so the report is the only thing that can say which reading a table is on. Say it, and name the regrade dirs.
 
 The evidence a regrade re-reads is committed — `run.diff` for template-seeded runs, a force-added `output/` for the question-shaped ones — so it works from any clone that has the run dir. Where `output/` was left ignored, which is the default for a bare task that snapshots a whole scaffold, the evidence exists only on the machine that made the run: regrade there, and commit the records.
+
+**Rewording `input:` is not a wording change a regrade can absorb.** The judge is sent the task input as it stands now, so a regrade of a run made before the rewording shows the judge a question the executor was never asked, and grades old evidence against a new prompt. `setup` records `input_sha` on every run for exactly this: `--regrade` hard-fails when the current input hashes differently, and warns when the run predates the field and cannot be checked at all. A reworded input means a fresh baseline in both variants, never a regrade — and the old grades are not comparable to the new ones, which is a fact about the *input*, not about the expect lines.
 
 ## Isolation
 
@@ -98,6 +118,8 @@ Tooling resolves context by walking *up* the filesystem, and every such walk use
 **The workspace is its own git repo**, seeded by `setup` with a baseline commit whose sha lands in `<run-dir>/baseline.sha`. Executors run git — they are finishing a feature, so they commit. Without a repo of its own, `git add -A` from the workspace staged the orchestrator's files, `git commit -am` landed them on the checked-out branch, `git add .` exited 1 with a `-f` hint the executor would happily take, and runs in flight fought over one index.lock. `verify` diffs against that baseline, so an executor that commits its own work still produces evidence instead of an empty `run.diff`. Installed dependencies stay out through the workspace's `.git/info/exclude`, not a `.gitignore` the executor would read and the judge would see in the diff — note that this hides `lib/`, `out/`, `build/`, `cache/` and `target/` from the executor's own `git status` too, so a task whose deliverable lives in one of those needs `GENERATED_DIRS` trimmed first.
 
 **A minimal `package.json`** is dropped into any workspace that has none. npm resolves its project root by walking up for the nearest manifest, and a git boundary does not stop it: in a bare workspace the nearest one was this repo's, so `npm install` inside a run rewrote the framework's own manifest. The stub is part of the baseline commit, so it never appears in a diff, and `verify` skips it in the snapshot by content match.
+
+**The agent's own config is the benchmark's, not the operator's** — `--setting-sources project` for claude, and for codex a `CODEX_HOME` pointed at `.codex-home/` in this repo (see "The three roles"), which is what keeps a global codex skill on the task's subject from contaminating the `no_skill` variant. Neither half is complete: claude still discovers `CLAUDE.md` up the filesystem, and still sources the operator's interactive shell into its own Bash tool — codex no longer does, since `--disable shell_snapshot`.
 
 What is still open: a concurrent run's workspace, two directories up — the one an executor reaches without meaning to — and this repo, which nothing stops an executor from finding on purpose. Closing either means a sandbox profile or a container.
 
@@ -113,8 +135,15 @@ template: templates/se-2         # optional; omit for a bare workspace (just TAS
 expect:                          # judged conditions, at least one
   - "..."
 runs: 3                          # per variant
+status: live                     # optional; live | retired. Absent means live.
 notes: free text                 # optional
 ```
+
+**Retiring a task is a field, not a sentence in `notes`.** `status: retired` keeps the spec and
+every artifact under it — the record of what it once graded stays readable — and makes `setup`
+refuse to build a workspace for it, so a task whose claim the skill no longer makes cannot quietly
+re-enter a benchmark table. Anything that lists tasks filters on this field; prose in `notes` is
+for *why*, and nothing reads it.
 
 Every workspace seed — generated scaffold or hand-authored ground truth — is committed under `templates/`; `templates/README.md` records what each one is and how to regenerate it. Commit sources only: dependencies (`node_modules/`, `lib/`) stay out, and `setup` copies the seed exactly as it stands on disk, so install them once per machine before the first run — the task notes carry the exact pinned commands and what a working install looks like (e.g. `forge test` → 39 passing). Unpinned installs silently rot the ground truth a benchmark rests on.
 
@@ -143,9 +172,12 @@ run: 2026-07-06T093000Z-claude-with-skill-1
 executor: claude
 variant: with_skill
 skill_version: 191dcc1                # git short sha of the skill source; null for no_skill
+input_sha: 4f2b9c1de803               # sha256 of the input this run was given; absent on pre-2026-08-28 runs
 created: 2026-07-06T09:30:00Z
 executor_model: claude-opus-5         # what actually ran; null when the CLI picked its default
+executor_reasoning_effort: null       # codex only; the operator's model_reasoning_effort, passed on argv
 executor_exit: 0                      # verify refuses anything else unless --grade-failed-run
+harness_failure:                      # absent unless --grade-failed-run graded over a refusal
 usage:                                # what the run cost; absent on runs made before 2026-08-27
   duration_s: 812                     # the harness's own wall clock — the one figure both stacks share
   turns: 34                           # claude only
@@ -190,6 +222,31 @@ key per measurement instead of the two bare variant lines — see
 
 ## Reports
 
+**Every cost or duration number in a report comes out of `yarn run-stats`, never off a keyboard.**
+
+```bash
+yarn run-stats --tasks <id>,<id> [--since 2026-08-27] [--variant no_skill] [--skill-version <sha>] [--runs]
+```
+
+It reads the `## run stats` footer `run-executor` writes into each committed `transcript.md`,
+falling back to the raw `## result` block older transcripts carry instead — the same result event
+under different labels, so those runs are derivable too — and to `result.yaml`'s `usage` block for
+what neither holds, which on codex is the token total. It prints per-task medians per variant with
+the cost range beside them and the median `total_tokens`, and says `(n with no stats)` for runs
+that carry none of the three — whose cost and duration this repo simply does not have.
+
+`--skill-version` filters on `result.yaml`'s `skill_version`. Two `with_skill` arms of one task
+differ only by which revision of the skill they read, and the run directory name does not say, so
+an arm is one command rather than a date range a reader has to know the boundaries of.
+
+Print the range as well as the median: at `n=3` a goal task's cheapest and dearest run can differ by
+more than the delta the median is being read for, and a median that carries a headline needs its
+spread printed next to it. A number that `run-stats` cannot produce does not go in the table; write
+"not measured" and say what it would take to measure it. This paragraph exists because a wallets
+report once carried baseline costs assembled by hand out of a *benchmark-wide* median in an older
+report — one cell took its duration from an aggregate over seven tasks and its cost from the other
+variant's column — and no reviewer could have caught it without re-deriving every cell.
+
 State the executor, its model, the judge, and the run count at the top of every report. If any run came back `self_judged: true`, say so there — on a single-stack benchmark that is every run, and it is a caveat on the numbers, not a defect in them.
 
 Pass counts are not the whole verdict. `result.yaml` carries a `usage` block per run, so
@@ -226,7 +283,7 @@ Committed: task specs, vendored skills under test, workspace templates under `te
 
 This line said the opposite until 2026-08-20 — transcripts gitignored, `output/` committed — while `.gitignore` and all 210 committed runs did the reverse. Follow `.gitignore`; the transcript is what a reviewer re-derives a report's claims from, so it is the record that has to survive.
 
-`output/` stays ignored by default because a bare task has no template to diff against and `verify` snapshots the whole workspace into it: a quiz leaves one `answer.md` of a few KB, a goal that scaffolds leaves a tree (noir-goal-001: 176 files, 760K). Where that snapshot is the graded deliverable and small — the question-shaped runs — force-add it (`git add -f`) so a reader of the eval PR can re-check the judge on the material the judge saw.
+`output/` stays ignored by default because a bare task has no template to diff against and `verify` snapshots the whole workspace into it: a quiz leaves one `answer.md` of a few KB, a goal that scaffolds leaves a tree (noir-goal-001: 176 files, 760K). Where that snapshot is the graded deliverable and small, force-add it (`git add -f`) so a reader of the eval PR can re-check the judge on the material the judge saw. Read "small" generously — the nine gas-goal-001 runs are Foundry source trees and come to 40-72K each — and note that this is also the only thing that keeps a run regradeable: `verify` deletes the workspace, so uncommitted evidence means the grade can never be revisited by anyone, including you. If the snapshot is genuinely too big to commit, say so in the report, because the runs behind that table are then unauditable.
 
 ## Code style
 

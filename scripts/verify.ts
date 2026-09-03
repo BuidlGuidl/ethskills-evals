@@ -1,11 +1,15 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import yaml from "js-yaml";
+import { guardJudgeBlindness } from "../lib/blindness.js";
+import { resolveCodexModel } from "../lib/codex-home.js";
 import { buildEvidence, snapshotOutput, writeDiff } from "../lib/evidence.js";
+import { detectBrokenShell } from "../lib/executor-health.js";
 import { judgeExpectations } from "../lib/judge.js";
-import { isRecord, loadTaskSpec, loadYamlFile, parseArgs, requireString } from "../lib/task.js";
+import { expectSha, inputSha, isRecord, loadTaskSpec, loadYamlFile, parseArgs, requireString } from "../lib/task.js";
 import { parseUsageRecord } from "../lib/usage.js";
 import type { Executor, ExecutorRecord, ExpectStatus, JudgeSpec, ResultRecord, Variant } from "../lib/types.js";
 import { pruneEmptyParent, readWorkspacePath } from "../lib/workspace.js";
@@ -13,8 +17,9 @@ import { pruneEmptyParent, readWorkspacePath } from "../lib/workspace.js";
 const ROOT = process.cwd();
 const EXECUTORS = new Set<Executor>(["claude", "codex"]);
 const VARIANTS = new Set<Variant>(["no_skill", "with_skill"]);
-const VERIFY_ARGS = new Set(["run", "judge-agent", "judge-model", "grade-failed-run", "keep-workspace", "regrade"]);
-
+const VERIFY_ARGS = new Set([
+  "run", "judge-agent", "judge-model", "grade-failed-run", "keep-workspace", "regrade", "reason", "allow-skill-mention",
+]);
 // The judge is a fresh, blind process, never the orchestrator's own contaminated
 // context. --judge-agent is required rather than defaulting to the run's executor:
 // the default was silent, and a batch graded by a forgotten flag looks exactly like a
@@ -25,7 +30,11 @@ const resolveJudge = (args: Record<string, string | boolean>): JudgeSpec => {
   }
 
   const agent = parseAgent(requireString(args["judge-agent"], "--judge-agent"));
-  const model = args["judge-model"] === undefined ? null : requireString(args["judge-model"], "--judge-model");
+  const requested = args["judge-model"] === undefined ? null : requireString(args["judge-model"], "--judge-model");
+  // codex judges under a redirected CODEX_HOME, so nothing supplies the operator's configured
+  // model unless the harness passes it. Resolved here rather than inside the runner so that
+  // result.yaml records the model that actually graded, not a null the CLI silently filled in.
+  const model = agent === "codex" ? resolveCodexModel(requested, "--judge-model") : requested;
 
   return { agent, model };
 };
@@ -81,19 +90,34 @@ const loadResultRecord = (resultPath: string): ResultRecord => {
     executor: parseExecutor(requireString(loaded.executor, "executor")),
     variant: parseVariant(requireString(loaded.variant, "variant")),
     skill_version: loaded.skill_version === null ? null : requireString(loaded.skill_version, "skill_version"),
+    input_sha: loaded.input_sha === undefined ? undefined : requireString(loaded.input_sha, "input_sha"),
     created: requireString(loaded.created, "created"),
+    executor_model: loaded.executor_model === undefined || loaded.executor_model === null
+      ? null
+      : requireString(loaded.executor_model, "executor_model"),
+    executor_exit: typeof loaded.executor_exit === "number" ? loaded.executor_exit : undefined,
+    usage: parseUsageRecord(loaded.usage),
+    expect_sha: loaded.expect_sha === undefined ? undefined : requireString(loaded.expect_sha, "expect_sha"),
     expects: loaded.expects === undefined ? undefined : readExpects(loaded.expects),
     pass: loaded.pass === undefined ? undefined : Boolean(loaded.pass),
+    retracted: loaded.retracted === undefined ? undefined : requireString(loaded.retracted, "retracted"),
   };
 };
 
 // Grading a run whose executor is still working reads a half-written workspace, scores it,
 // and then the workspace gets deleted out from under a live process. run-executor writes
 // this record; no record or no finished timestamp means there is nothing to grade yet.
-const loadExecutorRecord = (runDir: string): ExecutorRecord => {
+// Optional on a regrade only: the executor ran long ago and what it recorded was already
+// copied into result.yaml by the first grade, so demanding it back would lock every run
+// made before run-executor started writing one out of ever being re-judged.
+const loadExecutorRecord = (runDir: string, optional = false): ExecutorRecord | null => {
   const recordPath = path.join(runDir, "executor.yaml");
 
   if (!existsSync(recordPath)) {
+    if (optional) {
+      return null;
+    }
+
     throw new Error(`no executor record at ${recordPath}; run yarn run-executor --run ${runDir} first`);
   }
 
@@ -108,6 +132,10 @@ const loadExecutorRecord = (runDir: string): ExecutorRecord => {
   return {
     executor: parseExecutor(requireString(loaded.executor, "executor")),
     model: loaded.model === null || loaded.model === undefined ? null : requireString(loaded.model, "model"),
+    reasoning_effort:
+      loaded.reasoning_effort === null || loaded.reasoning_effort === undefined
+        ? null
+        : requireString(loaded.reasoning_effort, "reasoning_effort"),
     started: requireString(loaded.started, "started"),
     finished: requireString(loaded.finished, "finished"),
     exit: typeof loaded.exit === "number" ? loaded.exit : null,
@@ -134,6 +162,39 @@ const nextRegradeDir = (runDir: string) => {
     if (!existsSync(candidate)) {
       return candidate;
     }
+  }
+};
+
+// A regrade is only worth anything if someone else can reproduce it, so the bar is that
+// the evidence is tracked — not merely that it sits in this working copy. output/ is
+// gitignored by default (AGENTS.md: force-add it where the snapshot is the deliverable),
+// so an untracked snapshot is the normal failure here and the message says how to fix it.
+const assertEvidenceCommitted = (runDir: string, bareTask: boolean) => {
+  const evidence = bareTask ? "output" : "run.diff";
+  const evidencePath = path.join(runDir, evidence);
+
+  if (!existsSync(evidencePath)) {
+    throw new Error(
+      `no ${evidence} in ${runDir}; there is nothing to regrade. The workspace is long gone, so this run's grade cannot be reproduced.`,
+    );
+  }
+
+  // ls-files exits non-zero rather than empty when the path is outside the repo — a run dir
+  // passed from somewhere other than artifacts/. Untracked and unreachable are the same
+  // answer here (no other clone has it), so both land on one message.
+  const tracked = (() => {
+    try {
+      return execFileSync("git", ["ls-files", "--", evidencePath], { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    } catch {
+      return "";
+    }
+  })();
+
+  if (tracked.length === 0) {
+    throw new Error(
+      `${evidencePath} is not tracked by git, so a regrade here would grade material no other clone has. `
+        + `Commit it first: git add -f ${path.relative(ROOT, evidencePath)}`,
+    );
   }
 };
 
@@ -168,20 +229,31 @@ const main = async () => {
     const alreadyGraded = Object.prototype.hasOwnProperty.call(rawResult, "pass");
 
     if (alreadyGraded && !regrade) {
-      throw new Error(`run already graded; delete ${runDir} and re-run setup-workspace if you need a redo`);
+      throw new Error(
+        `run already graded (${runDir}). A fresh executor pass is a new run id, never an overwrite — run setup again for that. `
+          + `To re-judge THIS run's committed evidence against edited expect lines, pass --regrade --reason "<why>".`,
+      );
     }
 
     // A regrade re-reads what the first grading captured. With no first grading there is
     // no stored evidence to re-read, so this is a mistyped command, not a second reading.
     if (regrade && !alreadyGraded) {
-      throw new Error("--regrade re-reads a graded run's stored evidence; grade it first without the flag");
+      throw new Error(`nothing to regrade: ${resultPath} carries no grade yet. Grade it first without --regrade.`);
     }
+
+    // Resolved before the judge runs, not after: a missing reason is an argument error, and
+    // discovering it once the judge has already been paid for wastes the call. parseArgs
+    // takes the next token as a value, so `--regrade "expect_5 added"` states the reason
+    // inline and `--regrade --reason "..."` states it in its own flag; either is a reason.
+    const regradeReason = regrade
+      ? (typeof args.reason === "string" ? args.reason : requireString(args.regrade, "--reason (or --regrade \"<why>\")"))
+      : null;
 
     const result = loadResultRecord(resultPath);
     const judgeSpec = resolveJudge(args);
-    const executorRecord = loadExecutorRecord(runDir);
+    const executorRecord = loadExecutorRecord(runDir, regrade);
 
-    if (executorRecord.executor !== result.executor) {
+    if (executorRecord !== null && executorRecord.executor !== result.executor) {
       throw new Error(`executor.yaml ran ${executorRecord.executor}, result.yaml says ${result.executor}`);
     }
 
@@ -189,11 +261,36 @@ const main = async () => {
     // answer, and the run then records as a model failure. That is the same
     // harness-failure-stored-as-a-zero that --judge-agent exists to rule out, so grading a
     // bad exit has to be a stated choice.
-    if (executorRecord.exit !== 0 && args["grade-failed-run"] === undefined) {
+    if (executorRecord !== null && executorRecord.exit !== 0 && args["grade-failed-run"] === undefined) {
       throw new Error(
         `executor exited ${executorRecord.exit ?? "unknown"}; that is a harness failure, not a score. `
           + `Delete ${runDir} and set up a new run, or pass --grade-failed-run to grade what it left behind anyway.`,
       );
+    }
+
+    // The same guard one level deeper, because the exit code does not cover the case that
+    // matters most: a run whose shell was dead exits 0, and its transcript reads as a model
+    // that chose not to look at anything. Graded, it records as a skill that did not help on
+    // a machine where the skill was never read. Refusing takes the same stated override as a
+    // bad exit — this is a harness failure either way, and the operator says so out loud.
+    const brokenShell = detectBrokenShell(runDir, result.executor);
+
+    if (brokenShell !== null && args["grade-failed-run"] === undefined) {
+      throw new Error(
+        `${brokenShell.cause}; it still exited 0, so nothing but the capture shows it. `
+          + `${brokenShell.capturePath}: "${brokenShell.evidence}". ${brokenShell.remedy}. `
+          + `Delete ${runDir} and set up a new run, or pass --grade-failed-run to grade what it left behind anyway.`,
+      );
+    }
+
+    // One flag turns off both refusals above, so a run that crashed *and* lost its shell
+    // grades on the strength of a single --grade-failed-run. A bad exit is at least visible
+    // in executor_exit afterwards; a dead shell exits 0 and leaves nothing, so the override
+    // has to write down what it overrode.
+    const harnessFailure = brokenShell === null ? undefined : brokenShell.cause;
+
+    if (harnessFailure !== undefined) {
+      console.warn(`verify: --grade-failed-run; grading anyway and recording harness_failure: ${harnessFailure}`);
     }
 
     const taskSpec = loadTaskSpec(path.join(ROOT, "tasks", `${result.task}.yaml`));
@@ -216,14 +313,48 @@ const main = async () => {
       }
     }
 
+    // Present is not enough: a regrade nobody else can reproduce is one person's assertion
+    // about a run, while the grade it stands beside in a report is everyone's. `output/` is
+    // gitignored unless a run force-added it, so a clone that did not make the run is the
+    // ordinary way to arrive here with nothing to re-read.
+    if (regrade) {
+      assertEvidenceCommitted(runDir, taskSpec.template === undefined);
+    }
+
     const evidence = await buildEvidence(runDir);
 
-    // `output/` is gitignored unless a run force-added it, so a clone that did not make the
-    // run can be missing the very thing a regrade re-reads. Judging an empty string would
-    // score the run as if it had produced nothing.
+    // Tracked but empty: the snapshot was committed as an empty tree, or the diff came back
+    // clean. Judging an empty string would score the run as if it had produced nothing.
     if (regrade && evidence.trim().length === 0) {
-      throw new Error(`no stored evidence in ${runDir}; a regrade re-reads run.diff or output/, and neither is there`);
+      throw new Error(`no stored evidence in ${runDir}; a regrade re-reads run.diff or output/, and neither has anything in it`);
     }
+
+    // A regrade asks what the current expect lines make of this run. It sends the judge the
+    // task input as it stands now, so an input that has been reworded since the run shows the
+    // judge a question the executor was never asked — grading old evidence against a new
+    // prompt. That is not a second reading of the run, it is a mismatch, and it is silent.
+    if (regrade) {
+      const currentSha = inputSha(taskSpec.input);
+
+      if (result.input_sha === undefined) {
+        console.warn(
+          `verify: ${result.run} predates input_sha, so the input it was given cannot be checked against `
+            + `tasks/${result.task}.yaml as it stands now. If the input has been reworded since, this regrade `
+            + "is grading old evidence against a new question — read the task notes before trusting it.",
+        );
+      } else if (result.input_sha !== currentSha) {
+        throw new Error(
+          `task input changed since ${result.run} ran (${result.input_sha} -> ${currentSha}). A regrade re-reads `
+            + "stored evidence against the current spec, so it would show the judge a prompt this run never saw. "
+            + "Re-run the task on the new input instead, or restore the input the run was given.",
+        );
+      }
+    }
+
+    // `!== undefined` rather than `=== true`, per the parseArgs note below: the flag's
+    // value is whatever token follows it, so `--allow-skill-mention true` is the string
+    // "true" and reading that as "not passed" would fail a grade the operator cleared.
+    guardJudgeBlindness(evidence, args["allow-skill-mention"] !== undefined);
 
     const verdict = judgeExpectations(taskSpec.input, taskSpec.expect, evidence, judgeSpec);
 
@@ -232,6 +363,7 @@ const main = async () => {
     }
 
     const pass = Object.values(verdict.expects).every(status => status === "pass");
+    const sha = expectSha(taskSpec.expect);
     // A regrade is append-only like every other record: it lands in its own dir beside the
     // source, so the original grading stays readable as what the task said at the time.
     const targetDir = regrade ? nextRegradeDir(runDir) : runDir;
@@ -243,17 +375,29 @@ const main = async () => {
       executor: result.executor,
       variant: result.variant,
       skill_version: result.skill_version,
+      ...(result.input_sha === undefined ? {} : { input_sha: result.input_sha }),
       created: result.created,
-      ...(regrade ? { regrade_of: result.run } : {}),
-      executor_model: executorRecord.model,
-      executor_exit: executorRecord.exit ?? undefined,
+      ...(regrade ? { regrade_of: result.run, regrade_reason: regradeReason as string, regraded_at: new Date().toISOString() } : {}),
+      executor_model: executorRecord === null ? result.executor_model ?? null : executorRecord.model,
+      executor_reasoning_effort:
+        executorRecord === null ? result.executor_reasoning_effort : executorRecord.reasoning_effort ?? undefined,
+      executor_exit: executorRecord === null ? result.executor_exit : executorRecord.exit ?? undefined,
+      // Carried like `retracted` below: a run that was graded over a dead shell stays a run
+      // that was graded over a dead shell, and a regrade has no capture left to re-detect it
+      // from — executor.err is gitignored, so re-deriving it would silently drop the flag.
+      harness_failure: harnessFailure ?? result.harness_failure,
       // Copied from executor.yaml rather than re-derived: run-executor measured it, and
       // the raw capture it measured from is gitignored, so result.yaml is where a reader
       // of the eval PR can still see what the run cost.
-      usage: executorRecord.usage,
+      usage: executorRecord === null ? result.usage : executorRecord.usage,
       judge: { ...judgeSpec, self_judged: judgeSpec.agent === result.executor },
+      expect_sha: sha,
       expects: verdict.expects,
       pass,
+      // A retraction is a fact about the run — its deliverable never reached the evidence —
+      // so it survives a re-reading of that evidence. Dropping it here would launder an
+      // excluded run back into a table by way of a rubric edit.
+      ...(result.retracted === undefined ? {} : { retracted: result.retracted }),
     };
 
     if (regrade) {
@@ -263,6 +407,15 @@ const main = async () => {
     await writeFile(path.join(targetDir, "result.yaml"), yaml.dump(gradedResult, { lineWidth: -1 }));
 
     summarize(verdict.expects);
+
+    if (regrade) {
+      const before = result.pass === true ? "pass" : "fail";
+
+      console.log(
+        `${path.basename(targetDir)}: ${before} -> ${pass ? "pass" : "fail"}, `
+          + `expect_sha ${result.expect_sha ?? "unrecorded"} -> ${sha}`,
+      );
+    }
 
     // After the summary, and never fatal. Workspaces sit outside the repo now, so nothing
     // cleans them up with the run dir and a benchmark leaves tens of gigabytes behind — but

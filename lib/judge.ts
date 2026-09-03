@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { codexEnv, codexReasoningArgs, operatorCodexReasoningEffort } from "./codex-home.js";
 import type { Executor, ExpectStatus, JudgeSpec } from "./types.js";
 
 export type JudgeResult =
@@ -99,17 +100,29 @@ const runClaudeJudge = (prompt: string, model: string | null): Spawned => {
 // `codex exec` interleaves session logging with the answer on stdout, so take the
 // final message from --output-last-message instead. read-only: the judge reads
 // evidence, it never edits a workspace. `-` for the prompt reads it from stdin, keeping
-// repo-shaped evidence off argv (E2BIG).
-//
-// --disable shell_snapshot for the same reason the executor gets it (see
-// lib/executor-command.ts): the operator's interactive shell must not ride into a run.
-// The judge needs it independently — it was missing here until 2026-09-03, and a regrade
-// on that date printed "Shell snapshot validation failed ... syntax error near unexpected
-// token `('" from the same snapshot that had taken an executor down. A judge whose shell
-// dies mid-grade returns an unparseable verdict, which is a grading failure wearing a
-// model's clothes.
-export const codexJudgeArgs = (model: string | null, messagePath: string) => {
-  const args = ["exec", "--disable", "shell_snapshot", "-s", "read-only", "--skip-git-repo-check", "--ephemeral", "-o", messagePath];
+// repo-shaped evidence off argv (E2BIG). `--disable shell_snapshot` for the same reason
+// the executor gets it (see scripts/run-executor.ts): the operator's rc files must not
+// ride into a graded process, and one unparseable line in the snapshot leaves the judge
+// with no shell to check its evidence in. CODEX_HOME is redirected for the same reason it
+// is on the executor — a global codex skill about the task's subject must not reach the
+// grader either — which is also why the model arrives resolved (verify does it, so
+// result.yaml names the model that graded). No network flag here on purpose: the judge
+// grades from the evidence in its prompt, so read-only's default deny is correct.
+const runCodexJudge = (prompt: string, model: string | null): Spawned => {
+  const dir = mkdtempSync(path.join(tmpdir(), "skill-eval-judge-"));
+  const messagePath = path.join(dir, "last-message.txt");
+  // The operator's model_reasoning_effort rides along for the same reason the model does:
+  // the redirect means codex reads none of their config.toml, and a judge whose effort
+  // silently changed mid-benchmark grades the back half differently from the front half.
+  const args = [
+    "exec",
+    "--disable", "shell_snapshot",
+    "-s", "read-only",
+    "--skip-git-repo-check",
+    "--ephemeral",
+    ...codexReasoningArgs(operatorCodexReasoningEffort()),
+    "-o", messagePath,
+  ];
 
   if (model) {
     args.push("-m", model);
@@ -117,18 +130,11 @@ export const codexJudgeArgs = (model: string | null, messagePath: string) => {
 
   args.push("-");
 
-  return args;
-};
-
-const runCodexJudge = (prompt: string, model: string | null): Spawned => {
-  const dir = mkdtempSync(path.join(tmpdir(), "skill-eval-judge-"));
-  const messagePath = path.join(dir, "last-message.txt");
-  const args = codexJudgeArgs(model, messagePath);
-
   try {
     const result = spawnSync("codex", args, {
       input: prompt,
       encoding: "utf8",
+      env: codexEnv(),
       timeout: JUDGE_TIMEOUT_MS,
       maxBuffer: MAX_OUTPUT_BYTES,
     });
