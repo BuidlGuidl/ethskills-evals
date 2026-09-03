@@ -100,16 +100,30 @@ const runClaudeJudge = (prompt: string, model: string | null): Spawned => {
 // final message from --output-last-message instead. read-only: the judge reads
 // evidence, it never edits a workspace. `-` for the prompt reads it from stdin, keeping
 // repo-shaped evidence off argv (E2BIG).
-const runCodexJudge = (prompt: string, model: string | null): Spawned => {
-  const dir = mkdtempSync(path.join(tmpdir(), "skill-eval-judge-"));
-  const messagePath = path.join(dir, "last-message.txt");
-  const args = ["exec", "-s", "read-only", "--skip-git-repo-check", "--ephemeral", "-o", messagePath];
+//
+// --disable shell_snapshot for the same reason the executor gets it (see
+// lib/executor-command.ts): the operator's interactive shell must not ride into a run.
+// The judge needs it independently — it was missing here until 2026-09-03, and a regrade
+// on that date printed "Shell snapshot validation failed ... syntax error near unexpected
+// token `('" from the same snapshot that had taken an executor down. A judge whose shell
+// dies mid-grade returns an unparseable verdict, which is a grading failure wearing a
+// model's clothes.
+export const codexJudgeArgs = (model: string | null, messagePath: string) => {
+  const args = ["exec", "--disable", "shell_snapshot", "-s", "read-only", "--skip-git-repo-check", "--ephemeral", "-o", messagePath];
 
   if (model) {
     args.push("-m", model);
   }
 
   args.push("-");
+
+  return args;
+};
+
+const runCodexJudge = (prompt: string, model: string | null): Spawned => {
+  const dir = mkdtempSync(path.join(tmpdir(), "skill-eval-judge-"));
+  const messagePath = path.join(dir, "last-message.txt");
+  const args = codexJudgeArgs(model, messagePath);
 
   try {
     const result = spawnSync("codex", args, {
