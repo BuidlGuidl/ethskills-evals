@@ -8,26 +8,42 @@ Closes the last unmeasured skill reduction in the repo. `skills/protocol` was cu
 version at `2f0adb0`.
 **Executor:** `claude`, model `claude-opus-5`, fresh spawn per run.
 **Judge:** `claude`, model `claude-opus-5`, fresh blind process spawned by `verify`.
-**`self_judged: true` on all six runs** — one claude stack, executor and judge the same agent.
-Each grade ran in a process that never saw the variant, the skill, or the transcript, but it
-is a caveat on the numbers and is stated here rather than buried.
-**Date:** 2026-09-02. Six new runs, `with_skill` only, 3 per task.
+**`self_judged: true` on all twelve runs** — one claude stack, executor and judge the same
+agent. Each grade ran in a process that never saw the variant, the skill, or the transcript,
+but it is a caveat on the numbers and is stated here rather than buried.
+**Dates:** `with_skill` 2026-09-02, `no_skill` 2026-09-03. Twelve runs, 3 per task per
+variant, both arms measured on the same harness.
 
-## Why only six runs
+## Why the `no_skill` arm was re-measured
 
-The `no_skill` arm is **carried over from 2026-07-25**, not re-run. `git log` on both task
-specs shows exactly one commit since that benchmark — `67c6e6d`, which touched only `notes:`.
-Every `input:` and every `expect:` line is byte-identical to what the July runs were graded
-against, so the unaided side measures the same thing it measured then and re-drawing it would
-buy nothing but noise.
+The first version of this report carried the `no_skill` arm over from 2026-07-25 rather than
+re-running it. The argument for that was sound as far as it went: `git log` on both task specs
+shows exactly one commit since that benchmark — `67c6e6d`, which touched only `notes:` — so
+every `input:` and every `expect:` line was byte-identical to what the July runs were graded
+against, and all six July `result.yaml` files carry `judge.agent: claude`,
+`judge.model: claude-opus-5`, `self_judged: true`, the same judge stack used here.
 
-Two limits on that carry-over, stated up front:
+It was still the wrong call, for a reason this repo had already learned once. On the wallets
+reduction (#96), carrying stale unaided arms forward was the blocking review finding, and
+re-measuring same-day **moved the pass column** — `3/3 vs 3/3` became `3/3 vs 1/3` and
+`3/3 vs 2/3` on two tasks (`33a3acfc`), over a three-to-five week gap where the rubric had not
+moved either. This gap was five and a half weeks. And the July records cannot settle it
+after the fact: those runs left `output/` gitignored and their `transcript.md` holds the final
+assistant message alone (2.2–3.6 KB), so their grades are not re-checkable by anyone.
 
-- The July runs predate `input_sha` and `expect_sha`, so their records cannot self-certify the
-  rubric they were graded against. The git check above is what stands in for it.
-- They also predate `executor.yaml` and the `## run stats` footer. They carry no
-  `executor_model` and no `usage` block. The report's stack line for them comes from
-  `reports/protocol-2026-07-25.md`, which states `claude-opus-5`.
+So the six `no_skill` runs were re-run on 2026-09-03, same harness, same executor and judge
+stack, `output/` force-added. **The carry-over turned out to be right** — the arm re-measures
+at 6/6, unchanged — but that is now a measurement rather than an inference, and the left
+column of the headline rests on committed evidence like the right one does. Cost of settling
+it: $8.75.
+
+Two things the July runs still cannot support, and which this re-run does not fix:
+
+- They predate `input_sha` and `expect_sha`, so their records cannot self-certify the rubric.
+  All twelve 2026-09 runs carry both.
+- They predate `executor.yaml` and the `## run stats` footer, so they carry no
+  `executor_model` and no `usage` block, and no cost or duration comparison against the
+  267-line era is recoverable from them.
 
 ## Ground truth revalidated before the first run
 
@@ -49,50 +65,69 @@ fork schedules a binary-tree or stateless state migration.**
 
 ## Headline
 
-| Task | `no_skill` (267-line era, carried over) | `with_skill` @ 24 lines |
+| Task | `no_skill` (re-measured 2026-09-03) | `with_skill` @ 24 lines |
 | --- | ---: | ---: |
 | `protocol-quiz-001` | 3/3 | **3/3** |
 | `protocol-goal-001` | 3/3 | **3/3** |
 | **total** | **6/6** | **6/6** |
 
-For reference, the 267-line `with_skill` arm was also 6/6 on 2026-07-25.
+For reference, on 2026-07-25 the 267-line `with_skill` arm was 6/6 and `no_skill` was 6/6.
 
 **The reduction held the line.** Every expect passed in every run — 9 expect lines across two
-tasks, 27 judgements, zero failures. Cutting 267 lines to 24 cost nothing measurable on this
-rubric, which is the question #102 asked.
+tasks, 54 judgements across both arms, zero failures. Cutting 267 lines to 24 cost nothing
+measurable on this rubric, which is the question #102 asked.
 
-It is worth being exact about what that does and does not prove. The July benchmark found
-`no_skill` at 6/6 too: **the prior these tasks test is not stale for `claude-opus-5`**, so the
-tasks were already saturated before the cut. A saturated task cannot detect a regression it
-was never able to detect. What this run establishes is that the 24-line version does not
-introduce a *new* failure on a rubric where the model was already at ceiling — a real but
-bounded result, and the same bound the 2026-07-25 report carried.
+It is worth being exact about what that does and does not prove. `no_skill` is at 6/6 too, on
+runs made the day after the skilled ones: **the prior these tasks test is not stale for
+`claude-opus-5`**, and it was not stale in July either. The tasks were already saturated
+before the cut, and a saturated task cannot detect a regression it was never able to detect.
+What this benchmark establishes is that the 24-line version does not introduce a *new* failure
+on a rubric where the model is at ceiling on both sides — a real but bounded result, and the
+same bound the 2026-07-25 report carried.
 
 ## Per-run records
 
-All six exited 0. No run was killed, and no transcript contains a session-limit message.
+All twelve exited 0. No run was killed, and no transcript contains a session-limit message.
+All twelve carry `input_sha` and `expect_sha`.
 
 | Task | Run | Expects | Duration | Cost | Total tokens |
 | --- | --- | --- | ---: | ---: | ---: |
 | quiz | `171647Z…with-skill-1` | 4/4 | 235s | $1.12 | 489,038 |
 | quiz | `172129Z…with-skill-2` | 4/4 | 221s | $1.07 | 333,289 |
 | quiz | `172529Z…with-skill-3` | 4/4 | 261s | $1.18 | 441,825 |
+| quiz | `190420Z…no-skill-1` | 4/4 | 268s | $1.21 | 318,622 |
+| quiz | `190421Z…no-skill-2` | 4/4 | 227s | $0.90 | 257,378 |
+| quiz | `190422Z…no-skill-3` | 4/4 | 206s | $0.85 | 218,475 |
 | goal | `171716Z…with-skill-1` | 5/5 | 371s | $1.97 | 532,019 |
 | goal | `172352Z…with-skill-2` | 5/5 | 449s | $2.79 | 2,234,999 |
 | goal | `173158Z…with-skill-3` | 5/5 | 331s | $1.64 | 445,095 |
+| goal | `190423Z…no-skill-1` | 5/5 | 479s | $2.13 | 790,557 |
+| goal | `190424Z…no-skill-2` | 5/5 | 426s | $2.00 | 643,118 |
+| goal | `190424Z…no-skill-3` | 5/5 | 395s | $1.66 | 526,953 |
 
 Durations and costs are `yarn run-stats --tasks protocol-quiz-001,protocol-goal-001 --runs`;
 token totals are the `usage.total_tokens` the harness wrote into each `result.yaml`.
 
 | Task | Variant | n | Median turns | Median duration | Median cost | Cost range | Median tokens |
 | --- | --- | ---: | ---: | ---: | ---: | --- | ---: |
+| quiz-001 | `no_skill` | 3 | 15 | 227s | $0.90 | $0.85–$1.21 | 257,378 |
 | quiz-001 | `with_skill` @ 24 lines | 3 | 27 | 235s | $1.12 | $1.07–$1.18 | 441,825 |
+| goal-001 | `no_skill` | 3 | 34 | 426s | $2.00 | $1.66–$2.13 | 643,118 |
 | goal-001 | `with_skill` @ 24 lines | 3 | 42 | 371s | $1.97 | $1.64–$2.79 | 532,019 |
 
+**The skill costs turns and buys nothing on the clock.** On quiz it runs 27 turns against 15
+and $1.12 against $0.90 — roughly 25% more cost for the same 4/4. On goal the medians cross:
+more turns (42 vs 34) but *less* wall-clock (371s vs 426s) and effectively the same cost
+($1.97 vs $2.00), because the unaided runs spend their time on a wider, less directed search.
+Neither delta is worth much at n=3, and both sit inside the arms' own ranges; they are
+reported because the runs now exist to report them, not because three runs settle a 25% cost
+question.
+
 The goal spread is wide enough to matter: `with-skill-2` ran 2.23M tokens against 445k and
-532k for its siblings — a 4x outlier inside n=3, driven by a much longer search (55 turns,
-including a fetch of the Glamsterdam devnet-8 dora dashboard). The median is reported with its
-range for exactly this reason.
+532k for its siblings — a 4x outlier inside n=3, driven by a much longer search: 55 turns,
+including a 51 MB shallow clone of `ethereum/forkcast` and greps through its committed EIP
+markdown and ACDE call-note JSON. The median is reported with its range for exactly this
+reason.
 
 **There is no cost comparison against the 267-line version, and cannot be.** All twelve
 2026-07-25 runs predate the `## run stats` footer, so `run-stats` prints
@@ -106,38 +141,69 @@ and was not done.
 
 ## Did the habit survive the cut?
 
-Pass counts cannot answer this, because both arms were already at ceiling in July. The
-behavior the skill installs — check live sources, report fork status explicitly, refuse to
+Pass counts cannot answer this, because both arms sit at ceiling. The behavior the skill
+installs — check live sources, report fork status in the process's own vocabulary, refuse to
 give an unscheduled feature a ship date — is visible in the transcripts, and full-session
 capture (`--output-format stream-json`, added since July) makes it directly measurable rather
-than inferred, which is the fix the July report asked for.
+than inferred, which is the fix the July report asked for. With both arms now run on that
+capture, it is measurable *against a control* for the first time.
 
-**Every one of the six runs checked live sources.** All six fetched `eips.ethereum.org` for
-the relevant meta EIPs; the fork-scope metas 7773 (Glamsterdam) and 8081 (Hegotá) were pulled
-by name, and runs also went to `forkcast.org`, `ethereum-magicians.org` ACDE-242 call notes,
-`eipsinsight.com`, and in one case a live devnet dashboard. No run asserted fork status from
-memory.
+**Live-source checking is not what the skill adds.** All twelve runs checked live sources and
+no run in either arm asserted fork status from memory; all twelve fetched `eips.ethereum.org`.
+The unaided runs got the substance right too — every one of them names Verkle as dropped and
+`ethereum.org/roadmap/verkle-trees` as stale, which is why they pass.
 
-Status vocabulary in the graded deliverable, which is committed and re-checkable:
+**What the skill adds is which sources and which vocabulary**, and here the arms separate
+cleanly:
 
-| Task | Run | `forkcast` mentions | SFI/CFI/DFI uses | Deliverable |
-| --- | --- | ---: | ---: | ---: |
-| quiz | w1 | 3 | 6 | 8.9 KB |
-| quiz | w2 | 2 | 4 | 13.2 KB |
-| quiz | w3 | 2 | 5 | 13.4 KB |
-| goal | w1 | 1 | 15 | 23.5 KB |
-| goal | w2 | 5 | 15 | 29.3 KB |
-| goal | w3 | 5 | 15 | 23.0 KB |
+| Signal | `no_skill` | `with_skill` @ 24 lines |
+| --- | ---: | ---: |
+| deliverables mentioning `forkcast` | **0 / 6** | **6 / 6** |
+| transcripts touching `forkcast.org` at all | **0 / 6** | **6 / 6** |
+| deliverables using SFI/CFI/DFI status vocabulary | 1 / 6 | **6 / 6** |
+| runs pulling both fork-scope metas (7773 + 8081) by name | 1 / 6 | 4 / 6 |
 
-**These cannot be compared to the equivalent table in `reports/protocol-2026-07-25.md`.** That
-report's source-checking counts are not reproducible from committed evidence: the July runs
-committed only `result.yaml` and a `transcript.md` that holds the final assistant message
+That first row is the skill's one concrete instruction doing exactly what #59 replaced the
+hardcoded Fork Process table with: a pointer to forkcast. Not one unaided run found forkcast
+on its own, in either task, and not one used it in a deliverable. The metas row is the weakest
+of the four and cuts both ways — the skilled arm is 4/6, not 6/6, so the pointer moves *where*
+runs look more reliably than it moves *how completely*.
+
+Per-run detail, over the committed deliverable in both arms:
+
+| Task | Variant | Run | `forkcast` mentions | SFI/CFI/DFI uses | Deliverable |
+| --- | --- | --- | ---: | ---: | ---: |
+| quiz | `no_skill` | n1 | 0 | 2 | 15.3 KB |
+| quiz | `no_skill` | n2 | 0 | 0 | 11.7 KB |
+| quiz | `no_skill` | n3 | 0 | 0 | 9.4 KB |
+| quiz | `with_skill` | w1 | 3 | 6 | 8.9 KB |
+| quiz | `with_skill` | w2 | 2 | 4 | 13.2 KB |
+| quiz | `with_skill` | w3 | 2 | 5 | 13.4 KB |
+| goal | `no_skill` | n1 | 0 | 0 | 29.4 KB |
+| goal | `no_skill` | n2 | 0 | 0 | 29.4 KB |
+| goal | `no_skill` | n3 | 0 | 0 | 27.5 KB |
+| goal | `with_skill` | w1 | 1 | 15 | 23.5 KB |
+| goal | `with_skill` | w2 | 5 | 15 | 29.3 KB |
+| goal | `with_skill` | w3 | 5 | 15 | 23.0 KB |
+
+On the meta EIPs specifically: quiz `w1`, quiz `w3`, goal `w1` and goal `w3` pulled both
+EIP-7773 (Glamsterdam) and EIP-8081 (Hegotá) from `eips.ethereum.org` by name. Quiz `w2`
+resolved fork scope from `forkcast.org` and `eipsinsight.com` instead (its `eips.ethereum.org`
+fetches were 2935, 7709 and 7864, none of them a meta); goal `w2` from `forkcast.org` plus a
+shallow clone of `ethereum/forkcast`, where it read the repo's own `public/eips/7773.md` and
+its committed ACDE call-note JSON, and never touched 8081. In the unaided arm only goal `n2`
+fetched both metas and goal `n3` fetched 7773 alone; the other four fetched neither.
+
+**None of this can be compared to the equivalent table in `reports/protocol-2026-07-25.md`.**
+That report's source-checking counts are not reproducible from committed evidence: the July
+runs committed only `result.yaml` and a `transcript.md` that holds the final assistant message
 alone (2.2–3.6 KB), and their `output/` was left gitignored, so the deliverables those counts
 were taken over no longer exist anywhere. Recounting the July committed files with the same
 greps gives 0–5 where the report prints 3–26. The July table is a record of an observation
-that can no longer be audited; it is not evidence this run can be measured against.
+that can no longer be audited. The table above is the replacement, and both of its arms are
+committed.
 
-Content-wise the six deliverables land the claim cleanly. Representative, from quiz `w2`:
+Content-wise the six skilled deliverables land the claim cleanly. Representative, from quiz `w2`:
 
 > **Do not build around Verkle trees.** That is precisely the design the protocol is
 > moving *away* from — it has been dropped from the roadmap.
@@ -147,7 +213,7 @@ Content-wise the six deliverables land the claim cleanly. Representative, from q
 
 No brief presented Verkle as the coming relief, none claimed a scheduled fork for the state-tree
 migration, and none leaned on EIP-4444 as the state-growth fix. All three goal briefs
-name history expiry (2–6 mentions each) and every one of them scopes it correctly to chain
+name history expiry (4–8 mentions each) and every one of them scopes it correctly to chain
 history rather than the state trie — `w3` spells it out in a table cell: "**Does not help
 archive nodes** — an archive node keeps this by definition." `w1` went further and flagged
 that ethereum.org's own `/roadmap/statelessness` page is stale on 4444's shipping status,
@@ -156,17 +222,17 @@ skill never names.
 
 ## Mistakes
 
-None filed. Zero expect failures across six runs leaves nothing to record, and a mistake
-record invented from a passing run is noise.
+None filed. Zero expect failures across twelve runs, in either arm, leaves nothing to record,
+and a mistake record invented from a passing run is noise.
 
 ## Verdict
 
 | Question | Answer |
 | --- | --- |
 | Did the skill improve pass rate? | No, and neither did the version it replaced. `6/6 with_skill` @ 24 lines vs `6/6 no_skill`; the 267-line version was also `6/6`. The prior these tasks test is not stale for `claude-opus-5`, so both arms sit at ceiling |
-| Did it reduce time/tokens? | Not measurable against the 267-line version — all twelve 2026-07-25 runs predate the `## run stats` footer, so `run-stats` has no duration, cost or token figure for either of that benchmark's arms. The minimal arm's own medians are quiz `235s / $1.12 / 442k tokens`, goal `371s / $1.97 / 532k tokens` (goal cost range `$1.64–$2.79`, token range `445k–2.23M`) |
-| Did it create negative deltas? | None found. No expect regressed, and the live-source-checking habit is present in all six runs |
-| What mistakes repeated without the skill? | None. Carried over from 2026-07-25: `no_skill` never recommended Verkle, never claimed a scheduled fork, never mistook EIP-4444 for a state-growth fix |
+| Did it reduce time/tokens? | Not against the 267-line version — all twelve 2026-07-25 runs predate the `## run stats` footer, so `run-stats` has no duration, cost or token figure for either of that benchmark's arms. Against an unaided control on the same harness it costs rather than saves on quiz (`27 turns / 235s / $1.12` vs `15 / 227s / $0.90`) and roughly breaks even on goal (`42 / 371s / $1.97` vs `34 / 426s / $2.00`) — n=3 a side, inside the arms' own ranges |
+| Did it create negative deltas? | None on the rubric — no expect regressed. The one cost is turns and spend on quiz, ~25% above the unaided arm for the same 4/4 |
+| What mistakes repeated without the skill? | None, re-measured 2026-09-03 rather than carried over: `no_skill` never recommended Verkle (all six call it dropped and `ethereum.org/roadmap/verkle-trees` stale), never claimed a scheduled fork, never mistook EIP-4444 for a state-growth fix. What it did miss is forkcast — `0/6` unaided runs found it — and the SFI/CFI/DFI status vocabulary, `1/6` |
 | What mistakes remained with the skill? | None |
-| What should change in the skill? | Nothing this run forces. The reduction removed the one concrete defect the July report named — a hardcoded Fork Process table that was already going stale in a skill whose thesis is anti-staleness — and replaced it with a pointer to forkcast. That fix is confirmed by the runs: the six executors resolved current Glamsterdam and Hegotá scope from live metas, and Glamsterdam's scope has in fact moved from 3 named EIPs to 18 SFI since July, which the old table would have gotten wrong |
-| What should change in the eval? | **These two tasks no longer discriminate on `claude-opus-5` and should stop being used as if they do.** The expects grade the conclusion, so parametric recall satisfies them, and this run had a ceiling on both sides before it started. Three options, unchanged from the July report and now overdue: (1) grade the *habit* — add an expect that fails a scheduling claim asserted without a live check, which is the only thing the transcripts separate on; (2) re-target the claim past the model's knowledge cutoff, e.g. Hegotá's current non-headliner scope, which is genuinely in flux (~66 proposals narrowing); (3) mark both `status: retired` for this stack and keep them as regression checks for smaller models. Separately, the July runs' `output/` was left gitignored, and their deliverables are gone — the six runs here force-add `output/` (8–29 KB each) so the judge can be re-checked on the material it saw |
+| What should change in the skill? | Nothing this benchmark forces. The reduction removed the one concrete defect the July report named — a hardcoded Fork Process table that was already going stale in a skill whose thesis is anti-staleness — and replaced it with a pointer to forkcast. The control arm confirms that pointer is load-bearing: `0/6` unaided runs reached forkcast on their own, `6/6` skilled ones did. Glamsterdam's scope has in fact moved from 3 named EIPs to 18 SFI since July, which the old table would have gotten wrong |
+| What should change in the eval? | **These two tasks no longer discriminate on `claude-opus-5` and should stop being used as if they do.** The expects grade the conclusion, so parametric recall satisfies them — confirmed, not assumed: a freshly measured unaided arm reaches the same 6/6. But the deliverables *do* separate, `0/6` vs `6/6` on forkcast and `1/6` vs `6/6` on status vocabulary, so option (1) below is no longer speculative — it is grading a delta this benchmark has now measured. Three options, unchanged from the July report and now overdue: (1) grade the *sourcing*, not the conclusion — an expect that requires the brief cite the fork-scope source it used, which is where the arms actually differ; (2) re-target the claim past the model's knowledge cutoff, e.g. Hegotá's current non-headliner scope, which is genuinely in flux (~66 proposals narrowing); (3) mark both `status: retired` for this stack and keep them as regression checks for smaller models. Separately, the July runs' `output/` was left gitignored and their deliverables are gone — all twelve runs here force-add `output/` (8.9–29.4 KB each) so the judge can be re-checked on the material it saw |
