@@ -148,11 +148,15 @@ Traceable skill → artifact links, from the graded evidence:
 
 ## Mistakes filed
 
-- `frontend-ux-stale-product-identity` — no_skill 5/6, with_skill 0/6. Ships under someone else's
-  identity. On SE-2, no run touched `layout.tsx` (all three still export `'Scaffold-ETH 2 App'`)
+Two of these were already on file from #27 (2026-07-24, opus-4.8, the long skill); this run adds a
+`claude/claude-opus-5` stack line to each record rather than a second record for the same mistake.
+The third is new.
+
+- `metadata-left-as-template-default` — no_skill 5/6, with_skill 0/6 (6/6, 0/6 in July).
+  Ships under someone else's identity. On SE-2, no run touched `layout.tsx` (all three still export `'Scaffold-ETH 2 App'`)
   though all three rewrote `Header.tsx` — the visible half gets renamed, the metadata half does
   not. On bare, the inverse: real title, but zero OG/twitter/favicon.
-- `frontend-ux-no-fiat-context` — no_skill 4/6, with_skill 0/6. ETH gas balance rendered as bare
+- `eth-balance-no-usd-context` — no_skill 4/6, with_skill 0/6 (same in July). ETH gas balance rendered as bare
   token units; on the bare workspace there is no price source in the tree at all.
 - `frontend-ux-unsurfaced-tx-error` — no_skill 2/6, with_skill 0/6. Failure path modeled and never
   rendered: one run `console.error`s both tx failures; another derives an `'error'` status in
@@ -231,7 +235,7 @@ Runs are append-only. No run was re-executed because of its result.
 | Did the skill improve pass rate? | Yes. goal-001 `3/3 vs 0/3`; goal-002 `3/3 vs 0/3`. Every `with_skill` run passed every expect (8/8 and 6/6); no `no_skill` run passed either goal. |
 | Did it reduce time/tokens? | No. goal-001 `with_skill` cost +23% ($13.85 vs $11.28) and ran ~4 min longer — it does strictly more work. goal-002 ran cheaper with the skill (−16%) but under different concurrency, so that direction is not trustworthy. No consistent effect. |
 | Did it create negative deltas? | None in grading — no expect regressed, in either goal. The only cost is the token premium above. |
-| What mistakes repeated without the skill? | `frontend-ux-stale-product-identity` (5/6), `frontend-ux-no-fiat-context` (4/6), `frontend-ux-unsurfaced-tx-error` (2/6). |
+| What mistakes repeated without the skill? | `metadata-left-as-template-default` (5/6), `eth-balance-no-usd-context` (4/6), `frontend-ux-unsurfaced-tx-error` (2/6). |
 | What mistakes remained with the skill? | None. All three are 0/6 with the skill. |
 | What should change in the skill? | Nothing, on this evidence. The 359-word revision still moves both goals from 0/3 to 3/3 and triggers unprompted 6/6, so the cut did not cost it the outcomes. Two of its four headline bullets are unbacked *by this eval* rather than wrong: **Address inputs** (goal-002 e1 passes 3/3 unprompted — ENS resolution is already habit; quiz-005 is its real coverage) and **Target chain** (goal-001 e8 passes 3/3 unprompted, and its notes say the expect only discriminates downward). Do not cut either on this alone — a goal eval cannot show a rule's value when the model already has the habit. The two bullets carrying the whole delta are **Product identity** and **Fiat context**; keep them first. |
 | What should change in the eval? | Three gaps. (1) **e6 is two conditions in one** — "metadata *and* branding" let a run pass on branding alone with template metadata intact; split into a metadata expect and a branding expect so the judge cannot trade one for the other. (2) **goal-001 is saturated at the top** — e1/e2/e3/e7/e8 are 3/3 in both variants and cost a full 25-minute SE-2 build to measure nothing; goal-002's bare workspace is where the discrimination lives, and is the model to follow for future rules. (3) **`verify`'s diff path was untested for template workspaces** — it took a pre-seeded `.git` to find a bug that would have silently produced empty evidence; worth a fixture test now that the fix is in. |
