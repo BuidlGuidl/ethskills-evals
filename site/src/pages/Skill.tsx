@@ -73,11 +73,17 @@ const Skill = () => {
       <h2>Results</h2>
       <table className="grid">
         <thead>
+          <tr className="group">
+            <th colSpan={2} />
+            <th colSpan={2} className="span">
+              with skill
+            </th>
+          </tr>
           <tr>
             <th>task</th>
-            <th className="num">no skill</th>
-            <th className="num">old skill</th>
-            <th className="num">new skill</th>
+            <th className="num">without skill</th>
+            <th className="num">before</th>
+            <th className="num">after</th>
           </tr>
         </thead>
         <tbody>
