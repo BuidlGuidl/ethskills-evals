@@ -1,0 +1,208 @@
+diff --git a/packages/nextjs/app/layout.tsx b/packages/nextjs/app/layout.tsx
+index 4532506..3cc3d39 100644
+--- a/packages/nextjs/app/layout.tsx
++++ b/packages/nextjs/app/layout.tsx
+@@ -8,8 +8,8 @@ import { getMetadata } from "~~/utils/scaffold-eth/getMetadata";
+ 
+ 
+ export const metadata = getMetadata({
+-  title: 'Scaffold-ETH 2 App',
+-  description: 'Built with 🏗 Scaffold-ETH 2'
++  title: 'USDC Payouts',
++  description: 'Send USDC payouts to teammates and contributors on Base.'
+ });
+ 
+ const ScaffoldEthApp = ({ children }: { children: React.ReactNode }) => {
+diff --git a/packages/nextjs/app/payouts/page.tsx b/packages/nextjs/app/payouts/page.tsx
+index 13764ef..fdbcb57 100644
+--- a/packages/nextjs/app/payouts/page.tsx
++++ b/packages/nextjs/app/payouts/page.tsx
+@@ -1,24 +1,44 @@
+ "use client";
+ 
+ import { useState } from "react";
++import { Address } from "@scaffold-ui/components";
+ import type { NextPage } from "next";
+-import { formatUnits, parseUnits } from "viem";
+-import { useAccount, useWriteContract } from "wagmi";
++import { formatUnits, isAddress, parseUnits } from "viem";
++import { useAccount } from "wagmi";
+ import deployedContracts from "~~/contracts/deployedContracts";
+-import { useScaffoldEventHistory, useScaffoldReadContract } from "~~/hooks/scaffold-eth";
++import {
++  useScaffoldEventHistory,
++  useScaffoldReadContract,
++  useScaffoldWriteContract,
++  useTargetNetwork,
++} from "~~/hooks/scaffold-eth";
+ 
+-const PAYOUTS = deployedContracts[8453].Payouts;
+-const USDC = deployedContracts[8453].USDC;
++const USDC_DECIMALS = 6;
++const PAYOUTS_ADDRESS = deployedContracts[8453].Payouts.address;
+ 
+-const shorten = (addr?: string) => (addr ? `${addr.slice(0, 6)}...${addr.slice(-4)}` : "");
++// Parse a USDC amount string to base units, returning null when it isn't a valid number.
++const parseAmount = (value: string) => {
++  if (!value) return null;
++  try {
++    return parseUnits(value, USDC_DECIMALS);
++  } catch {
++    return null;
++  }
++};
+ 
+ const PayoutsPage: NextPage = () => {
+   const { address: connectedAddress, isConnected } = useAccount();
++  const { targetNetwork } = useTargetNetwork();
+   const [recipient, setRecipient] = useState("");
+   const [amount, setAmount] = useState("");
+   const [memo, setMemo] = useState("");
+ 
+-  const { writeContractAsync, isPending } = useWriteContract();
++  const { writeContractAsync: approveAsync, isMining: isApproving } = useScaffoldWriteContract({
++    contractName: "USDC",
++  });
++  const { writeContractAsync: payAsync, isMining: isPaying } = useScaffoldWriteContract({
++    contractName: "Payouts",
++  });
+ 
+   const { data: usdcBalance } = useScaffoldReadContract({
+     contractName: "USDC",
+@@ -26,38 +46,47 @@ const PayoutsPage: NextPage = () => {
+     args: [connectedAddress],
+   });
+ 
++  const { data: allowance } = useScaffoldReadContract({
++    contractName: "USDC",
++    functionName: "allowance",
++    args: [connectedAddress, PAYOUTS_ADDRESS],
++  });
++
+   const { data: payouts } = useScaffoldEventHistory({
+     contractName: "Payouts",
+     eventName: "Paid",
+-    fromBlock: 0n,
+     watch: true,
+   });
+ 
++  const parsedAmount = parseAmount(amount);
++  const isValidRecipient = isAddress(recipient);
++  const hasAmount = parsedAmount !== null && parsedAmount > 0n;
++  const needsApproval = parsedAmount !== null && (allowance === undefined || allowance < parsedAmount);
++
+   const handleApprove = async () => {
++    if (!hasAmount || parsedAmount === null) return;
+     try {
+-      await writeContractAsync({
+-        address: USDC.address,
+-        abi: USDC.abi,
++      await approveAsync({
+         functionName: "approve",
+-        args: [PAYOUTS.address, parseUnits(amount || "0", 6)],
++        args: [PAYOUTS_ADDRESS, parsedAmount],
+       });
+-    } catch (e) {
+-      console.error(e);
++    } catch {
++      // Errors are surfaced by useScaffoldWriteContract's notifications.
+     }
+   };
+ 
+   const handlePay = async () => {
++    if (!isValidRecipient || !hasAmount || parsedAmount === null) return;
+     try {
+-      await writeContractAsync({
+-        address: PAYOUTS.address,
+-        abi: PAYOUTS.abi,
++      await payAsync({
+         functionName: "pay",
+-        args: [recipient as `0x${string}`, parseUnits(amount || "0", 6), memo],
++        args: [recipient as `0x${string}`, parsedAmount, memo],
+       });
++      setRecipient("");
+       setAmount("");
+       setMemo("");
+-    } catch (e) {
+-      console.error(e);
++    } catch {
++      // Errors are surfaced by useScaffoldWriteContract's notifications.
+     }
+   };
+ 
+@@ -72,7 +101,7 @@ const PayoutsPage: NextPage = () => {
+         ) : (
+           <>
+             <p className="mb-4">
+-              Your balance: {usdcBalance !== undefined ? formatUnits(usdcBalance, 6) : "0"} USDC
++              Your balance: {usdcBalance !== undefined ? formatUnits(usdcBalance, USDC_DECIMALS) : "0"} USDC
+             </p>
+ 
+             <input
+@@ -98,32 +127,38 @@ const PayoutsPage: NextPage = () => {
+ 
+             <div className="flex gap-3">
+               <button
+-                className={`btn btn-primary ${isPending ? "loading" : ""}`}
+-                disabled={isPending}
++                className={`btn btn-primary ${isApproving ? "loading" : ""}`}
++                disabled={isApproving || !hasAmount || !needsApproval}
+                 onClick={handleApprove}
+               >
+                 Approve
+               </button>
+               <button
+-                className={`btn btn-secondary ${isPending ? "loading" : ""}`}
+-                disabled={isPending}
++                className={`btn btn-secondary ${isPaying ? "loading" : ""}`}
++                disabled={isPaying || !isValidRecipient || !hasAmount || needsApproval}
+                 onClick={handlePay}
+               >
+                 Send Payout
+               </button>
+             </div>
++
++            {recipient && !isValidRecipient && (
++              <p className="text-error text-sm mt-2">Enter a valid recipient address.</p>
++            )}
++            {amount && !hasAmount && <p className="text-error text-sm mt-2">Enter a valid USDC amount.</p>}
+           </>
+         )}
+ 
+         <h2 className="text-xl font-semibold mt-10 mb-3">Latest payouts</h2>
+         <div className="flex flex-col gap-2">
+           {(payouts ?? []).map((payout, i) => (
+-            <div key={i} className="border border-gray-700 rounded p-3">
+-              <span className="font-mono">{shorten(payout.args.from)}</span>
+-              {" paid "}
+-              <span className="font-mono">{shorten(payout.args.to)}</span>
+-              {" "}
+-              {payout.args.amount !== undefined ? formatUnits(payout.args.amount, 6) : "0"} USDC
++            <div key={`${payout.transactionHash}-${i}`} className="border border-gray-700 rounded p-3">
++              <div className="flex flex-wrap items-center gap-2">
++                <Address address={payout.args.from} chain={targetNetwork} />
++                <span className="opacity-70">paid</span>
++                <Address address={payout.args.to} chain={targetNetwork} />
++                <span>{payout.args.amount !== undefined ? formatUnits(payout.args.amount, USDC_DECIMALS) : "0"} USDC</span>
++              </div>
+               {payout.args.memo ? <span className="block opacity-70 mt-1">“{payout.args.memo}”</span> : null}
+             </div>
+           ))}
+diff --git a/packages/nextjs/utils/scaffold-eth/getMetadata.ts b/packages/nextjs/utils/scaffold-eth/getMetadata.ts
+index 515ca10..7faa57e 100644
+--- a/packages/nextjs/utils/scaffold-eth/getMetadata.ts
++++ b/packages/nextjs/utils/scaffold-eth/getMetadata.ts
+@@ -5,7 +5,7 @@ import type { Metadata } from "next";
+ const baseUrl = process.env.VERCEL_PROJECT_PRODUCTION_URL
+   ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
+   : `http://localhost:${process.env.PORT || 3000}`;
+-const titleTemplate = "%s | Scaffold-ETH 2";
++const titleTemplate = "%s | USDC Payouts";
+ 
+ export const getMetadata = ({
+   title,
+
+# Untracked files and status
+ M packages/nextjs/app/layout.tsx
+ M packages/nextjs/app/payouts/page.tsx
+ M packages/nextjs/utils/scaffold-eth/getMetadata.ts

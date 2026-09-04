@@ -1,0 +1,163 @@
+diff --git a/REVIEW.md b/REVIEW.md
+new file mode 100644
+index 0000000..9df1219
+--- /dev/null
++++ b/REVIEW.md
+@@ -0,0 +1,154 @@
++# Pre-ship Review — USDC Payouts dApp (Base)
++
++Scope: frontend (`packages/nextjs`) + its config. Report only; no code changed.
++Contract (`Payouts.sol`) reviewed for context only; it is deployed and out of scope for changes.
++
++---
++
++## Ship-blocking
++
++### SB1 — Writes bypass SE-2 target-network guard: txs can fire on the wrong chain
++**File:** `app/payouts/page.tsx:21`, `:36–62` (uses raw `useWriteContract` from wagmi)
++
++`handleApprove`/`handlePay` call wagmi's raw `useWriteContract`, which submits to
++**whatever chain the wallet is currently on** — there is no chain check, no network-switch
++prompt, and no simulation. Meanwhile the balance read (`useScaffoldReadContract`) is pinned
++to Base (8453) regardless of wallet chain, so the UI shows the correct Base balance while a
++tx can be broadcast on Ethereum mainnet or any other connected chain. On the wrong chain the
++hardcoded Base addresses (`0x8335…2913` USDC, `0x7c3f…b6F2` Payouts) point at unrelated/
++nonexistent contracts — user pays gas for a failed or unintended tx, with real fund-loss risk.
++
++`useScaffoldWriteContract` already handles all of this (wrong-network error, pre-flight
++`simulateContractWriteAndNotifyError`, `useTransactor` toasts + block-confirmation), and the
++project rules mandate it.
++
++**Fix:** replace both raw writes with `useScaffoldWriteContract`:
++```ts
++const { writeContractAsync: writePayouts, isMining: payPending } =
++  useScaffoldWriteContract({ contractName: "Payouts" });
++const { writeContractAsync: writeUsdc, isMining: approvePending } =
++  useScaffoldWriteContract({ contractName: "USDC" });
++// approve:
++await writeUsdc({ functionName: "approve", args: [PAYOUTS.address, parseUnits(amount || "0", 6)] });
++// pay:
++await writePayouts({ functionName: "pay", args: [recipient, parseUnits(amount || "0", 6), memo] });
++```
++This removes the raw `abi`/`address` plumbing and gives per-button `isMining` (see SF3).
++
++### SB2 — Event feed scans from genesis on Base mainnet
++**File:** `app/payouts/page.tsx:32` (`fromBlock: 0n`)
++
++`useScaffoldEventHistory` defaults `fromBlock` to the contract's `deployedOnBlock`
++(`33712450`, see `deployedContracts.ts:48`), but the page overrides it with `0n`, forcing a
++scan of ~33.7M blocks via `getLogs` on every poll. On Base mainnet through the shared Alchemy
++key this is extremely slow, burns rate limit, and will frequently error — the "Latest payouts"
++feed effectively won't load for real users.
++
++**Fix:** drop the `fromBlock` override so it uses `deployedOnBlock`, or set it explicitly:
++```ts
++useScaffoldEventHistory({ contractName: "Payouts", eventName: "Paid", watch: true });
++```
++Note: `useScaffoldEventHistory` is `@deprecated` for production (getLogs overloads L2 RPCs).
++For a feed shipping to real users, plan to move to an indexer (ponder / subgraph) — see SF5.
++
++### SB3 — Production ships on shared demo API keys
++**File:** `scaffold.config.ts:16`, `:29`, `:40`; `.env.example`
++
++`DEFAULT_ALCHEMY_API_KEY = "IZYEU2cWBgnFmgiTAgpWD"` and the default WalletConnect
++`walletConnectProjectId = "3a8170812b534d0ff9d794f19a901d64"` are Scaffold-ETH's shared
++public defaults. With `pollingInterval` watching events + balances on Base mainnet for real
++users, the shared Alchemy key will be throttled (compounding SB2), and the shared WC project
++id is not domain-allowlisted — WalletConnect connections/analytics will be unreliable.
++`.env.example` ships with both vars blank, so nothing forces them to be set before deploy.
++
++**Fix:** create app-owned Alchemy + WalletConnect keys and set
++`NEXT_PUBLIC_ALCHEMY_API_KEY` / `NEXT_PUBLIC_WALLET_CONNECT_PROJECT_ID` in the Vercel/system
++env before shipping. Confirm they are present in the production environment (not just
++`.env.local`).
++
++---
++
++## Should-fix
++
++### SF1 — Recipient address is unvalidated and unsafely cast
++**File:** `app/payouts/page.tsx:55`, `:78–84`
++
++`recipient` is a free-text `<input>` cast with `recipient as \`0x${string}\``. A malformed or
++empty value reaches viem encoding and throws; the catch only `console.error`s (SF3), so the
++button appears to do nothing. No ENS support.
++
++**Fix:** use the SE-2 `AddressInput` from `@scaffold-ui/components` (already a dependency) and
++guard the action with viem's `isAddress`; disable "Send Payout" until valid:
++```tsx
++import { AddressInput } from "@scaffold-ui/components";
++import { isAddress } from "viem";
++<AddressInput value={recipient} onChange={setRecipient} placeholder="Recipient address" />
++// disabled={!isAddress(recipient) || !(Number(amount) > 0) || pending}
++```
++
++### SF2 — No user-facing error/success feedback; fields cleared before confirmation
++**File:** `app/payouts/page.tsx:44–46`, `:57–61`
++
++Both handlers swallow errors to `console.error` — a failed approve/pay is invisible to the
++user. `handlePay` also clears `amount`/`memo` immediately after `writeContractAsync` resolves
++(tx *submitted*, not confirmed), so the form resets even if the tx later reverts.
++
++**Fix:** adopting `useScaffoldWriteContract` (SB1) provides success/error toasts via
++`useTransactor`. For any remaining catch, surface `notification.error(getParsedError(e))` from
++`~~/utils/scaffold-eth`. Clear fields in the `onBlockConfirmation` callback (or after the await
++resolves *and* only on success), not optimistically.
++
++### SF3 — Approval UX: allowance never read; shared `isPending` disables both buttons
++**File:** `app/payouts/page.tsx:21`, `:99–113`
++
++The current allowance is never read, so users can't tell whether "Approve" is needed or
++whether they already approved — and approve is hardcoded to the exact `amount`, so any later
++higher payout silently needs re-approval. A single `isPending` from one write hook disables and
++shows `loading` on *both* buttons during either action.
++
++**Fix:** read allowance and drive the UI from it:
++```ts
++const { data: allowance } = useScaffoldReadContract({
++  contractName: "USDC", functionName: "allowance",
++  args: [connectedAddress, PAYOUTS.address],
++});
++```
++Show "Approve" only when `allowance < parseUnits(amount, 6)`; otherwise show "Send Payout".
++With two `useScaffoldWriteContract` hooks (SB1) each button gets its own `isMining`.
++
++### SF4 — Amount input has no validation
++**File:** `app/payouts/page.tsx:85–91`, `:42`, `:55`
++
++`type="number"` allows negatives / scientific notation (negative → `parseUnits` throws;
++caught silently), and >6 decimals are silently rounded by `parseUnits`. Nothing checks the
++amount against `usdcBalance` or enforces `> 0`, so users routinely hit the contract's
++`"zero amount"` / transfer-fails reverts.
++
++**Fix:** validate `Number(amount) > 0` and `parseUnits(amount,6) <= usdcBalance` before
++enabling the button; prefer SE-2's `IntegerInput`/`EtherInput`-style numeric input or constrain
++decimals to 6. Show a clear inline "Insufficient balance" state.
++
++### SF5 — Event feed: slow polling + misleading order/labeling for a live payout feed
++**File:** `scaffold.config.ts:45` (`pollingInterval: 30000`); `app/payouts/page.tsx:118`, `:120–121`
++
++`pollingInterval` is 30s (the SE-2 default is 4s; AGENTS.md says *decrease* it for L2). After a
++user sends a payout, "Latest payouts" can lag up to 30s, reading as a broken confirmation.
++`getLogs` returns oldest→newest, so under the "Latest payouts" heading the newest entry renders
++last, and `key={i}` (array index) is fragile as the list grows/reorders.
++
++**Fix:** lower `pollingInterval` (e.g. 4000–8000) balanced against the app-owned Alchemy key
++(SB3); render the feed newest-first (reverse before map) or relabel; key by
++`` `${payout.transactionHash}-${payout.logIndex}` ``. For production scale, migrate the feed to
++an indexer (ponder/subgraph) per the hook's deprecation note.
++
++---
++
++## Notes / nits (non-blocking)
++
++- `scaffold.config.ts:25,36` comments read "This is ours Alchemy's/WalletConnect's default" —
++  grammar aside, they misdescribe shared keys as the app's own; tidy when addressing SB3.
++- `app/payouts/page.tsx:10–11` index `deployedContracts[8453]` directly; if `targetNetworks`
++  ever changes this breaks at build. Low risk while Base-only, but the SE-2 hooks (SB1) already
++  resolve address/abi by name+network — using them removes the hardcode.
++- Consider showing the connected address via the SE-2 `Address` component and balance via
++  `Balance` for consistency with the rest of the app.
+
+# Untracked files and status
+ A REVIEW.md

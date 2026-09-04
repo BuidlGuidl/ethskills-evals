@@ -1,0 +1,187 @@
+# Four-week NFT marketplace MVP and audit scope
+
+## 1. Product decision and assumptions
+
+Ship a non-custodial, fixed-price secondary marketplace for the existing 5,000-token ERC-721 collection on Ethereum mainnet. There will be one new custom contract and no upgrade proxy, escrow, marketplace factory, auction, or admin-settable fee.
+
+The MVP assumptions to validate in kickoff are:
+
+- The collection is a standard ERC-721 whose `ownerOf` and `safeTransferFrom` behave normally, and it has no transfer restrictions that would prevent marketplace settlement.
+- The marketplace contract will be approved with `setApprovalForAll` (or token approval) by a seller before a sale can settle. Approval does not transfer custody.
+- The artist royalty recipient is a production multisig. It and the collection address are immutable constructor parameters. The fee is immutable at 250 basis points (2.5%). This marketplace enforces that fee on every settlement through it; it cannot force unrelated marketplaces or peer-to-peer transfers to pay it.
+- Listings are priced and paid in native ETH. Token-specific offers are priced and paid in mainnet WETH. WETH is necessary because native ETH cannot be pulled from a buyer later without escrow; the offer maker must retain enough WETH and allowance until acceptance. The site will explain this and offer a wrap-and-approve flow.
+- Offers are for one specific token, not collection-wide. Partial fills, bundles, auctions, traits, private sales, ERC-1155, delegated wallets, and arbitrary payment tokens are out of scope.
+- Both listings and offers are EIP-712 signed offchain orders. The API indexes them for browsing, but the contract independently validates every fact at settlement. Posting/removing an order in the API is not a security boundary.
+
+Before implementation, verify the actual collection contract on a mainnet fork, including ERC-721 approvals, transfers to contracts, any pause/blocklist mechanism, and existing ERC-2981 behavior. If any assumption is false, freeze the interface and revise this scope before obtaining a fixed audit quote.
+
+## 2. Smallest shippable architecture
+
+### Onchain
+
+One non-upgradeable `CollectionMarketplace` contract:
+
+- stores immutable `collection`, `weth`, and `royaltyRecipient` addresses;
+- verifies typed listing and offer signatures, including ERC-1271 signatures for smart-contract wallets via OpenZeppelin `SignatureChecker`;
+- validates deadline, token ID, nonce, current ownership, approval, exact consideration, and authorized taker where applicable;
+- atomically transfers the NFT and splits payment: 2.5% to the artist and 97.5% to the seller;
+- tracks order-hash cancellation and each account's minimum valid nonce;
+- has a reentrancy guard and emits settlement/cancellation events.
+
+There is no owner/admin role, pause key, upgrade path, custody function, or arbitrary token/native-ETH rescue function. ETH listings require exact `msg.value`, so the contract should finish successful calls with no retained ETH. WETH offer settlement transfers WETH directly from buyer to artist and seller; the marketplace retains no WETH. Accidental direct ETH transfers are rejected by omitting `receive` and payable fallback functions.
+
+Use audited OpenZeppelin primitives for EIP-712, signature checking, safe ERC-20 transfers, and reentrancy protection. Pin compiler and dependency versions in the audit commit.
+
+### Offchain
+
+- Web app: wallet connection, ownership/approval checks, create/sign/cancel listing, buy, create/sign/cancel WETH offer, wrap/approve WETH, accept offer, and transaction status/errors.
+- Indexer/API/database: signed orders, event ingestion, owner/approval state, order validity projection, token metadata, search/filtering, and activity history.
+- IPFS/existing collection metadata remains the display source. Search, sorting, floor price, and activity summaries are derived offchain from chain events; they are never authoritative contract state.
+
+The UI must re-simulate immediately before submission and label stale signatures, expired orders, ownership changes, missing approval, insufficient WETH, and insufficient allowance. It must never represent an API deletion as an onchain cancellation.
+
+## 3. Frozen contract surface for the audit quote
+
+The implementation may use structs internally, but the audited behavior and externally reachable surface is limited to:
+
+```solidity
+struct Listing {
+    address seller;
+    uint256 tokenId;
+    uint256 price;
+    address authorizedBuyer; // zero means public
+    uint256 nonce;
+    uint256 deadline;
+}
+
+struct Offer {
+    address buyer;
+    uint256 tokenId;
+    uint256 price;
+    address authorizedSeller; // zero means current owner
+    uint256 nonce;
+    uint256 deadline;
+}
+
+constructor(address collection, address weth, address royaltyRecipient)
+function buy(Listing calldata listing, bytes calldata signature) external payable nonReentrant
+function acceptOffer(Offer calldata offer, bytes calldata signature) external nonReentrant
+function cancelListing(Listing calldata listing) external
+function cancelOffer(Offer calldata offer) external
+function incrementMinNonce(uint256 newMinNonce) external
+function isCancelled(bytes32 orderHash) external view returns (bool)
+function minNonce(address account) external view returns (uint256)
+function hashListing(Listing calldata listing) external view returns (bytes32)
+function hashOffer(Offer calldata offer) external view returns (bytes32)
+```
+
+Exact rules:
+
+- The EIP-712 domain binds signatures to the marketplace address, Ethereum chain ID, name, and version. Listing and offer have distinct type hashes.
+- `buy` requires an unexpired, uncancelled listing nonce at or above `minNonce[seller]`, valid seller signature, current `ownerOf(tokenId) == seller`, caller equal to `authorizedBuyer` when nonzero, nonzero price, and exact `msg.value == price`. It marks the order consumed before external calls, transfers the NFT from seller to buyer with `safeTransferFrom`, pays `floor(price * 250 / 10_000)` ETH to the artist, and pays the remainder to the seller. Any failed transfer or payout reverts the whole transaction.
+- `acceptOffer` requires the caller to be the current token owner and, when nonzero, equal to `authorizedSeller`; the offer must be unexpired, uncancelled, at or above `minNonce[buyer]`, nonzero-priced, and signed by the buyer. It marks the order consumed before external calls, transfers the NFT from caller to buyer, then uses `safeTransferFrom` on WETH to pull the royalty from buyer to artist and the remainder from buyer to seller. Insufficient balance/allowance or a failed transfer reverts everything.
+- An order hash can settle only once. `cancelListing` requires `msg.sender == listing.seller`; `cancelOffer` requires `msg.sender == offer.buyer`. Each derives and marks the typed order hash cancelled; no signature is required because the signer is the transaction sender. Repeated cancellation reverts. `incrementMinNonce` is strictly increasing and invalidates all of the caller's listing and offer nonces below the new minimum.
+- A transfer or approval change naturally invalidates settlement but does not consume the signature. If the token later returns to the signer while the order remains live, it can become fillable again. The UI warns about this; users use onchain cancellation or nonce invalidation for permanent cancellation.
+- The contract rejects token IDs outside the collection implicitly through `ownerOf`; no hard-coded 5,000 range is needed.
+- No ERC-2981 lookup is performed. The fixed 2.5%/recipient rule is the single royalty rule, avoiding a mutable or malformed external royalty response.
+
+Required events are `ListingFilled(orderHash, seller, buyer, tokenId, price, royalty)`, `OfferFilled(orderHash, buyer, seller, tokenId, price, royalty)`, `OrderCancelled(orderHash, signer)`, and `MinNonceIncremented(signer, oldNonce, newNonce)`. Define custom errors for every validation/failure branch so the UI and audit tests can distinguish them. Names and parameter indexing are frozen before audit.
+
+## 4. State transitions and liveness
+
+| Transition | Caller | Why they pay gas | If nobody calls |
+| --- | --- | --- | --- |
+| Sign/post listing | Seller (signature; API request) | Wants the NFT exposed for sale | Nothing is listed; NFT remains owned by seller |
+| `buy` | Buyer | Receives the NFT at the signed price | Listing remains fillable until expiry/cancellation/state invalidation |
+| Sign/post offer | Buyer (signature; API request) | Wants the NFT; retains WETH custody | No offer exists; no funds move |
+| `acceptOffer` | Current owner | Receives 97.5% of the offered WETH | Offer remains fillable until expiry/cancellation/state invalidation |
+| Cancel one order | Order signer | Permanently prevents that signature from settling | It may remain fillable if all validations hold |
+| `incrementMinNonce` | Account invalidating its orders | Cancels many old orders in one transaction | Older signatures remain individually valid |
+
+There are no scheduled transitions, keepers, privileged relayers, or owner-only liveness dependencies.
+
+## 5. Four-week build plan
+
+### Week 1 — freeze behavior and prove compatibility
+
+- Confirm collection, WETH, and artist multisig addresses from authoritative sources; document them without guessing.
+- Fork mainnet and prove buy/transfer/approval behavior against representative collection tokens and the canonical WETH contract.
+- Finalize EIP-712 schemas, typed cancellation ABI, payout ordering, rounding rule, events, errors, threat model, wireframes, and acceptance criteria.
+- Scaffold contract, deployment scripts, app, database schema, and event indexer. Produce deterministic typed-data fixtures shared by Solidity and TypeScript.
+- Exit: signed architecture/interface document, fork compatibility evidence, clickable happy-path UI shell, and audit firm confirms this scope is quoteable.
+
+### Week 2 — complete and test the contract
+
+- Implement the single immutable marketplace and deployment/verification scripts.
+- Unit and fuzz test signatures, ERC-1271, replay, cross-type/domain/chain replay, nonce boundaries, deadline boundaries, private takers, ownership/approval changes, fee rounding, exact ETH, WETH allowance/balance, hostile receivers/tokens, reentrancy, atomic rollback, and event correctness.
+- Add invariants: no order fills twice; only a valid current owner can sell; buyer receives exactly the specified token or the call reverts; artist gets exactly the calculated royalty; seller gets the remainder; successful settlement leaves no marketplace ETH/WETH/NFT custody; contract has no privileged state change.
+- Run static analysis, coverage, formatting, and mainnet-fork end-to-end tests. Freeze a release-candidate commit and provide it to the auditor at week end.
+- Exit: all tests green, high branch coverage on custom contract logic, compiler/dependencies locked, audit begins on a frozen hash.
+
+### Week 3 — vertical product slice while audit runs
+
+- Implement wallet and network guards, ownership gallery, signing, approval, buy, WETH wrap/approve, offer, acceptance, typed cancellation, bulk nonce cancellation, and clear transaction/error states.
+- Implement signature validation at API ingestion, event-driven order reconciliation, confirmations/reorg handling, periodic chain reconciliation, and filtering of currently invalid orders.
+- Add analytics/alerts for failed settlement, indexer lag, RPC failures, and unexpected marketplace balances. Never log signed payloads or sensitive API credentials unnecessarily.
+- Complete browser tests for seller, buyer, smart-wallet signer, stale listing, sold token, expired order, cancellation, insufficient WETH/allowance, rejected signature, and reverted payout.
+- Exit: staging vertical slice passes on a mainnet fork and a public Ethereum test environment; audit findings are triaged without deploying unaudited changes.
+
+### Week 4 — remediate, review, deploy, and launch
+
+- Fix audit findings, add regression tests, and return the exact remediation commit/diff for auditor verification. Any feature or contract-interface change triggers explicit audit-scope review.
+- Have an independent reviewer run the full acceptance checklist against the final commit, including mobile/wallet UX, indexer recovery, reorg simulation, and mainnet-fork settlements.
+- Deploy the exact audited bytecode to Ethereum mainnet, verify source, verify immutable values, seed/index historical metadata, and execute a low-value end-to-end sale and offer with team-owned tokens/accounts.
+- Publish contract address, verified-source link, fee/royalty disclosure, WETH-offer explanation, cancellation semantics, risk notice, and support/runbook documentation. Monitor closely and keep a launch rollback switch for the web UI only; the immutable contract cannot be paused.
+- Exit: auditor confirms remediation, bytecode matches audited build, smoke transactions and balance assertions pass, monitoring is live, and sign-off is recorded.
+
+The schedule assumes an auditor is booked before week 1 and starts at the end of week 2. Audit delay moves mainnet launch; it does not justify deploying the unaudited contract.
+
+## 6. Precise audit scope
+
+### In scope
+
+1. The final `CollectionMarketplace.sol` and every inherited or linked Solidity source compiled into it.
+2. The pinned OpenZeppelin contracts actually imported: EIP-712/signature checking, ERC-20 safe transfer, ERC-721 interfaces/receiver interactions as applicable, and reentrancy guard.
+3. Deployment and constructor-argument scripts insofar as they select chain ID, collection, canonical mainnet WETH, royalty multisig, compiler settings, optimizer settings, and deployed bytecode.
+4. Solidity unit, fuzz, invariant, and mainnet-fork tests as supporting evidence (tests are reviewed but are not a substitute for contract review).
+5. EIP-712 schema/constants and the TypeScript encoder fixture solely for equivalence with Solidity hashes.
+6. Integration assumptions for the exact existing collection and canonical WETH contracts, using their verified mainnet bytecode/interfaces. Those third-party contracts are not re-audited, but unusual behavior and integration risk are assessed.
+7. All externally reachable paths and trust boundaries described above: listing purchase, offer acceptance, individual/bulk cancellation, ETH/WETH payout, ERC-1271, ERC-721 callbacks, event truthfulness, and immutable configuration.
+
+Ask the auditor to assess at minimum: authorization and signature malleability; replay across orders/types/contracts/chains; nonce/cancellation correctness; stale ownership and approvals; frontrunning and authorized takers; self-sale; reentrancy/callback ordering; checks-effects-interactions; fee math/rounding; ETH accounting and forced ETH; WETH return-value/nonstandard behavior; atomicity; denial of service by payout recipients or ERC-1271 wallets; hostile buyer/seller contracts; event/indexer ambiguity; constructor misconfiguration; lack of admin recovery/pause; and compliance of the bytecode/build with the reviewed source.
+
+### Explicitly out of scope
+
+- The existing NFT and WETH implementations beyond integration assumptions; wallets, RPC providers, IPFS, metadata, and marketplace contracts not deployed by this project.
+- Frontend, API, database, indexer availability/security, cloud/IAM, DNS, analytics, and wallet-extension internals, except the typed-data encoder fixture noted above. These need separate application security and operational review.
+- Royalty enforcement outside this marketplace, legal/tax/regulatory conclusions, economic appraisal, wash trading, phishing/social engineering, private-key/multisig signer compromise, and marketplace discovery/traffic.
+- Auctions, bids requiring native-ETH escrow, collection offers, bundles, ERC-1155, lazy minting, permits, meta-transactions/relayers, delegated registries, arbitrary currencies/collections, upgradeability, pausing, fee changes, fee splitters, and recovery functions.
+
+### Quote package and change control
+
+Give the auditor: repository commit hash; exact in-scope file list and lines of Solidity; compiler/optimizer/EVM target and dependency lockfile; final ABI, storage layout, EIP-712 schemas and fixtures; architecture/payment-flow diagram; this threat model and invariants; test and coverage reports; static-analysis output; verified addresses and fork block; known issues; deployment script and intended constructor arguments.
+
+Request separate quote lines for (a) initial review, (b) one remediation review covering only fixes, and (c) optional deployment-bytecode verification. State the expected delivery dates needed for week 4. After scope freeze, record every Solidity, dependency, compiler-setting, constructor, or typed-data change in a diff manifest. New functionality or a changed trust boundary is a new audit scope; narrowly corrective changes receive remediation review. Mainnet deployment is gated on written closure or explicit risk acceptance for every finding.
+
+## 7. Deployment runbook and release gates
+
+The repository README must contain executable commands using the chosen framework for build, full tests, fixed-block mainnet-fork tests, deterministic deployment, source verification, and bytecode comparison. Do not invent commands until the framework is selected in week 1. Required secrets/configuration are an Ethereum mainnet RPC URL, block-explorer API key, deployer key/hardware-wallet path, collection address, canonical WETH address, royalty multisig, and deployer funding; secrets stay outside the repository.
+
+Pre-deploy gates:
+
+- final commit and bytecode are covered by audit/remediation confirmation;
+- chain ID is 1; all three constructor addresses are nonzero, checksummed, independently verified, and approved by two people;
+- royalty recipient is the intended multisig and its signer/recovery policy has been tested;
+- fork tests pass against the selected recent block and CI reproduces the build;
+- frontend/API point to the computed deployment address only after verified source and immutable values are checked.
+
+Post-deploy smoke test:
+
+1. Verify source and compare runtime bytecode with the audited artifact.
+2. Read and record all immutables and the EIP-712 domain.
+3. With a team-owned NFT, approve the marketplace, sign a low-price listing, buy it from a second account, and assert NFT ownership plus the exact 2.5%/97.5% ETH split.
+4. Wrap/approve WETH from the first account, sign a token offer, accept it from the current owner, and assert ownership plus the exact WETH split.
+5. Sign and cancel one order and bulk-invalidate another; prove both settlement attempts revert.
+6. Confirm indexed events match receipts and the marketplace holds no NFT, ETH, or WETH attributable to successful settlements.
+
+If a smoke step fails, keep creation and display of new orders disabled in the web UI, publish status, preserve evidence, and investigate. Because the contract is immutable and unpausable, do not advertise it as ready until every gate passes.

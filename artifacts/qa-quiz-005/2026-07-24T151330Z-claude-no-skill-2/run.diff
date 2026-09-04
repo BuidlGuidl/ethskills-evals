@@ -1,0 +1,99 @@
+diff --git a/answer.md b/answer.md
+new file mode 100644
+index 0000000..56247ae
+--- /dev/null
++++ b/answer.md
+@@ -0,0 +1,90 @@
++# Why production hits the public Base RPC
++
++## The exact chain
++
++**1. `NEXT_PUBLIC_*` is a build-time constant, not a runtime read.**
++In Next.js, `process.env.NEXT_PUBLIC_RPC_URL` is not looked up at runtime.
++Webpack's DefinePlugin does a **textual substitution at `next build` time**:
++every occurrence of `process.env.NEXT_PUBLIC_RPC_URL` in the bundle is
++replaced with the string literal that was present in the *build*
++environment. After that, the value is frozen into the JS chunks. There is
++no `process.env` object in the browser to consult later.
++
++**2. Dev machines vs. the production build see different environments.**
++On a developer machine, `.env.local` (or the shell) has
++`NEXT_PUBLIC_RPC_URL=<paid RPC>`, so at build/dev time it is inlined as the
++paid URL — hence no 429s locally.
++
++The production artifact is a **static Next.js build on generic hosting**.
++If the CI/build step that ran `next build` did **not** have
++`NEXT_PUBLIC_RPC_URL` set in its environment, then `process.env.NEXT_PUBLIC_RPC_URL`
++evaluates to `undefined` and gets inlined as `undefined`. Setting the var
++in the *host's* runtime env does nothing — the value was already baked in
++at build time. This is the root misconception: people set it on the server
++where the site is served, not in the environment where it was compiled.
++
++**3. `undefined` override → the transport falls through to the public RPC.**
++In `scaffold.config.ts`:
++```ts
++rpcOverrides: { [chains.base.id]: process.env.NEXT_PUBLIC_RPC_URL }
++```
++In production this becomes `{ [base.id]: undefined }`.
++
++In `wagmiConfig.tsx` the client builder does:
++```ts
++let rpcFallbacks = [http()];                     // http() with NO url = chain's default *public* RPC
++const rpcOverrideUrl = scaffoldConfig.rpcOverrides?.[chain.id];
++if (rpcOverrideUrl) {
++  rpcFallbacks = [http(rpcOverrideUrl), http()];
++} else {
++  // no override → try Alchemy, else keep [http()]
++  ...
++}
++transport: fallback(rpcFallbacks)
++```
++`rpcOverrideUrl` is `undefined` → falsy → the `if` is skipped. With no
++Alchemy key configured (or the default shared key), `rpcFallbacks` stays
++`[http()]`. **`http()` with no argument resolves to the chain's built-in
++default RPC — for Base that's `mainnet.base.org`.** Every production request
++therefore lands on the public endpoint and gets rate-limited (429).
++
++So: unset build-time env var → `undefined` override → `else` branch →
++bare `http()` → public Base RPC → 429s.
++
++## The one operational check that settles whether the fix is real
++
++**Grep the actually-deployed JS bundle (or watch the production Network tab)
++for the RPC hostname.** Because the value is baked in at build time, the only
++proof is in the shipped artifact, not in any server config screen:
++
++- Confirm the paid RPC URL string appears in the deployed `_next/static/*.js`
++  chunks, and that `mainnet.base.org` is **not** the endpoint the JSON-RPC
++  `POST`s go to.
++- Equivalently, open the live site, DevTools → Network, and verify the
++  `eth_*` POST requests target the paid host.
++
++Corollary this check enforces: the fix is to set `NEXT_PUBLIC_RPC_URL` in the
++**build/CI environment and re-run `next build`**, then redeploy. Setting it as
++a runtime env var on the host changes nothing for a static export.
++
++## The second, transport-level trap (persists even after the env var is fixed)
++
++In `packages/nextjs/services/web3/wagmiConfig.tsx`, once the override is
++present the code builds:
++```ts
++rpcFallbacks = [http(rpcOverrideUrl), http()];
++transport: fallback(rpcFallbacks)
++```
++The **bare `http()` public RPC is still the second entry in the `fallback`
++list.** wagmi/viem's `fallback` transport uses the first healthy transport
++but **spills over to the next one on any error, timeout, or 429** from the
++paid endpoint. Under production load, a single transient failure (or the
++paid provider's own rate limit / a slow response) silently routes that
++request to `mainnet.base.org` — which then gets rate-limited too. So a
++subset of requests keeps hitting the public RPC even though the primary is
++now the paid one, and it's intermittent/hard to spot.
++
++**Fix for the trap:** don't keep the unauthenticated `http()` as the fallback
++for a paid setup — either use `fallback([http(rpcOverrideUrl)])` (override
++only), or make the second entry a *second authenticated* endpoint, so no
++failure path leads to a public RPC.
+
+# Untracked files and status
+ A answer.md

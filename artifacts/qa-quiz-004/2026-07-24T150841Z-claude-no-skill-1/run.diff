@@ -1,0 +1,166 @@
+diff --git a/answer.md b/answer.md
+new file mode 100644
+index 0000000..d6d1dc2
+--- /dev/null
++++ b/answer.md
+@@ -0,0 +1,157 @@
++# Mobile WalletConnect deep-linking on Scaffold-ETH 2 / Base
++
++## 1. Why nothing auto-opened before the patch
++
++With WalletConnect v2, the dApp and the wallet are **two separate apps** that
++never talk directly. They share an encrypted session and communicate through
++the WalletConnect **relay** (a WebSocket server). When you call
++`writeContractAsync`, wagmi's `walletConnect` connector does this:
++
++1. Serializes the transaction as an `eth_sendTransaction` JSON-RPC request.
++2. Encrypts it with the session key and **publishes it to the relay** over the
++   WebSocket. The relay forwards it to Rainbow.
++3. Rainbow receives it and queues the signing prompt.
++
++That is why, when the user manually switches to Rainbow, **the request is
++already sitting there** — step 3 always happened. The delivery is not the
++problem.
++
++The missing piece is **foregrounding the wallet**. On mobile, the request
++arriving over the relay does *not* bring Rainbow to the front on its own (unless
++the wallet's OS-level push wakes it, which is unreliable and slow). Something
++has to switch apps, and the only thing that can is a **deep-link navigation**
++from the browser (`location.href = "rainbow://…"`).
++
++Here's the catch that breaks it: iOS/Safari (and mobile Chrome) only allow one
++app to open another **synchronously, inside the user's tap gesture** — the
++"transient user activation" window. `writeContractAsync` is asynchronous: it has
++to encrypt and round-trip the publish to the relay before it can even *know*
++which wallet to redirect to. By the time RainbowKit/WalletConnect would fire the
++redirect, the user activation from the tap has **already expired**, so the OS
++silently drops the app-switch. No error, no wallet — the page "just sits there,"
++exactly as reported, while the request quietly rides the relay into Rainbow.
++
++(Newer WalletConnect/RainbowKit versions try to auto-redirect using
++`session.peer.metadata.redirect`, but on iOS this is precisely the case that
++gets blocked when the async gap is too long.)
++
++## 2. Why the patch made it worse
++
++```js
++window.location.href = "rainbow://";   // fires first
++await writeContractAsync({ ... });     // runs second
++```
++
++The teammate correctly noticed the redirect must be in the gesture, so they put
++it first — and it works: Rainbow opens instantly. But now the **ordering is
++inverted against causality**, and it breaks in two compounding ways:
++
++- **The request doesn't exist yet.** The redirect happens *before*
++  `writeContractAsync` has published anything to the relay. Rainbow foregrounds
++  to nothing to sign.
++- **The page gets suspended before it can send.** `location.href = "rainbow://"`
++  backgrounds the browser tab. Mobile browsers **throttle or freeze JS and can
++  drop the WebSocket** in a backgrounded tab. So the `writeContractAsync` that
++  runs *after* the redirect may never execute, and even if it starts, the relay
++  publish may never flush. The request is never delivered at all — hence "the
++  transaction never lands onchain."
++
++Bare `rainbow://` also just opens the app's home screen, not a signing screen —
++there's no request bound to it.
++
++So the patch traded "request delivered but wallet doesn't open" for "wallet
++opens but request never sent." Strictly worse: before, the user could rescue it
++by switching apps manually; now there's genuinely nothing to sign.
++
++## 3. The correct pattern
++
++**Send first, foreground second, with a short delay between.**
++
++```js
++import { useAccount } from "wagmi";
++
++const { connector } = useAccount();
++
++async function onStake() {
++  // 1. Publish the request to the relay FIRST. Do not await it here — it only
++  //    resolves after the user signs, which hasn't happened yet.
++  const txPromise = writeContractAsync({ /* ...stake args... */ });
++
++  // 2. Foreground the paired wallet (mobile WC only).
++  await openWalletIfNeeded(connector);
++
++  return txPromise; // await elsewhere for the receipt / UI state
++}
++
++async function openWalletIfNeeded(connector) {
++  // --- skip conditions (see below) ---
++  if (!isMobile()) return;                      // desktop: phone gets it via relay/push
++  if (connector?.id !== "walletConnect") return; // injected / in-app browser: prompts inline
++
++  const provider = await connector.getProvider();
++  const redirect = provider?.session?.peer?.metadata?.redirect;
++  if (!redirect) return;                         // wallet gave no link — don't guess a scheme
++
++  const link = redirect.universal || redirect.native; // prefer universal on iOS
++  if (!link) return;
++
++  // 3. Let the relay finish publishing before the OS backgrounds us.
++  await new Promise((r) => setTimeout(r, 150));
++  window.location.href = link;
++}
++```
++
++**Ordering.** `writeContractAsync` is fired before the redirect so the request
++is actually on the relay by the time the wallet comes forward. This is the exact
++opposite of the patch.
++
++**The delay, and why its length matters.** The `~150 ms` pause exists to let the
++encrypted request **finish flushing over the WebSocket relay** before
++`location.href` backgrounds the page (which can suspend JS and the socket). You
++are racing two things:
++
++- Too short (the patch's ~0 ms): the app switches before the publish completes →
++  nothing to sign / never sent.
++- Too long (say >1 s): you drift outside the tap's user-activation grace window,
++  the OS blocks the app-switch, and it also just feels laggy.
++
++A small delay in the low-hundreds-of-milliseconds is the sweet spot: enough for a
++single relay round-trip to flush, short enough to keep the gesture "warm." Tune
++empirically (~100–300 ms); it's a heuristic, not an exact constant.
++
++**Which wallet scheme to open.** wagmi reports `connector.id === "walletConnect"`
++for **every** WC wallet — Rainbow, MetaMask, Trust, Zerion, all identical. So you
++**must not hardcode `rainbow://`**. Instead read the actual paired wallet from
++the live session:
++
++```
++provider.session.peer.metadata.redirect = {
++  native:    "rainbow://",              // custom scheme
++  universal: "https://rnbwapp.com/…"    // universal/app link
++}
++```
++
++Use `redirect.universal || redirect.native`. Universal links are more reliable
++than custom schemes on iOS (custom schemes can silently fail if the app isn't
++installed or the OS is in a picky state). This makes the same code correct for
++whichever wallet the user actually connected — the wallet tells you its own link.
++
++**When to skip the deep link entirely:**
++
++- **Desktop / laptop browsers.** The request rides the relay to the user's phone,
++  which surfaces it via its own notification. Redirecting the desktop browser to
++  `wallet://` does nothing (or errors). Gate on a mobile check.
++- **Injected / in-app-browser connectors** (`connector.id` is `injected`,
++  `io.metamask`, `coinbaseWallet`, or the user is inside a wallet's built-in dApp
++  browser). Here the wallet is the same runtime and prompts **inline** — a deep
++  link would either no-op or bounce the user out of context.
++- **No redirect metadata in the session.** Some wallets don't populate
++  `peer.metadata.redirect`. Don't guess a scheme — skip and let the request wait
++  (the pre-patch behavior, which at least lets the user switch manually).
++- **Desktop-initiated WC sessions in general** (QR-scanned from a browser to a
++  separate phone): never redirect the initiating device.
++
++The one-line summary: **the request must be in flight before you switch apps, the
++wallet target must come from the session's own redirect metadata (not a
++hardcoded scheme), and the switch should only happen for mobile WalletConnect
++sessions.**
+
+# Untracked files and status
+ A answer.md
