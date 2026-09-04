@@ -1,0 +1,158 @@
+diff --git a/answer.md b/answer.md
+new file mode 100644
+index 0000000..5ec1939
+--- /dev/null
++++ b/answer.md
+@@ -0,0 +1,149 @@
++# The USDC balance arc
++
++## TL;DR
++
++`USDC` was never registered as a contract Scaffold-ETH knows about, so
++the hook silently no-op'd. Your teammate registered it in the wrong
++file — a **generated** file that `yarn deploy` rewrites from scratch.
++The right home for a contract your own Hardhat project does **not**
++deploy (a canonical token like USDC) is
++`packages/nextjs/contracts/externalContracts.ts`, keyed by Base's chain
++id `8453`.
++
++---
++
++## 1. Why the hook returned `undefined` silently instead of erroring
++
++`useScaffoldReadContract` doesn't take an address or ABI — you give it a
++`contractName` string and it looks the contract up for you. Under the
++hood it does roughly:
++
++1. `useDeployedContractInfo("USDC")` — resolve name → `{ address, abi }`
++   by looking in the **merged contracts map** (`deployedContracts` +
++   `externalContracts`) for the **current target-network chain id**.
++2. Feed that into wagmi's `useReadContract`, but gated:
++   `query.enabled = Boolean(address && abi && ...args present)`.
++
++When `"USDC"` isn't in the map, step 1 returns `undefined`. So `address`
++and `abi` are `undefined`, `enabled` is `false`, and wagmi **never fires
++the request**. That's exactly the symptom triad you saw:
++
++- **`data` stays `undefined`** — the query is disabled, nothing ever
++  resolves.
++- **No runtime error** — a missing name isn't a thrown exception; the
++  hook is designed to sit in a disabled/loading state, not crash. (Newer
++  SE-2 emits at most a `console.warn`; nothing surfaces in the UI or the
++  network tab.)
++- **No failed request in the network tab** — because no request was ever
++  made. A wrong address would show a reverted RPC call; a *missing name*
++  shows nothing at all.
++
++The lookup is also **chain-scoped**: the contract must exist under the
++chain id of your active `targetNetwork`. Registered under the wrong
++chain id, it's just as invisible.
++
++## 2. Why the teammate's fix worked for a week, then self-destructed
++
++`packages/nextjs/contracts/deployedContracts.ts` is a **generated
++artifact**, not a source file. It is overwritten from scratch every time
++you deploy.
++
++Pipeline (hardhat flavor):
++
++```
++yarn deploy
++  → runs packages/hardhat/deploy/*.ts (hardhat-deploy)
++  → writes deployment JSON to packages/hardhat/deployments/<network>/
++  → runs the generate step (scripts/generateTsAbis.ts)
++  → REWRITES packages/nextjs/contracts/deployedContracts.ts
++     from those deployment JSONs
++```
++
++The generator only knows about contracts **your Hardhat project
++deployed** (things in `deployments/`). USDC on Base is a pre-existing
++canonical token — your project never deploys it, so it's never in
++`deployments/`, so the regenerated file can't contain it. Hand-pasting
++the entry survived only until the next `yarn deploy`, which regenerated
++the file and wiped the manual edit. Blank page returns.
++
++It "worked all week" purely because nobody deployed during that week.
++
++## 3. The correct registration
++
++Contracts you reference but do **not** deploy yourself go in the
++**hand-maintained, non-generated** file:
++
++```
++packages/nextjs/contracts/externalContracts.ts
++```
++
++Scaffold-ETH merges `externalContracts` with the generated
++`deployedContracts` before every name lookup, and `yarn deploy` never
++touches `externalContracts.ts`. So the entry is durable.
++
++Key it under Base's chain id **`8453`**, and make sure
++`scaffold.config.ts` `targetNetworks` actually includes Base (`chains.base`)
++so the active chain id matches the key.
++
++### The USDC-on-Base entry
++
++Native Circle USDC on Base mainnet:
++`0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` (6 decimals). It's a proxy,
++but for reads you only need the ERC-20 function fragments in the ABI.
++
++```ts
++// packages/nextjs/contracts/externalContracts.ts
++import { GenericContractsDeclaration } from "~~/utils/scaffold-eth/contract";
++
++const externalContracts = {
++  8453: {
++    USDC: {
++      address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
++      abi: [
++        {
++          type: "function",
++          name: "balanceOf",
++          stateMutability: "view",
++          inputs: [{ name: "account", type: "address" }],
++          outputs: [{ name: "", type: "uint256" }],
++        },
++        {
++          type: "function",
++          name: "decimals",
++          stateMutability: "view",
++          inputs: [],
++          outputs: [{ name: "", type: "uint8" }],
++        },
++        {
++          type: "function",
++          name: "symbol",
++          stateMutability: "view",
++          inputs: [],
++          outputs: [{ name: "", type: "string" }],
++        },
++        // add allowance/transfer/approve if the page needs writes too
++      ],
++    },
++  },
++} as const;
++
++export default externalContracts satisfies GenericContractsDeclaration;
++```
++
++No change needed at the call site — `useScaffoldReadContract({ contractName:
++"USDC", functionName: "balanceOf", args: [connectedAddress] })` resolves
++against the merged map and just works. It survives `yarn deploy` because
++it lives outside the generated file.
++
++### Rendering note
++
++USDC is 6 decimals, not 18. Format with `formatUnits(usdcBalance, 6)`
++(not `formatEther`) or the number will be off by 10^12.
++
++---
++
++## One-line summary
++
++Missing name → disabled query → silent `undefined`; the fix belonged in
++the non-generated `externalContracts.ts` under chain id `8453`, not in
++the deploy-regenerated `deployedContracts.ts`.
+
+# Untracked files and status
+ A answer.md

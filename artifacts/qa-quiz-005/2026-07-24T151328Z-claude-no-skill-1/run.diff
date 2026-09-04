@@ -1,0 +1,92 @@
+diff --git a/answer.md b/answer.md
+new file mode 100644
+index 0000000..65e572d
+--- /dev/null
++++ b/answer.md
+@@ -0,0 +1,83 @@
++# Why production hits `mainnet.base.org` and how to settle it
++
++## The exact chain
++
++**1. `NEXT_PUBLIC_*` is inlined at build time, not read at runtime.**
++Next.js does not read `process.env.NEXT_PUBLIC_RPC_URL` in the browser. During
++`next build`, webpack **statically string-replaces** every
++`process.env.NEXT_PUBLIC_*` reference with the literal value present in the
++build environment's shell at that moment, then bakes it into the JS bundle.
++There is no server-side `process.env` lookup afterward — especially not for a
++static export on generic hosting, where no Node process runs at all. The value
++is frozen into the shipped `.js` chunks.
++
++**2. Dev vs. prod diverge because the value comes from *the build host's* env.**
++- Dev machines: the developer has `NEXT_PUBLIC_RPC_URL` in their local
++  `.env.local` / shell, so `yarn start` (or `next dev`) inlines the paid URL.
++  Everything routes through the paid RPC → no 429s.
++- Production: the CI/build step that produced the static bundle **did not have
++  `NEXT_PUBLIC_RPC_URL` set**. So the compiler inlined it as `undefined`.
++  The `.env.local` on the deploy host is irrelevant — it's never consulted by a
++  static export. The paid URL simply never entered the bundle.
++
++**3. Undefined override collapses `rpcOverrides`.**
++```ts
++rpcOverrides: { [chains.base.id]: process.env.NEXT_PUBLIC_RPC_URL }
++// becomes, in the prod bundle:
++rpcOverrides: { [chains.base.id]: undefined }
++```
++
++**4. The transport falls back to the chain's default public RPC.**
++In `wagmiConfig.tsx`'s `client({ chain })`, the override is read as
++`rpcOverrideUrl = scaffoldConfig.rpcOverrides?.[chain.id]`. It's `undefined`, so
++the `if (rpcOverrideUrl)` branch is skipped and `rpcFallbacks` stays/ends up as
++a bare `[http()]` (or public-first). **`http()` called with no URL uses
++`chain.rpcUrls.default.http[0]`**, which for Base is exactly
++`https://mainnet.base.org`. Every production request pours onto the public
++endpoint → 429s.
++
++## The one operational check that settles whether the fix is real
++
++**Grep the deployed production bundle (or watch the prod DevTools Network tab)
++for the RPC hostname — do not trust source, `.env`, or a redeploy.**
++
++Because the URL is inlined, the truth is in the shipped artifact:
++
++```bash
++# against the built/deployed static assets:
++grep -r "your-paid-rpc-host" .next/  # or curl the live .js chunks
++grep -r "mainnet.base.org" .next/
++```
++
++If the paid host appears as a string literal → the env var was present **at
++build time** and the fix is real. If you still see `mainnet.base.org` /
++`undefined` → the rebuild didn't have the var. This distinguishes the only two
++failure modes that a config diff can't: (a) redeploying the *same* bundle
++without rebuilding, and (b) rebuilding in a CI environment that still lacks the
++var. Equivalently: load production, open the Network tab, and confirm the
++JSON-RPC POSTs go to the paid host, not `mainnet.base.org`.
++
++## The second, transport-level trap in `wagmiConfig.tsx`
++
++Even once the env var is fixed and the override is present, the transport is:
++
++```ts
++rpcFallbacks = [http(rpcOverrideUrl), http()];   // note the bare http()
++return createClient({ chain, transport: fallback(rpcFallbacks) });
++```
++
++The bare **`http()` (= public `mainnet.base.org`) is permanently kept in the
++`fallback()` chain** as the second transport. viem's `fallback` transport
++**fails over to the next transport on any error from the primary — including a
++429**. So under load, when the paid RPC rate-limits or times out, requests
++silently roll onto the public endpoint anyway (and with `rank` enabled, viem
++also periodically probes the ranked transports, touching the public RPC even
++when it isn't primary). The public RPC is never actually removed from rotation;
++fixing the env var only changes *which* transport is tried first.
++
++**Related consequence (same root):** Scaffold-ETH always appends `mainnet`
++(chain id 1) to `enabledChains` for ENS / ETH-price resolution, but
++`rpcOverrides` only keys `base.id`. So all mainnet requests hit `http()` with no
++override — Ethereum's default public RPC — regardless of the Base fix. If you
++want zero public-RPC traffic, add an override for **every** enabled chain and
++drop/replace the bare `http()` failover.
+
+# Untracked files and status
+ A answer.md

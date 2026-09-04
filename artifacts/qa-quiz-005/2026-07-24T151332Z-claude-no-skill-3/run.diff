@@ -1,0 +1,166 @@
+diff --git a/answer.md b/answer.md
+new file mode 100644
+index 0000000..62ea031
+--- /dev/null
++++ b/answer.md
+@@ -0,0 +1,157 @@
++# Why production hits `mainnet.base.org` (and dev never does)
++
++## TL;DR
++
++`NEXT_PUBLIC_RPC_URL` is **inlined at `next build` time**, not read at runtime.
++The production static bundle was built in an environment where that variable
++was **not set**, so `process.env.NEXT_PUBLIC_RPC_URL` was frozen into the JS as
++`undefined`. With the override missing, wagmi's transport falls back to a bare
++`http()`, which resolves to the chain's **default public RPC** — for Base that
++is `https://mainnet.base.org`. Dev machines have the var in `.env.local`, so
++they never reproduce it.
++
++---
++
++## The exact chain, step by step
++
++### 1. `scaffold.config.ts` — the value is captured at build time
++
++```ts
++rpcOverrides: {
++  [chains.base.id]: process.env.NEXT_PUBLIC_RPC_URL,
++},
++```
++
++`process.env.NEXT_PUBLIC_RPC_URL` is **not** a runtime lookup in the browser.
++Next.js performs a static, compile-time **text substitution**: during
++`next build`, every occurrence of `process.env.NEXT_PUBLIC_*` is replaced by a
++string literal of whatever value existed **in the shell/CI environment that ran
++the build**. Only the `NEXT_PUBLIC_` prefix is exposed to client code; the
++substituted value is then baked into the emitted JS chunks.
++
++Consequence: for a **static export on generic hosting**, there is no server and
++no `.env` read at request time. The RPC URL is a constant that was decided the
++moment the build ran. If the build box didn't have `NEXT_PUBLIC_RPC_URL` in its
++environment, the literal that got inlined is `undefined` (an empty/absent
++value), so effectively:
++
++```ts
++rpcOverrides: { [chains.base.id]: undefined }
++```
++
++This is exactly why "the config looks right" — the *source* is correct; the
++*artifact* is not. The bug lives in the build environment, not the code.
++
++Why dev is clean: `yarn start` / local builds load `.env.local`, where devs
++keep the paid RPC URL, so the substitution bakes in the real URL and everything
++routes through the paid endpoint.
++
++### 2. `wagmiConfig.tsx` — missing override → default public RPC
++
++Inside `createConfig({ client({ chain }) { ... } })`, Scaffold-ETH builds the
++per-chain transport roughly like this:
++
++```ts
++let rpcFallbacks = [http()];                       // <-- bare http() = chain default public RPC
++
++const rpcOverrideUrl = scaffoldConfig.rpcOverrides?.[chain.id];
++if (rpcOverrideUrl) {
++  rpcFallbacks = [http(rpcOverrideUrl), http()];   // override first, public as backup
++} else {
++  const alchemyHttpUrl = getAlchemyHttpUrl(chain.id);
++  if (alchemyHttpUrl) {
++    const isUsingDefaultKey = scaffoldConfig.alchemyApiKey === DEFAULT_ALCHEMY_API_KEY;
++    rpcFallbacks = isUsingDefaultKey
++      ? [http(), http(alchemyHttpUrl)]             // public FIRST when only the shared demo key exists
++      : [http(alchemyHttpUrl), http()];
++  }
++}
++
++return createClient({ chain, transport: fallback(rpcFallbacks), ... });
++```
++
++With `rpcOverrideUrl === undefined`, the `if` branch is skipped. The transport
++that actually ships is `fallback([http()])` (or, if only the default demo
++Alchemy key is present, `fallback([http(), http(alchemyHttpUrl)])` — public
++**first**).
++
++### 3. What `http()` with no argument does
++
++`http(url?)` from viem, called with **no URL**, does not fail — it resolves the
++endpoint from the chain object: `chain.rpcUrls.default.http[0]`. For viem's
++`base` chain that default is **`https://mainnet.base.org`** — the public
++endpoint named in the ops report. So every JSON-RPC request in production POSTs
++to `mainnet.base.org`, and production traffic volume trips its rate limiter →
++**429**.
++
++### Chain summary
++
++```
++build env missing NEXT_PUBLIC_RPC_URL
++  → next build inlines process.env.NEXT_PUBLIC_RPC_URL as `undefined`
++    → scaffold.config rpcOverrides[base.id] === undefined
++      → wagmiConfig client(): override branch skipped
++        → transport = fallback([http()])   (bare http, no URL)
++          → http() resolves chain.rpcUrls.default.http[0] = https://mainnet.base.org
++            → all prod RPC → public endpoint → 429 under load
++```
++
++Dev diverges at step 1: `.env.local` supplies the URL, so the override is
++present and the paid RPC is used first.
++
++---
++
++## The one operational check that settles whether the fix is real
++
++**Grep the deployed production artifact (or watch the live Network tab) for the
++RPC host — do not test on a dev machine.**
++
++Because the value is frozen at build time, the paid URL, if present, is a
++literal string sitting in the shipped JS chunks. Concretely, either:
++
++- **Static check:** search the deployed bundle for the RPC host —
++  e.g. `grep -r "mainnet.base.org" <deployed>/_next/` and
++  `grep -r "<your-paid-rpc-host>" <deployed>/_next/`. If the paid host is
++  absent (or `mainnet.base.org` is present), the var was **not** in the build
++  environment — the fix isn't real yet.
++- **Runtime check:** open DevTools → Network on the **production** URL and
++  confirm the `eth_*` JSON-RPC POSTs go to the paid host, not `base.org`.
++
++This is *the* check because the failure is build-time inlining: you can only
++prove the fix by inspecting a **freshly rebuilt-and-redeployed** artifact.
++Setting the env var in the hosting dashboard, or confirming it works locally,
++proves nothing — a static export never reads env at runtime, so the var must be
++present in the **build/CI** step and the site rebuilt. Verifying source,
++dashboards, or dev behavior all give false greens.
++
++---
++
++## The second, transport-level trap (survives fixing the env var)
++
++Even once `NEXT_PUBLIC_RPC_URL` is correctly baked in, the override path builds:
++
++```ts
++rpcFallbacks = [http(rpcOverrideUrl), http()];   // paid FIRST, bare public SECOND
++```
++
++and wraps it in viem's **`fallback([...])`** transport. The second leg is a
++bare `http()` — i.e. `mainnet.base.org` again. `fallback` automatically
++**demotes to the next transport whenever the first one errors** — including on
++timeouts, 5xx, transient network blips, and (critically) **429 rate-limit
++responses from the paid provider**. So the moment the paid RPC hiccups or
++throttles, requests spill over to the public endpoint. Under production load
++that spillover can itself get 429'd, and — because `fallback` also periodically
++re-probes/ranks — some share of traffic keeps leaking to the public RPC even
++though the override "is set."
++
++Related sub-trap in the same file: if `scaffold.config.alchemyApiKey` is still
++the shared **default demo key**, the no-override branch orders the fallback as
++`[http(), http(alchemyHttpUrl)]` — **public first by design**. So a build that
++also lacks a real Alchemy key sends primary traffic to the public RPC
++regardless.
++
++**Fixes:** drop the bare `http()` backup for the override case (use
++`fallback([http(rpcOverrideUrl)])`, or make the second leg another *paid*
++endpoint), and/or `throwOnAllErrors`-style handling so a throttled paid RPC
++fails loudly instead of silently draining onto `mainnet.base.org`. And set a
++real Alchemy key so no code path ranks the public endpoint first.
+
+# Untracked files and status
+ A answer.md
