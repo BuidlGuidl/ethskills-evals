@@ -72,7 +72,7 @@ What if nobody calls it? ____________
 Does it need gas incentives? ____________
 ```
 
-If "what if nobody calls it?" breaks your system, you have a design problem. Fix it before writing code. The "Nothing runs itself" section of `concepts/SKILL.md` is the fix: accrue at read time so no scheduled call exists, or make the function permissionless and pay whoever calls it — and price that reward against the caller's gas before you believe it.
+If "what if nobody calls it?" breaks your system, you have a design problem. Fix it before writing code. See `concepts/SKILL.md` for incentive design patterns.
 
 ### Chain Selection
 
