@@ -115,13 +115,26 @@ token totals are the `usage.total_tokens` the harness wrote into each `result.ya
 | goal-001 | `no_skill` | 3 | 34 | 426s | $2.00 | $1.66–$2.13 | 643,118 |
 | goal-001 | `with_skill` @ 24 lines | 3 | 42 | 371s | $1.97 | $1.64–$2.79 | 532,019 |
 
+**The two arms were not run at the same concurrency, and only the duration column is
+affected.** All six `no_skill` runs were launched together — `created` timestamps
+`19:04:20` through `19:04:25` — so they ran 6-way concurrent and thinned out as the quiz runs
+finished (6 concurrent for the first ~208s, 2 by 397s). The `with_skill` arm ran sequentially
+*within* each task and the two tasks overlapped each other, so it was 2-way concurrent for all
+but its last goal run. Contention inflates unaided wall-clock: the unaided `227s` and `426s`
+are upper bounds, and the skilled `235s` and `371s` are closer to clean. Turns, tokens and cost
+are unaffected. `33a3acfc` matched concurrency on the wallets rewrite for exactly this reason;
+these runs did not, and the duration column below should be read with that in mind.
+
 **The skill costs turns and buys nothing on the clock.** On quiz it runs 27 turns against 15
-and $1.12 against $0.90 — roughly 25% more cost for the same 4/4. On goal the medians cross:
-more turns (42 vs 34) but *less* wall-clock (371s vs 426s) and effectively the same cost
-($1.97 vs $2.00), because the unaided runs spend their time on a wider, less directed search.
-Neither delta is worth much at n=3, and both sit inside the arms' own ranges; they are
-reported because the runs now exist to report them, not because three runs settle a 25% cost
-question.
+and $1.12 against $0.90 — roughly 25% more cost for the same 4/4, and the clock is a wash
+(235s vs 227s) or worse for the skill once the unaided contention is allowed for. On goal the
+medians appear to cross — more turns (42 vs 34) but *less* wall-clock (371s vs 426s) at
+effectively the same cost ($1.97 vs $2.00) — but that 55s is the one delta that runs in the
+skill's favour and it is also the one the concurrency gap eats first: a 6-way-contended unaided
+arm is exactly how a 55s "saving" appears without the skill saving anything. **Read goal as no
+measured clock difference, not as a saving.** Neither delta is worth much at n=3, both sit
+inside the arms' own ranges, and they are reported because the runs now exist to report them,
+not because three runs settle a 25% cost question.
 
 The goal spread is wide enough to matter: `with-skill-2` ran 2.23M tokens against 445k and
 532k for its siblings — a 4x outlier inside n=3, driven by a much longer search: 55 turns,
@@ -150,8 +163,17 @@ capture, it is measurable *against a control* for the first time.
 
 **Live-source checking is not what the skill adds.** All twelve runs checked live sources and
 no run in either arm asserted fork status from memory; all twelve fetched `eips.ethereum.org`.
-The unaided runs got the substance right too — every one of them names Verkle as dropped and
-`ethereum.org/roadmap/verkle-trees` as stale, which is why they pass.
+The unaided runs got the substance right too: **all six name Verkle as dropped**, which is why
+they pass.
+
+Catching the *stale page* is a separate and much rarer thing, and worth keeping separate from
+the Verkle call. Only **2/6** unaided runs flag `ethereum.org/roadmap/verkle-trees` itself —
+quiz `n1` ("as of today it still presents Verkle as an active initiative") and quiz `n2`
+("**stale**, still presents Verkle as the active plan"). Goal `n1` flags a *different*
+ethereum.org page (`/roadmap/statelessness`, "cites 2023 figures"); goal `n2` and `n3` warn
+that outlets and articles are out of date rather than ethereum.org; quiz `n3` says nothing
+about staleness at all. Nothing in the rubric grades the catch, so the 4/6 that miss it still
+pass.
 
 **What the skill adds is which sources and which vocabulary**, and here the arms separate
 cleanly:
@@ -169,22 +191,24 @@ on its own, in either task, and not one used it in a deliverable. The metas row 
 of the four and cuts both ways — the skilled arm is 4/6, not 6/6, so the pointer moves *where*
 runs look more reliably than it moves *how completely*.
 
-Per-run detail, over the committed deliverable in both arms:
+Per-run detail, over the committed deliverable in both arms. Sizes are decimal kB
+(bytes ÷ 1000) throughout — an earlier version of this table mixed kB on the skilled rows
+with KiB on the unaided ones:
 
 | Task | Variant | Run | `forkcast` mentions | SFI/CFI/DFI uses | Deliverable |
 | --- | --- | --- | ---: | ---: | ---: |
-| quiz | `no_skill` | n1 | 0 | 2 | 15.3 KB |
-| quiz | `no_skill` | n2 | 0 | 0 | 11.7 KB |
-| quiz | `no_skill` | n3 | 0 | 0 | 9.4 KB |
-| quiz | `with_skill` | w1 | 3 | 6 | 8.9 KB |
-| quiz | `with_skill` | w2 | 2 | 4 | 13.2 KB |
-| quiz | `with_skill` | w3 | 2 | 5 | 13.4 KB |
-| goal | `no_skill` | n1 | 0 | 0 | 29.4 KB |
-| goal | `no_skill` | n2 | 0 | 0 | 29.4 KB |
-| goal | `no_skill` | n3 | 0 | 0 | 27.5 KB |
-| goal | `with_skill` | w1 | 1 | 15 | 23.5 KB |
-| goal | `with_skill` | w2 | 5 | 15 | 29.3 KB |
-| goal | `with_skill` | w3 | 5 | 15 | 23.0 KB |
+| quiz | `no_skill` | n1 | 0 | 2 | 15.7 kB |
+| quiz | `no_skill` | n2 | 0 | 0 | 12.0 kB |
+| quiz | `no_skill` | n3 | 0 | 0 | 9.7 kB |
+| quiz | `with_skill` | w1 | 3 | 6 | 8.9 kB |
+| quiz | `with_skill` | w2 | 2 | 4 | 13.2 kB |
+| quiz | `with_skill` | w3 | 2 | 5 | 13.4 kB |
+| goal | `no_skill` | n1 | 0 | 0 | 30.1 kB |
+| goal | `no_skill` | n2 | 0 | 0 | 30.1 kB |
+| goal | `no_skill` | n3 | 0 | 0 | 28.2 kB |
+| goal | `with_skill` | w1 | 1 | 15 | 23.5 kB |
+| goal | `with_skill` | w2 | 5 | 15 | 29.3 kB |
+| goal | `with_skill` | w3 | 5 | 15 | 23.0 kB |
 
 On the meta EIPs specifically: quiz `w1`, quiz `w3`, goal `w1` and goal `w3` pulled both
 EIP-7773 (Glamsterdam) and EIP-8081 (Hegotá) from `eips.ethereum.org` by name. Quiz `w2`
@@ -218,7 +242,8 @@ history rather than the state trie — `w3` spells it out in a table cell: "**Do
 archive nodes** — an archive node keeps this by definition." `w1` went further and flagged
 that ethereum.org's own `/roadmap/statelessness` page is stale on 4444's shipping status,
 preferring the fork meta EIPs as authoritative — the skill's habit applied to a source the
-skill never names.
+skill never names. That one is not exclusive to the skilled arm: unaided goal `n1` flags the
+same page, on a different ground (its 2023 archive-size figures).
 
 ## Mistakes
 
@@ -230,9 +255,9 @@ and a mistake record invented from a passing run is noise.
 | Question | Answer |
 | --- | --- |
 | Did the skill improve pass rate? | No, and neither did the version it replaced. `6/6 with_skill` @ 24 lines vs `6/6 no_skill`; the 267-line version was also `6/6`. The prior these tasks test is not stale for `claude-opus-5`, so both arms sit at ceiling |
-| Did it reduce time/tokens? | Not against the 267-line version — all twelve 2026-07-25 runs predate the `## run stats` footer, so `run-stats` has no duration, cost or token figure for either of that benchmark's arms. Against an unaided control on the same harness it costs rather than saves on quiz (`27 turns / 235s / $1.12` vs `15 / 227s / $0.90`) and roughly breaks even on goal (`42 / 371s / $1.97` vs `34 / 426s / $2.00`) — n=3 a side, inside the arms' own ranges |
+| Did it reduce time/tokens? | Not against the 267-line version — all twelve 2026-07-25 runs predate the `## run stats` footer, so `run-stats` has no duration, cost or token figure for either of that benchmark's arms. Against an unaided control on the same harness it costs rather than saves on quiz (`27 turns / 235s / $1.12` vs `15 / 227s / $0.90`) and roughly breaks even on goal (`42 / 371s / $1.97` vs `34 / 426s / $2.00`) — n=3 a side, inside the arms' own ranges. The duration cells are not comparable like-for-like: the unaided arm ran 6-way concurrent against the skilled arm's 2-way, which inflates unaided wall-clock and accounts for goal's apparent 55s saving. Turns, tokens and cost are unaffected |
 | Did it create negative deltas? | None on the rubric — no expect regressed. The one cost is turns and spend on quiz, ~25% above the unaided arm for the same 4/4 |
-| What mistakes repeated without the skill? | None, re-measured 2026-09-03 rather than carried over: `no_skill` never recommended Verkle (all six call it dropped and `ethereum.org/roadmap/verkle-trees` stale), never claimed a scheduled fork, never mistook EIP-4444 for a state-growth fix. What it did miss is forkcast — `0/6` unaided runs found it — and the SFI/CFI/DFI status vocabulary, `1/6` |
+| What mistakes repeated without the skill? | None, re-measured 2026-09-03 rather than carried over: `no_skill` never recommended Verkle (`6/6` call it dropped), never claimed a scheduled fork, never mistook EIP-4444 for a state-growth fix. Flagging `ethereum.org/roadmap/verkle-trees` as stale is a *separate* signal and a rarer one — `2/6`, quiz `n1` and `n2` — but no expect grades it. What it did miss is forkcast — `0/6` unaided runs found it — and the SFI/CFI/DFI status vocabulary, `1/6` |
 | What mistakes remained with the skill? | None |
 | What should change in the skill? | Nothing this benchmark forces. The reduction removed the one concrete defect the July report named — a hardcoded Fork Process table that was already going stale in a skill whose thesis is anti-staleness — and replaced it with a pointer to forkcast. The control arm confirms that pointer is load-bearing: `0/6` unaided runs reached forkcast on their own, `6/6` skilled ones did. Glamsterdam's scope has in fact moved from 3 named EIPs to 18 SFI since July, which the old table would have gotten wrong |
-| What should change in the eval? | **These two tasks no longer discriminate on `claude-opus-5` and should stop being used as if they do.** The expects grade the conclusion, so parametric recall satisfies them — confirmed, not assumed: a freshly measured unaided arm reaches the same 6/6. But the deliverables *do* separate, `0/6` vs `6/6` on forkcast and `1/6` vs `6/6` on status vocabulary, so option (1) below is no longer speculative — it is grading a delta this benchmark has now measured. Three options, unchanged from the July report and now overdue: (1) grade the *sourcing*, not the conclusion — an expect that requires the brief cite the fork-scope source it used, which is where the arms actually differ; (2) re-target the claim past the model's knowledge cutoff, e.g. Hegotá's current non-headliner scope, which is genuinely in flux (~66 proposals narrowing); (3) mark both `status: retired` for this stack and keep them as regression checks for smaller models. Separately, the July runs' `output/` was left gitignored and their deliverables are gone — all twelve runs here force-add `output/` (8.9–29.4 KB each) so the judge can be re-checked on the material it saw |
+| What should change in the eval? | **These two tasks no longer discriminate on `claude-opus-5` and should stop being used as if they do.** The expects grade the conclusion, so parametric recall satisfies them — confirmed, not assumed: a freshly measured unaided arm reaches the same 6/6. But the deliverables *do* separate, `0/6` vs `6/6` on forkcast and `1/6` vs `6/6` on status vocabulary, so option (1) below is no longer speculative — it is grading a delta this benchmark has now measured. Three options, unchanged from the July report and now overdue: (1) grade the *sourcing*, not the conclusion — an expect that requires the brief cite the fork-scope source it used, which is where the arms actually differ; (2) re-target the claim past the model's knowledge cutoff, e.g. Hegotá's current non-headliner scope, which is genuinely in flux (~66 proposals narrowing); (3) mark both `status: retired` for this stack and keep them as regression checks for smaller models. Separately, the July runs' `output/` was left gitignored and their deliverables are gone — all twelve runs here force-add `output/` (8.9–30.1 kB each) so the judge can be re-checked on the material it saw |
