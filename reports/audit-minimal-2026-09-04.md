@@ -100,7 +100,7 @@ or automatic issue filing.
 | Did the skill improve pass rate? | Quizzes: `9/9 vs 8/9`; goal planted findings: `30/33 vs 29/33` |
 | Did it reduce time/tokens? | Time remained higher: quiz medians `87/102/83s vs 70/93/77s`, goal `187s vs 180s`; tokens fell only on quiz 001 and rose on the other three tasks |
 | Did it create negative deltas? | Yes: 4–24% more median time and 24–49% more tokens on three tasks; goal coverage fell from the prior revision's valid `11/11` runs to `10/11` in all three |
-| What mistakes repeated without the skill? | `audit-withdraw-reentrancy-ordering-missed`, `audit-cached-domain-separator-missed`; one unbounded-loop miss was observed but not repeated |
+| What mistakes repeated without the skill? | `audit-withdraw-reentrancy-ordering-missed`, `audit-cached-domain-separator-missed`; the non-repeated omission is recorded as `audit-liquidate-all-unbounded-loop-missed` |
 | What mistakes remained with the skill? | `audit-withdraw-reentrancy-ordering-missed`, `audit-block-number-clock-missed`, `audit-sequencer-liveness-missed`, `audit-subagent-fanout-not-executed` |
 | What should change in the skill? | Add an explicit no-collaboration fallback and a compact final domain-coverage ledger before synthesis |
 | What should change in the eval? | No grading change; retain the task-note updates for pinned checklist provenance |
