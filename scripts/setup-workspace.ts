@@ -4,6 +4,7 @@ import { access, cp, mkdir, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import yaml from "js-yaml";
+import { readSkillContentId } from "../lib/skill.js";
 import { inputSha, loadTaskSpec, parseArgs, requireString } from "../lib/task.js";
 import type { Executor, ResultRecord, Variant } from "../lib/types.js";
 import { WORKSPACE_MANIFEST, WORKSPACE_POINTER, copyTree, pruneEmptyParent, removeTree, seedWorkspaceRepo, workspaceRoot } from "../lib/workspace.js";
@@ -179,6 +180,9 @@ const main = async () => {
 
       const skillSource = variant === "with_skill" ? resolveRootPath(spec.skill) : null;
       const skillVersion = skillSource ? getSkillVersion(skillSource) : null;
+      // Recorded here because it stops being recoverable later: skill_version is a sha that
+      // may live only on a branch, and a deleted branch takes the text with it.
+      const skillContent = skillSource ? readSkillContentId(skillSource) : null;
 
       if (skillSource) {
         await installSkill(skillSource, path.basename(skillSource), executor, workspacePath);
@@ -204,6 +208,7 @@ const main = async () => {
         variant,
         skill_version: skillVersion,
         input_sha: inputSha(spec.input),
+        skill_content: skillContent,
         created: new Date().toISOString(),
       };
 

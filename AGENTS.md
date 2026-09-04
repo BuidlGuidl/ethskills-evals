@@ -285,6 +285,14 @@ This line said the opposite until 2026-08-20 — transcripts gitignored, `output
 
 `output/` stays ignored by default because a bare task has no template to diff against and `verify` snapshots the whole workspace into it: a quiz leaves one `answer.md` of a few KB, a goal that scaffolds leaves a tree (noir-goal-001: 176 files, 760K). Where that snapshot is the graded deliverable and small, force-add it (`git add -f`) so a reader of the eval PR can re-check the judge on the material the judge saw. Read "small" generously — the nine gas-goal-001 runs are Foundry source trees and come to 40-72K each — and note that this is also the only thing that keeps a run regradeable: `verify` deletes the workspace, so uncommitted evidence means the grade can never be revisited by anyone, including you. If the snapshot is genuinely too big to commit, say so in the report, because the runs behind that table are then unauditable.
 
+## The results site
+
+`site/` is a viewer, not part of the loop: it reads what runs already produced and never
+takes part in producing them. Do not touch it while running a benchmark. After one, run
+`yarn build-index` and commit `site/derived.json` if it changed — it carries the skill text
+and the task rubric each run was measured against, and those stop being recoverable once
+the branch that held them is deleted.
+
 ## Code style
 
 TypeScript throughout, run with tsx. Follow the [Scaffold-ETH 2 code style guide](https://github.com/scaffold-eth/scaffold-eth-2/blob/main/AGENTS.md#code-style-guide): `type` over `interface`, `UpperCamelCase` types without a `T` prefix, `lowerCamelCase` functions and variables, `CONSTANT_CASE` constants, let inference work instead of annotating, comments only where they add information.
