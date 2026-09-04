@@ -116,13 +116,17 @@ token totals are the `usage.total_tokens` the harness wrote into each `result.ya
 | goal-001 | `with_skill` @ 24 lines | 3 | 42 | 371s | $1.97 | $1.64–$2.79 | 532,019 |
 
 **The two arms were not run at the same concurrency, and only the duration column is
-affected.** All six `no_skill` runs were launched together — `created` timestamps
-`19:04:20` through `19:04:25` — so they ran 6-way concurrent and thinned out as the quiz runs
-finished (6 concurrent for the first ~208s, 2 by 397s). The `with_skill` arm ran sequentially
-*within* each task and the two tasks overlapped each other, so it was 2-way concurrent for all
-but its last goal run. Contention inflates unaided wall-clock: the unaided `227s` and `426s`
-are upper bounds, and the skilled `235s` and `371s` are closer to clean. Turns, tokens and cost
-are unaffected. `33a3acfc` matched concurrency on the wallets rewrite for exactly this reason;
+affected.** The `no_skill` arm ran in two waves of three, not six at once: per `executor.yaml`
+the quiz trio all started `19:04:37` and finished `19:08:04` / `19:08:25` / `19:09:06`, and the
+goal trio started `19:09:07` — after the last quiz run — and finished `19:15:44` / `19:16:14` /
+`19:17:07`. (The `created` timestamps `19:04:20`–`19:04:25` are `setup` writing all six run
+directories in one pass, not the executors starting; `usage.duration_s` matches the
+started/finished pairs to the second, so those are the fields to read.) The `with_skill` arm ran
+sequentially *within* each task with the two tasks overlapping, so it was 2-way concurrent for
+all but its last goal run. So the gap is 3-way unaided against 2-way skilled. Contention still
+inflates unaided wall-clock — the unaided `227s` and `426s` are upper bounds, the skilled `235s`
+and `371s` closer to clean — but by one concurrent run, not four. Turns, tokens and cost are
+unaffected. `33a3acfc` matched concurrency on the wallets rewrite for exactly this reason;
 these runs did not, and the duration column below should be read with that in mind.
 
 **The skill costs turns and buys nothing on the clock.** On quiz it runs 27 turns against 15
@@ -130,11 +134,13 @@ and $1.12 against $0.90 — roughly 25% more cost for the same 4/4, and the cloc
 (235s vs 227s) or worse for the skill once the unaided contention is allowed for. On goal the
 medians appear to cross — more turns (42 vs 34) but *less* wall-clock (371s vs 426s) at
 effectively the same cost ($1.97 vs $2.00) — but that 55s is the one delta that runs in the
-skill's favour and it is also the one the concurrency gap eats first: a 6-way-contended unaided
-arm is exactly how a 55s "saving" appears without the skill saving anything. **Read goal as no
-measured clock difference, not as a saving.** Neither delta is worth much at n=3, both sit
-inside the arms' own ranges, and they are reported because the runs now exist to report them,
-not because three runs settle a 25% cost question.
+skill's favour and it is also the one the concurrency gap sits on top of: the unaided side of
+that comparison is the contended one. 3-way against 2-way is not enough to account for the
+whole 55s, so this is not "the contention explains it" — it is that a 55s median gap at n=3,
+measured across arms with different contention, is not a difference this design can resolve.
+**Read goal as no measured clock difference, not as a saving.** Neither delta is worth much at
+n=3, both sit inside the arms' own ranges, and they are reported because the runs now exist to
+report them, not because three runs settle a 25% cost question.
 
 The goal spread is wide enough to matter: `with-skill-2` ran 2.23M tokens against 445k and
 532k for its siblings — a 4x outlier inside n=3, driven by a much longer search: 55 turns,
@@ -255,7 +261,7 @@ and a mistake record invented from a passing run is noise.
 | Question | Answer |
 | --- | --- |
 | Did the skill improve pass rate? | No, and neither did the version it replaced. `6/6 with_skill` @ 24 lines vs `6/6 no_skill`; the 267-line version was also `6/6`. The prior these tasks test is not stale for `claude-opus-5`, so both arms sit at ceiling |
-| Did it reduce time/tokens? | Not against the 267-line version — all twelve 2026-07-25 runs predate the `## run stats` footer, so `run-stats` has no duration, cost or token figure for either of that benchmark's arms. Against an unaided control on the same harness it costs rather than saves on quiz (`27 turns / 235s / $1.12` vs `15 / 227s / $0.90`) and roughly breaks even on goal (`42 / 371s / $1.97` vs `34 / 426s / $2.00`) — n=3 a side, inside the arms' own ranges. The duration cells are not comparable like-for-like: the unaided arm ran 6-way concurrent against the skilled arm's 2-way, which inflates unaided wall-clock and accounts for goal's apparent 55s saving. Turns, tokens and cost are unaffected |
+| Did it reduce time/tokens? | Not against the 267-line version — all twelve 2026-07-25 runs predate the `## run stats` footer, so `run-stats` has no duration, cost or token figure for either of that benchmark's arms. Against an unaided control on the same harness it costs rather than saves on quiz (`27 turns / 235s / $1.12` vs `15 / 227s / $0.90`) and roughly breaks even on goal (`42 / 371s / $1.97` vs `34 / 426s / $2.00`) — n=3 a side, inside the arms' own ranges. The duration cells are not comparable like-for-like: the unaided arm ran in two waves of three against the skilled arm's 2-way, which inflates unaided wall-clock; goal's apparent 55s saving is not resolvable at that gap and n=3. Turns, tokens and cost are unaffected |
 | Did it create negative deltas? | None on the rubric — no expect regressed. The one cost is turns and spend on quiz, ~25% above the unaided arm for the same 4/4 |
 | What mistakes repeated without the skill? | None, re-measured 2026-09-03 rather than carried over: `no_skill` never recommended Verkle (`6/6` call it dropped), never claimed a scheduled fork, never mistook EIP-4444 for a state-growth fix. Flagging `ethereum.org/roadmap/verkle-trees` as stale is a *separate* signal and a rarer one — `2/6`, quiz `n1` and `n2` — but no expect grades it. What it did miss is forkcast — `0/6` unaided runs found it — and the SFI/CFI/DFI status vocabulary, `1/6` |
 | What mistakes remained with the skill? | None |
