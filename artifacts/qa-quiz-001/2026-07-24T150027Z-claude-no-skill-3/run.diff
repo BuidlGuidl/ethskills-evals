@@ -1,0 +1,204 @@
+diff --git a/answer.md b/answer.md
+new file mode 100644
+index 0000000..111ba26
+--- /dev/null
++++ b/answer.md
+@@ -0,0 +1,195 @@
++# Why the USDC balance was blank — the whole arc
++
++## TL;DR
++
++`useScaffoldReadContract` looks the contract up **by name** in a registry that
++Scaffold-ETH builds from two files. `USDC` was in neither, so the hook found no
++address/ABI, disabled the underlying wagmi query, and returned `undefined` —
++never firing a request, never throwing. The teammate pasted USDC into
++`deployedContracts.ts`, which is a **generated file** that `yarn deploy`
++overwrites from scratch, so the fix was destined to vanish. The correct home is
++`packages/nextjs/contracts/externalContracts.ts`, which the codegen never
++touches.
++
++---
++
++## 1. Why the hook returned `undefined` silently instead of erroring
++
++`useScaffoldReadContract` doesn't take an address. It takes a **contract name**
++and resolves it internally via `useDeployedContractInfo(contractName)`. That
++helper searches the merged `contracts` map (see part 3) for an entry matching
++`contractName` **on the currently connected chain**.
++
++For `"USDC"` there was no entry, so `deployedContractData` came back
++`undefined`. The hook then wires wagmi's `useReadContract` roughly like this:
++
++```ts
++useReadContract({
++  address: deployedContract?.address,
++  abi: deployedContract?.abi,
++  functionName,
++  args,
++  query: {
++    enabled: !!deployedContract && /* args ready */,
++  },
++});
++```
++
++With no contract data, `enabled` is `false`. A disabled wagmi query **never
++runs**:
++
++- no `address`/`abi` to call → nothing to send
++- `data` stays `undefined`
++- **no network request** (matches the empty network tab)
++- **no throw** — "contract not registered" is a soft/empty state in Scaffold-ETH,
++  not an exception
++
++So every observed symptom lines up: `undefined`, no error, no request.
++
++### "But shouldn't TypeScript have caught it?"
++
++`contractName` is typed as a union of the *registered* contract names. With USDC
++unregistered, `contractName: "USDC"` is technically a **type error**. It didn't
++stop anyone because the Next.js dev server doesn't hard-fail on TS type errors —
++it compiles and runs anyway. So the mistake surfaced only as a runtime
++`undefined`, which is exactly the quiet failure that's easy to chase for hours.
++
++---
++
++## 2. Why the teammate's fix worked all week, then self-destructed
++
++`packages/nextjs/contracts/deployedContracts.ts` is **auto-generated**. Its
++header literally says not to edit it by hand. It is produced by the deploy
++pipeline in the hardhat package: after `hardhat deploy` writes artifacts into
++`packages/hardhat/deployments/`, a post-deploy step (`generateTsAbis.ts`, run as
++part of `yarn deploy`) reads that `deployments/` folder and **overwrites
++`deployedContracts.ts` from scratch**.
++
++- Pasting USDC in by hand worked as long as nobody regenerated the file — the
++  registry now contained a `USDC` entry, so the hook resolved it. Fine all week.
++- `yarn deploy` regenerated the file **only from `deployments/`**. USDC is a
++  third-party Circle contract already live on Base — it was never deployed by
++  your hardhat project, so there's no `deployments/` artifact for it. The
++  regenerator had no knowledge of it and simply didn't emit it.
++
++Result: the hand-added entry was clobbered, USDC fell out of the registry, and
++the payouts page went blank again. The fix wasn't wrong data — it was in a file
++owned by a machine.
++
++---
++
++## 3. The correct registration
++
++Scaffold-ETH merges **two** sources into the contract registry the hooks read:
++
++| File | Owner | Purpose |
++|------|-------|---------|
++| `contracts/deployedContracts.ts` | **generated** by `yarn deploy` | contracts *your* hardhat project deploys |
++| `contracts/externalContracts.ts` | **you, by hand** | contracts you *don't* deploy (tokens, protocols, anything already on-chain) |
++
++`externalContracts.ts` is never touched by the codegen, so entries there survive
++every `yarn deploy`. USDC on Base belongs here.
++
++**File:** `packages/nextjs/contracts/externalContracts.ts`
++
++```ts
++import { GenericContractsDeclaration } from "~~/utils/scaffold-eth/contract";
++
++/**
++ * @example
++ * const externalContracts = {
++ *   1: {
++ *     DAI: { address: "0x...", abi: [...] },
++ *   },
++ * } as const;
++ */
++const externalContracts = {
++  // Base mainnet — chain id 8453
++  8453: {
++    USDC: {
++      // Native Circle USDC on Base
++      address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
++      abi: [
++        {
++          type: "function",
++          name: "balanceOf",
++          stateMutability: "view",
++          inputs: [{ name: "account", type: "address" }],
++          outputs: [{ name: "", type: "uint256" }],
++        },
++        {
++          type: "function",
++          name: "decimals",
++          stateMutability: "view",
++          inputs: [],
++          outputs: [{ name: "", type: "uint8" }],
++        },
++        {
++          type: "function",
++          name: "symbol",
++          stateMutability: "view",
++          inputs: [],
++          outputs: [{ name: "", type: "string" }],
++        },
++        {
++          type: "function",
++          name: "transfer",
++          stateMutability: "nonpayable",
++          inputs: [
++            { name: "to", type: "address" },
++            { name: "amount", type: "uint256" },
++          ],
++          outputs: [{ name: "", type: "bool" }],
++        },
++        {
++          type: "function",
++          name: "approve",
++          stateMutability: "nonpayable",
++          inputs: [
++            { name: "spender", type: "address" },
++            { name: "amount", type: "uint256" },
++          ],
++          outputs: [{ name: "", type: "bool" }],
++        },
++        {
++          type: "function",
++          name: "allowance",
++          stateMutability: "view",
++          inputs: [
++            { name: "owner", type: "address" },
++            { name: "spender", type: "address" },
++          ],
++          outputs: [{ name: "", type: "uint256" }],
++        },
++      ],
++    },
++  },
++} as const;
++
++export default externalContracts satisfies GenericContractsDeclaration;
++```
++
++### Key details
++
++- **Chain id `8453`** = Base mainnet. The outer key must match the chain the app
++  is connected to, or `useDeployedContractInfo` won't find USDC on that chain and
++  you're back to `undefined`. If you also run against a fork/other network, add
++  those chain ids too.
++- **Address `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`** is **native USDC**
++  (Circle) on Base. Do *not* confuse it with the older bridged **USDbC**
++  (`0xd9aAEc86B65D86f6A7B5B1b0c42FFA531710b6CA`) — different token, different
++  balance.
++- **ABI** only needs the functions you call. `balanceOf` is enough for the
++  payouts read; the rest above (`decimals`, `transfer`, `approve`, `allowance`,
++  `symbol`) are the usual ERC-20 surface you'll want next and give you full type
++  inference on args/returns.
++- `as const` + `satisfies GenericContractsDeclaration` is what gives the hooks
++  their literal types, so `contractName: "USDC"` and `functionName: "balanceOf"`
++  become valid and fully typed — the original TS error disappears for the right
++  reason.
++- USDC uses **6 decimals**, so format the returned `uint256` with `formatUnits(x, 6)`,
++  not `formatEther`.
++
++Once USDC lives in `externalContracts.ts`, it's part of the registry on every
++build, it survives `yarn deploy`, and the payouts page reads the balance
++reliably.
+
+# Untracked files and status
+ A answer.md
