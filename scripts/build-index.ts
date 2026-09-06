@@ -5,8 +5,9 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import yaml from "js-yaml";
+import { orderReadings } from "../lib/readings.js";
 import { normalizeSkillText, skillContentId } from "../lib/skill.js";
-import { isRecord, loadTaskSpec, loadYamlFile, parseArgs, requireString } from "../lib/task.js";
+import { expectSha, isRecord, loadTaskSpec, loadYamlFile, parseArgs, requireString } from "../lib/task.js";
 
 // Builds the json the results site reads: site/public/index.json, one file, regenerated
 // from the repo in a single pass and gitignored.
@@ -30,8 +31,10 @@ import { isRecord, loadTaskSpec, loadYamlFile, parseArgs, requireString } from "
 // So each fact, once resolved, is written to site/derived.json and committed. Resolution
 // happens here, on a full clone; the deploy build reads the cache and needs no git.
 //
-// Cache entries are never dropped, only added — a sha that stops resolving keeps the
-// answer that was recorded while it still did.
+// Cache entries are not dropped — a sha that stops resolving keeps the answer that was
+// recorded while it still did — but two kinds are corrected on a full clone: a rubric the
+// record itself contradicts (it carries the expect_sha it was graded against), and a
+// transcript link, which follows the newest commit to touch the file rather than the first.
 
 const ROOT = process.cwd();
 const REPO = "BuidlGuidl/ethskills-evals";
@@ -39,7 +42,10 @@ const INDEX_ARGS = new Set(["out", "cache", "no-prs", "no-git", "strict"]);
 const DEFAULT_OUT = path.join("site", "public", "index.json");
 const DEFAULT_CACHE = path.join("site", "derived.json");
 
-type Rubric = { id: string; expects: number };
+// expect_sha is the fingerprint verify writes into a record; it is kept beside the rubric so
+// the cache can be checked against the record instead of trusted. Absent on entries resolved
+// for runs that predate the field.
+type Rubric = { id: string; expects: number; expect_sha?: string };
 
 type PullRequest = {
   number: number;
@@ -55,7 +61,6 @@ type Derived = {
   skill_versions: Record<string, string>;
   run_rubrics: Record<string, Rubric>;
   run_transcripts: Record<string, string>;
-  skill_commits: Record<string, string>;
   prs: Record<string, PullRequest>;
 };
 
@@ -135,7 +140,6 @@ const emptyDerived = (): Derived => ({
   skill_versions: {},
   run_rubrics: {},
   run_transcripts: {},
-  skill_commits: {},
   prs: {},
 });
 
@@ -155,10 +159,15 @@ const loadDerived = (cachePath: string): Derived => {
     skill_versions: isRecord(loaded.skill_versions) ? (loaded.skill_versions as Record<string, string>) : {},
     run_rubrics: isRecord(loaded.run_rubrics) ? (loaded.run_rubrics as Record<string, Rubric>) : {},
     run_transcripts: isRecord(loaded.run_transcripts) ? (loaded.run_transcripts as Record<string, string>) : {},
-    skill_commits: isRecord(loaded.skill_commits) ? (loaded.skill_commits as Record<string, string>) : {},
     prs: isRecord(loaded.prs) ? (loaded.prs as Record<string, PullRequest>) : {},
   };
 };
+
+const rubricFrom = (input: string, expect: string[]): Rubric => ({
+  id: hash([input, ...expect].join("\n\x00\n")),
+  expects: expect.length,
+  expect_sha: expectSha(expect),
+});
 
 // Deliberately lenient, unlike loadTaskSpec: this parses historical revisions of a task,
 // and older ones carry fields the spec has since dropped. Only the graded surface is
@@ -170,9 +179,7 @@ const rubricOf = (raw: string): Rubric | null => {
     return null;
   }
 
-  const expect = loaded.expect.filter(line => typeof line === "string") as string[];
-
-  return { id: hash([loaded.input, ...expect].join("\n\x00\n")), expects: expect.length };
+  return rubricFrom(loaded.input, loaded.expect.filter(line => typeof line === "string") as string[]);
 };
 
 const main = async () => {
@@ -188,6 +195,18 @@ const main = async () => {
 
   const head = gitOrNull("rev-parse", "HEAD") ?? process.env.VERCEL_GIT_COMMIT_SHA ?? null;
   const dirty = (gitOrNull("status", "--porcelain") ?? "").length > 0;
+
+  // A shallow clone does not answer `git log` with nothing, it answers with plausible wrong
+  // things: every file looks added at the boundary commit, so a run would be pinned to the
+  // task file as it stands today and cached that way, permanently. History walks are refused
+  // there and the cache answers instead; `git show <sha>` still works for a sha the clone has.
+  const shallow = gitOrNull("rev-parse", "--is-shallow-repository") === "true";
+  const historyAvailable = gitAvailable && !shallow;
+  const gitLog = (...logArgs: string[]) => (historyAvailable ? gitOrNull("log", ...logArgs) : null);
+
+  if (shallow) {
+    process.stderr.write("note: shallow clone; history lookups are disabled and the cache answers instead\n");
+  }
 
   const tasks = readdirSync(path.join(ROOT, "tasks"))
     .filter(name => name.endsWith(".yaml"))
@@ -205,120 +224,166 @@ const main = async () => {
         runs: spec.runs,
         template: spec.template ?? null,
         notes: spec.notes ?? null,
+        // The rubric as it stands today, so a page can tell which runs were graded on it and
+        // which on an earlier revision.
+        rubric: rubricFrom(spec.input, spec.expect).id,
       };
     });
 
   const taskSkill = new Map(tasks.map(task => [task.id, task.skill]));
 
-  // git log walks newest to oldest, so the last commit seen to add a path is the one that
-  // added it. Built once and only if some run has no cached rubric — on a shallow clone
-  // this returns nothing useful, which is exactly when the cache has to answer instead.
-  let addedCache: Map<string, string> | null = null;
-  const addingCommit = (filePath: string) => {
-    if (addedCache === null) {
-      addedCache = new Map();
+  // One walk over the artifacts' history answers two questions per file: which commit added
+  // it, and which commit last changed it. git log walks newest to oldest, so the last sighting
+  // of an addition is the adding commit and the first sighting of a change is the newest.
+  // Built once and only if some run has no cached answer.
+  let walked: { added: Map<string, string>; touched: Map<string, string> } | null = null;
+  const history = () => {
+    if (walked === null) {
+      walked = { added: new Map(), touched: new Map() };
       // --diff-merges=first-parent because a merge shows no diff by default, and some runs
       // arrive with one: gas-goal-001's regrades exist first in `Merge origin/main into
       // fix/minimal-gas-skill` and nowhere earlier in the reachable graph. Without it those
       // runs have no commit, so their rubric falls back to the task file as it stands and
       // --strict refuses the build. A file added on a branch still resolves to the branch
       // commit, since the walk keeps the oldest sighting.
-      const log = gitOrNull(
-        "log",
-        "--diff-filter=A",
-        "--diff-merges=first-parent",
-        "--format=%x01%H",
-        "--name-only",
-        "--",
-        "artifacts",
-      );
+      // The newest change, though, is taken from ordinary commits only: against its first
+      // parent a merge of main shows every file that came across as changed, so a link pinned
+      // there would move with each merge and the cache would churn on every branch.
+      const log = gitLog("--diff-merges=first-parent", "--format=%x01%H %P", "--name-status", "--", "artifacts");
       let current: string | null = null;
+      let merge = false;
 
       for (const line of (log ?? "").split("\n")) {
         if (line.startsWith("\x01")) {
-          current = line.slice(1).trim();
+          const [commit, ...parents] = line.slice(1).trim().split(" ");
+
+          current = commit;
+          merge = parents.length > 1;
           continue;
         }
 
-        if (line.length > 0 && current) {
-          addedCache.set(line, current);
+        const fields = line.split("\t");
+        const status = fields[0]?.[0];
+        const filePath = fields[fields.length - 1];
+
+        if (!current || fields.length < 2 || status === "D") {
+          continue;
+        }
+
+        if (status === "A") {
+          walked.added.set(filePath, current);
+        }
+
+        if (!merge && !walked.touched.has(filePath)) {
+          walked.touched.set(filePath, current);
         }
       }
     }
 
-    return addedCache.get(filePath) ?? null;
+    return walked;
   };
 
-  // Pinned to the commit that recorded the run, because a task's expect lines get rewritten
-  // afterwards and the run was not graded on the rewrite. Falling back to the file as it
-  // stands is right for a run that is not committed yet and wrong for every other reason
-  // the commit could be missing — so the fallback says so, and --strict refuses it. Reading
-  // today's expect lines onto an old run is what would make two incomparable columns look
-  // like a comparison, which is the one thing this file exists to prevent.
-  const rubricFor = (taskId: string, runId: string) => {
+  const addingCommit = (filePath: string) => history().added.get(filePath) ?? null;
+  // The newest ordinary commit to change the file; a file that only ever arrived in a merge
+  // is pinned where it was added.
+  const lastCommit = (filePath: string) => history().touched.get(filePath) ?? addingCommit(filePath);
+
+  // Every revision of a task file, newest first, with its rubric. Read only when a record's
+  // expect_sha has to be matched against history, which is a handful of regrades.
+  const revisionCache = new Map<string, { commit: string; rubric: Rubric | null }[]>();
+  const rubricAt = (commit: string, taskId: string) => {
+    const raw = gitOrNull("show", `${commit}:tasks/${taskId}.yaml`);
+
+    return raw === null ? null : rubricOf(raw);
+  };
+  const taskRevisions = (taskId: string) => {
+    let revisions = revisionCache.get(taskId);
+
+    if (revisions === undefined) {
+      revisions = (gitLog("--format=%H", "--", `tasks/${taskId}.yaml`) ?? "")
+        .split("\n")
+        .filter(Boolean)
+        .map(commit => ({ commit, rubric: rubricAt(commit, taskId) }));
+      revisionCache.set(taskId, revisions);
+    }
+
+    return revisions;
+  };
+
+  // Pinned to the revision the run was graded on, because a task's expect lines get rewritten
+  // afterwards and the run was not graded on the rewrite. A record that carries expect_sha
+  // names that revision itself and the cache is trusted only when it agrees: pinning by the
+  // commit that added the record gave regrade-1 and regrade-2 of every gas-goal-001 run one
+  // rubric, since both landed in a merge where the task already held the second rewrite. A
+  // record without expect_sha is pinned to the commit that added it. Falling back to the file
+  // as it stands is right for a run that is not committed yet and wrong for every other
+  // reason the commit could be missing — so the fallback says so, and --strict refuses it.
+  // Reading today's expect lines onto an old run is what would make two incomparable columns
+  // look like a comparison, which is the one thing this file exists to prevent.
+  const rubricFor = (taskId: string, runId: string, recordedSha: string | null) => {
     const key = `${taskId}/${runId}`;
     const cached = derived.run_rubrics[key];
 
-    if (cached) {
+    if (cached && (recordedSha === null || cached.expect_sha === recordedSha)) {
       return { rubric: cached, pinned: true };
     }
 
     const commit = addingCommit(`artifacts/${taskId}/${runId}/result.yaml`);
-    const taskPath = path.join(ROOT, "tasks", `${taskId}.yaml`);
-    const raw = commit
-      ? gitOrNull("show", `${commit}:tasks/${taskId}.yaml`)
-      : existsSync(taskPath)
-        ? readFileSync(taskPath, "utf8")
-        : null;
-    const rubric = raw === null ? null : rubricOf(raw);
 
-    if (rubric !== null && commit !== null) {
+    if (recordedSha !== null) {
+      // The adding commit first — it is right for every record graded just before it was
+      // committed — then anything older the file went through.
+      const revisions = taskRevisions(taskId);
+      const atAdding = commit === null ? null : rubricAt(commit, taskId);
+      const matched =
+        atAdding?.expect_sha === recordedSha
+          ? atAdding
+          : (revisions.find(revision => revision.rubric?.expect_sha === recordedSha)?.rubric ?? null);
+
+      if (matched !== null) {
+        derived.run_rubrics[key] = matched;
+
+        return { rubric: matched, pinned: true };
+      }
+
+      if (historyAvailable) {
+        warnings.push(
+          `artifacts/${key}: graded against expect_sha ${recordedSha}, which matches no revision of tasks/${taskId}.yaml`,
+        );
+      } else if (cached) {
+        warnings.push(`artifacts/${key}: cached rubric was not resolved against the record's expect_sha ${recordedSha}`);
+
+        return { rubric: cached, pinned: true };
+      }
+    }
+
+    const taskPath = path.join(ROOT, "tasks", `${taskId}.yaml`);
+    const rubric = commit
+      ? rubricAt(commit, taskId)
+      : existsSync(taskPath)
+        ? rubricOf(readFileSync(taskPath, "utf8"))
+        : null;
+
+    if (rubric !== null && commit !== null && recordedSha === null) {
       derived.run_rubrics[key] = rubric;
     }
 
     return { rubric, pinned: commit !== null };
   };
 
-  // Three ways to learn which text a run saw, cheapest first. Runs made since setup started
-  // recording it say so themselves and need nothing else; older ones are recovered from git
-  // and cached, which is the whole reason derived.json is committed.
-  // One sha can carry two different SKILL.md texts: the documented workflow reduces the file
-  // and benchmarks it before committing, so `skill_version` stays at the pre-edit HEAD for
-  // both runs. A mapping that quietly took the last writer would attribute every older run at
-  // that sha to the wrong text on any later --no-git build, so a disagreement drops the entry
-  // instead: ambiguous is recoverable, wrong is not.
-  const poisoned = new Set<string>();
-
-  const rememberVersion = (key: string, id: string, where: string) => {
-    if (poisoned.has(key)) {
-      return;
-    }
-
-    const known = derived.skill_versions[key];
-
-    if (known !== undefined && known !== id) {
-      poisoned.add(key);
-      delete derived.skill_versions[key];
-      warnings.push(
-        `${where}: ${key} maps to two different SKILL.md texts (${known} and ${id}); dropping the mapping, ` +
-          `runs at that sha without a recorded skill_content cannot be resolved from the cache`,
-      );
-
-      return;
-    }
-
-    derived.skill_versions[key] = id;
-  };
-
-  const contentIdFor = (skill: string, sha: string, recorded: string | null, where: string) => {
-    const key = `${skill}@${sha}`;
-
+  // Which text a run saw, cheapest first. A run made since setup started recording it says
+  // so itself and needs nothing else; an older one is recovered from `git show <sha>` and the
+  // answer cached under the sha, which is the whole reason derived.json is committed.
+  // Only recovered answers go in that map. One sha carries two texts whenever a skill is
+  // reduced and benchmarked before the commit lands — `skill_version` is the pre-edit HEAD for
+  // both runs — so a recorded id written there would contradict the git answer on every build
+  // after, and the map exists for the runs that recorded nothing.
+  const contentIdFor = (skill: string, sha: string, recorded: string | null) => {
     if (recorded !== null) {
-      rememberVersion(key, recorded, where);
-
       return recorded;
     }
 
+    const key = `${skill}@${sha}`;
     const cached = derived.skill_versions[key];
 
     if (cached) {
@@ -333,10 +398,22 @@ const main = async () => {
 
     const id = skillContentId(raw);
 
-    rememberVersion(key, id, where);
+    derived.skill_versions[key] = id;
     derived.skill_texts[id] = normalizeSkillText(raw);
 
     return id;
+  };
+
+  const skillHistory = new Map<string, string[]>();
+  const skillCommits = (skill: string) => {
+    let commits = skillHistory.get(skill);
+
+    if (commits === undefined) {
+      commits = (gitLog("--format=%H", "--", `skills/${skill}/SKILL.md`) ?? "").split("\n").filter(Boolean);
+      skillHistory.set(skill, commits);
+    }
+
+    return commits;
   };
 
   // The id alone is not enough — the site puts the two texts side by side. A run made on the
@@ -346,28 +423,42 @@ const main = async () => {
   // the repo's HEAD at setup and the id is the file that was installed, so the two disagree
   // exactly when a skill was reduced, benchmarked, and edited again before the index was
   // built — and the version would have gone on to show the original's text under the reduced
-  // version's name, permanently, since nothing here is ever rewritten.
+  // version's name, permanently, since nothing here is ever rewritten. In that case the text
+  // is in neither place but in a commit that touched the file, so those are walked last.
   const textFor = (skill: string, id: string, sha: string) => {
     if (derived.skill_texts[id]) {
       return derived.skill_texts[id];
     }
 
-    const currentPath = path.join(ROOT, "skills", skill, "SKILL.md");
-    const candidates = [
-      existsSync(currentPath) ? readFileSync(currentPath, "utf8") : null,
-      gitOrNull("show", `${sha}:skills/${skill}/SKILL.md`),
-    ];
-
-    for (const candidate of candidates) {
+    const keep = (candidate: string | null) => {
       if (candidate === null) {
-        continue;
+        return null;
       }
 
       const text = normalizeSkillText(candidate);
 
-      if (skillContentId(text) === id) {
-        derived.skill_texts[id] = text;
+      if (skillContentId(text) !== id) {
+        return null;
+      }
 
+      derived.skill_texts[id] = text;
+
+      return text;
+    };
+
+    const currentPath = path.join(ROOT, "skills", skill, "SKILL.md");
+    const nearby =
+      keep(existsSync(currentPath) ? readFileSync(currentPath, "utf8") : null) ??
+      keep(gitOrNull("show", `${sha}:skills/${skill}/SKILL.md`));
+
+    if (nearby !== null) {
+      return nearby;
+    }
+
+    for (const commit of skillCommits(skill)) {
+      const text = keep(gitOrNull("show", `${commit}:skills/${skill}/SKILL.md`));
+
+      if (text !== null) {
         return text;
       }
     }
@@ -375,7 +466,29 @@ const main = async () => {
     return null;
   };
 
-  const runs: Record<string, unknown>[] = [];
+  type IndexRun = {
+    task: string;
+    skill: string | null;
+    run: string;
+    variant: unknown;
+    executor: unknown;
+    executor_model: unknown;
+    created: string | null;
+    pass: boolean | null;
+    expects: unknown;
+    judge: unknown;
+    skill_version: string | null;
+    skill_content: string | null;
+    regrade_of: string | null;
+    regraded_at: string | null;
+    superseded_by: string | null;
+    retracted: string | null;
+    rubric: string | null;
+    rubric_expects: number | null;
+    transcript_url: string | null;
+  };
+
+  const runs: IndexRun[] = [];
   const seen = new Map<string, { skill: string; id: string; sha: string; first: string; runs: number }>();
 
   for (const taskId of listDirs(path.join(ROOT, "artifacts"))) {
@@ -390,7 +503,7 @@ const main = async () => {
       const loaded = loadYamlFile(resultPath);
       const skill = taskSkill.get(taskId) ?? null;
       const skillVersion = typeof loaded.skill_version === "string" ? loaded.skill_version : null;
-      const { rubric, pinned } = rubricFor(taskId, runId);
+      const { rubric, pinned } = rubricFor(taskId, runId, typeof loaded.expect_sha === "string" ? loaded.expect_sha : null);
 
       if (rubric === null) {
         warnings.push(`${runDir}: no readable task rubric; comparisons disabled for this run`);
@@ -405,7 +518,7 @@ const main = async () => {
       if (skill && skillVersion) {
         const recorded = typeof loaded.skill_content === "string" ? loaded.skill_content : null;
 
-        skillContent = contentIdFor(skill, skillVersion, recorded, runDir);
+        skillContent = contentIdFor(skill, skillVersion, recorded);
 
         if (skillContent === null) {
           warnings.push(`${runDir}: skills/${skill}/SKILL.md unreachable at ${skillVersion} and not cached`);
@@ -417,29 +530,25 @@ const main = async () => {
           const created = typeof loaded.created === "string" ? loaded.created : "";
 
           if (entry) {
-            entry.runs += 1;
             entry.first = created < entry.first ? created : entry.first;
           } else {
-            seen.set(key, { skill, id: skillContent, sha: skillVersion, first: created, runs: 1 });
+            seen.set(key, { skill, id: skillContent, sha: skillVersion, first: created, runs: 0 });
           }
         }
       }
 
-      // Only where the transcript was actually committed: the link used to be built from the
-      // run record's commit for every run, and the ones whose transcript was never pushed —
-      // every concepts-goal-001 run, for instance — offered a blob link that 404s.
+      // Only where the transcript was actually committed, and at the newest commit to touch
+      // it: the link used to be built from the run record's commit for every run, so the ones
+      // whose transcript was never pushed — every concepts-goal-001 run, for instance — 404'd,
+      // and pinning to the adding commit instead left every orchestration run pointing at the
+      // six-line stub that was committed before the transcripts were rebuilt. On a full clone
+      // the answer is refreshed; without history the cache stands.
       const commitKey = `${taskId}/${runId}`;
-      let commit: string | null = derived.run_transcripts[commitKey] ?? null;
+      const touched = lastCommit(`${runDir}/transcript.md`);
+      const commit = touched ?? derived.run_transcripts[commitKey] ?? null;
 
-      if (commit === null) {
-        // The transcript's own commit, not the run record's: they are often different, and a
-        // link pinned to the record's commit 404s on every run whose transcript followed.
-        const added = addingCommit(`${runDir}/transcript.md`);
-
-        if (added !== null) {
-          commit = added;
-          derived.run_transcripts[commitKey] = added;
-        }
+      if (touched !== null) {
+        derived.run_transcripts[commitKey] = touched;
       }
 
       runs.push({
@@ -449,14 +558,18 @@ const main = async () => {
         variant: loaded.variant ?? null,
         executor: loaded.executor ?? null,
         executor_model: loaded.executor_model ?? null,
-        created: loaded.created ?? null,
+        created: typeof loaded.created === "string" ? loaded.created : null,
         pass: loaded.pass === undefined ? null : Boolean(loaded.pass),
         expects: loaded.expects ?? null,
         judge: loaded.judge ?? null,
         skill_version: skillVersion,
         skill_content: skillContent,
         regrade_of: typeof loaded.regrade_of === "string" ? loaded.regrade_of : null,
-        superseded_by: null as string | null,
+        regraded_at: typeof loaded.regraded_at === "string" ? loaded.regraded_at : null,
+        superseded_by: null,
+        // A grade that measured the harness rather than the model — a killed CLI, a
+        // deliverable that never reached the judge. The record stays, the tallies leave it out.
+        retracted: typeof loaded.retracted === "string" ? loaded.retracted : null,
         rubric: rubric?.id ?? null,
         rubric_expects: rubric?.expects ?? null,
         transcript_url: commit ? `https://github.com/${REPO}/blob/${commit}/${runDir}/transcript.md` : null,
@@ -470,64 +583,25 @@ const main = async () => {
   // replaced it, source -> regrade-1 -> regrade-2, and a tally drops any record whose
   // successor is in the set. Every reading stays in the index: an older one is still the
   // right answer for the rubric it was graded on.
-  // Follow regrade_of all the way down rather than reading a number off the end of the run
-  // id: verify allows --regrade on a dir that is itself a regrade, and the resulting
-  // `<id>-regrade-1-regrade-1` parses as reading 1, colliding with the run it replaced and
-  // keying a lineage of its own — so both readings would land in the same tally.
-  const byId = new Map(runs.map(run => [`${String(run.task)}/${String(run.run)}`, run]));
+  const readings = orderReadings(runs);
 
-  const chain = (run: Record<string, unknown>) => {
-    const seen: Record<string, unknown>[] = [run];
-    let cursor = run;
+  warnings.push(...readings.warnings);
 
-    while (typeof cursor.regrade_of === "string") {
-      const parent = byId.get(`${String(cursor.task)}/${cursor.regrade_of}`);
-
-      if (parent === undefined) {
-        warnings.push(
-          `artifacts/${String(run.task)}/${String(run.run)}: regrade_of names ${String(cursor.regrade_of)}, which is not in the repo`,
-        );
-
-        return null;
-      }
-
-      if (seen.includes(parent)) {
-        warnings.push(`artifacts/${String(run.task)}/${String(run.run)}: regrade_of forms a cycle`);
-
-        return null;
-      }
-
-      seen.push(parent);
-      cursor = parent;
+  for (const lineage of readings.lineages) {
+    for (let position = 0; position < lineage.length - 1; position++) {
+      lineage[position].superseded_by = lineage[position + 1].run;
     }
-
-    return seen;
-  };
-
-  const lineages = new Map<string, Record<string, unknown>[]>();
-  const depth = new Map<Record<string, unknown>, number>();
-
-  for (const run of runs) {
-    const links = chain(run);
-
-    if (links === null) {
-      continue;
-    }
-
-    const root = links[links.length - 1];
-    const key = `${String(root.task)}/${String(root.run)}`;
-
-    depth.set(run, links.length - 1);
-    lineages.set(key, [...(lineages.get(key) ?? []), run]);
   }
 
-  const reading = (run: Record<string, unknown>) => depth.get(run) ?? 0;
+  // Runs, not records: a version's count is read beside tables that count a regraded run
+  // once, and it breaks the tie when two versions could be the after column.
+  for (const run of runs) {
+    if (run.skill !== null && run.skill_content !== null && run.superseded_by === null) {
+      const entry = seen.get(`${run.skill}:${run.skill_content}`);
 
-  for (const lineage of lineages.values()) {
-    const ordered = [...lineage].sort((a, b) => reading(a) - reading(b));
-
-    for (let position = 0; position < ordered.length - 1; position++) {
-      ordered[position].superseded_by = String(ordered[position + 1].run);
+      if (entry) {
+        entry.runs += 1;
+      }
     }
   }
 
@@ -544,25 +618,16 @@ const main = async () => {
 
     const currentPath = path.join(ROOT, "skills", name, "SKILL.md");
     const currentText = existsSync(currentPath) ? normalizeSkillText(readFileSync(currentPath, "utf8")) : null;
-    const currentId = currentText === null ? null : hash(currentText);
+    const currentId = currentText === null ? null : skillContentId(currentText);
 
     if (currentText !== null && currentId !== null && !versions.some(entry => entry.id === currentId)) {
-      let sha = derived.skill_commits[currentId] ?? null;
-
-      if (sha === null) {
-        const lastTouched = gitOrNull("log", "-1", "--format=%h", "--", `skills/${name}/SKILL.md`);
-        const committed = lastTouched ? gitOrNull("show", `${lastTouched}:skills/${name}/SKILL.md`) : null;
-
-        if (lastTouched && committed !== null && normalizeSkillText(committed) === currentText) {
-          sha = lastTouched;
-          derived.skill_commits[currentId] = sha;
-        }
-      }
-
+      // A clean tree holds what HEAD holds, on the deploy host as much as here, so this needs
+      // no cache — and caching it made every skill edit that no run had seen fail the
+      // "cache is up to date" check with a message about runs.
       versions.push({
         skill: name,
         id: currentId,
-        sha: sha ?? "worktree",
+        sha: !dirty && head !== null ? head.slice(0, 7) : "worktree",
         first: "",
         runs: 0,
         text: currentText,
@@ -629,18 +694,35 @@ const main = async () => {
 
   const skillNames = new Set(skills.map(skill => skill.name));
 
+  // Titles name their skill in every shape people write: `eval: gas (claude)`, `skill:
+  // minimize tools from eval findings`, `fix: reduce gas skill to ...`, `Skill/standards
+  // minimal`, `building-blocks-quiz-001: grade ...`. Any token that is a skill name, or a
+  // task id of one, counts. Matching only `<verb>: <skill>` left the rewrite PRs — the ones a
+  // skill page exists to link under "why it changed" — attributed to nothing. The body is not
+  // read: a harness PR cites eval reports without being about their skill.
+  const skillOf = (pr: PullRequest) => {
+    for (const token of pr.title.toLowerCase().split(/[^a-z0-9-]+/)) {
+      if (skillNames.has(token)) {
+        return token;
+      }
+
+      const task = /^([a-z0-9-]+)-(goal|quiz)-\d+$/.exec(token);
+
+      if (task && skillNames.has(task[1])) {
+        return task[1];
+      }
+    }
+
+    return null;
+  };
+
   const prs = Object.values(derived.prs)
     .sort((a, b) => a.number - b.number)
-    .map(pr => {
-      const named = /^[a-z]+:\s*([a-z0-9-]+)/.exec(pr.title);
-      const mentioned = [...pr.body.matchAll(/reports\/([a-z0-9.-]+\.md)/g)].map(match => match[1]);
-
-      return {
-        ...pr,
-        skill: named && skillNames.has(named[1]) ? named[1] : null,
-        reports: [...new Set(mentioned)],
-      };
-    });
+    .map(pr => ({
+      ...pr,
+      skill: skillOf(pr),
+      reports: [...new Set([...pr.body.matchAll(/reports\/([a-z0-9.-]+\.md)/g)].map(match => match[1]))],
+    }));
 
   const index = {
     generated: { at: new Date().toISOString(), commit: head, dirty, repo: REPO },
@@ -660,7 +742,6 @@ const main = async () => {
     skill_versions: sortKeys(derived.skill_versions),
     run_rubrics: sortKeys(derived.run_rubrics),
     run_transcripts: sortKeys(derived.run_transcripts),
-    skill_commits: sortKeys(derived.skill_commits),
     prs: sortKeys(derived.prs),
   };
   const changed = JSON.stringify(merged) !== before;

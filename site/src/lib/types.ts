@@ -16,8 +16,11 @@ export type Run = {
   skill_content: string | null;
   /** this record re-judges that run's stored evidence; it is a second reading, not a second run */
   regrade_of: string | null;
+  regraded_at: string | null;
   /** a later regrade re-read this run; the two must never land in one tally */
   superseded_by: string | null;
+  /** why this grade measures the harness rather than the model; such a run is kept and never counted */
+  retracted: string | null;
   rubric: string | null;
   rubric_expects: number | null;
   transcript_url: string | null;
@@ -49,6 +52,8 @@ export type Task = {
   status: "live" | "retired";
   input: string;
   expect: string[];
+  /** the rubric these expect lines hash to today; a run graded on an earlier revision carries another */
+  rubric: string | null;
   runs: number;
   template: string | null;
   notes: string | null;

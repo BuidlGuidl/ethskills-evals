@@ -8,6 +8,10 @@ const Summary = () => {
   const index = useIndex();
   const rows = summarize(index);
   const rewritten = rows.filter(row => row.afterVersion !== null);
+  // The judge is a separate call, and on a single-stack benchmark it is the same model as the
+  // executor. The record says so, and a page that shows the numbers has to say so too.
+  const graded = index.runs.filter(run => run.pass !== null && run.retracted === null);
+  const selfJudged = graded.filter(run => run.judge?.self_judged === true).length;
 
   return (
     <>
@@ -32,8 +36,10 @@ const Summary = () => {
           graded starts acting smart.
         </li>
         <li>
-          <strong>A blind judge.</strong> A separate model grades every run against the task's <code>expect:</code>{" "}
-          lines without knowing which variant produced it. The headline is the raw pass count.
+          <strong>A blind judge.</strong> A separate call grades every run against the task's <code>expect:</code>{" "}
+          lines without knowing which variant produced it. It is usually the same model as the executor —{" "}
+          {selfJudged} of {graded.length} graded runs are self-judged that way, and each record says so. That is a
+          caveat on the numbers, not a defect in them. The headline is the raw pass count.
         </li>
       </ol>
       <p className="copy">
@@ -98,9 +104,13 @@ const Summary = () => {
           which tasks that leaves.
         </p>
         <p className="footnote">
-          Pass counts are totalled over the tasks both versions ran, so the three columns read against each other.
-          Counts are runs rather than records: a regrade re-reads one run's stored evidence against rewritten expect
-          lines, and only the newest reading of a run is counted.
+          Pass counts are totalled over the tasks where the three columns read against each other: both versions ran
+          the task under the same <code>expect:</code> lines, and so did the unaided runs. A task whose lines were
+          rewritten between the two versions is shown on the skill page and left out of the total. Counts are runs
+          rather than records: a regrade re-reads one run's stored evidence against rewritten lines, and only the
+          newest reading of a run is counted. A run whose grade measured the harness rather than the model is marked
+          retracted on its task page and counted nowhere. The <em>runs</em> column counts every run of the skill,
+          including versions between the two shown.
         </p>
       </details>
     </>

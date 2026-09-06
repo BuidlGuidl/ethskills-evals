@@ -16,7 +16,10 @@ const Doc = ({ kind }: { kind: "report" | "pr" }) => {
   }
 
   const title = "title" in found ? found.title : "";
-  const source = "markdown" in found ? found.markdown : found.body;
+  // The page heading is the report's own first line, so that line is not rendered twice.
+  const source = "markdown" in found ? found.markdown.replace(/^# [^\n]*\n/, "") : found.body;
+  const blob = `https://github.com/${index.generated.repo}/blob/main/`;
+  const base = kind === "report" ? `${blob}reports/` : blob;
 
   return (
     <article>
@@ -24,7 +27,7 @@ const Doc = ({ kind }: { kind: "report" | "pr" }) => {
         <a href={found.url}>{kind === "report" ? (found as { file: string }).file : `pull request #${number}`}</a>
       </p>
       <h1>{title}</h1>
-      <div className="prose" dangerouslySetInnerHTML={{ __html: renderMarkdown(source) }} />
+      <div className="prose" dangerouslySetInnerHTML={{ __html: renderMarkdown(source, base) }} />
     </article>
   );
 };

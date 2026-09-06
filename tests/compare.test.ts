@@ -34,6 +34,7 @@ const task = (id: string, kind: "quiz" | "goal"): Task => ({
   status: "live",
   input: "do it",
   expect: ["a"],
+  rubric: null,
   runs: 3,
   template: null,
   notes: null,
@@ -55,7 +56,9 @@ const run = (task: string, content: string | null, rubric: string, pass: boolean
   skill_version: content,
   skill_content: content,
   regrade_of: null,
+  regraded_at: null,
   superseded_by: null,
+  retracted: null,
   rubric,
   rubric_expects: 1,
   transcript_url: null,
@@ -174,24 +177,76 @@ test("a run read three times counts once, as its newest reading", () => {
   assert.deepEqual(tally([source, first]), { passed: 0, total: 1, rubrics: ["rubric-mid"] });
 });
 
-test("totals cover the tasks both versions ran, so the two share a denominator", () => {
+test("totals cover the rows that are a comparison, so the columns share a denominator and a rubric", () => {
   const comparison = compareSkill(skill, tasks, runs);
+  const [rewritten, kept] = comparison.rows;
 
-  assert.deepEqual(comparison.coverage, { counted: 2, total: 2 });
-  assert.deepEqual(comparison.totals.before, { passed: 2, total: 3, rubrics: ["rubric-kept", "rubric-old"] });
-  assert.deepEqual(comparison.totals.after, { passed: 2, total: 3, rubrics: ["rubric-kept", "rubric-new"] });
+  // quiz-001's expects moved between the two versions: its cells stay in the table, marked,
+  // and out of the totals — adding them in would sum two different measurements.
+  assert.equal(rewritten.counted, false);
+  assert.equal(kept.counted, true);
+  assert.deepEqual(comparison.coverage, { counted: 1, total: 2 });
+  assert.deepEqual(comparison.totals.noSkill, { passed: 1, total: 1, rubrics: ["rubric-kept"] });
+  assert.deepEqual(comparison.totals.before, { passed: 1, total: 1, rubrics: ["rubric-kept"] });
+  assert.deepEqual(comparison.totals.after, { passed: 0, total: 1, rubrics: ["rubric-kept"] });
+  assert.equal(comparison.comparable, true);
 });
 
+// quiz-001 graded on one rubric on both sides, so the only thing that can leave a row out is
+// what each test below introduces.
+const steady = runs.map(run => (run.task === "addresses-quiz-001" ? { ...run, rubric: "rubric-new" } : run));
+
 test("a task only one version ran is left out of the totals, not added to one side", () => {
-  const partial = runs.filter(run => !(run.task === "addresses-quiz-002" && run.skill_content === "small"));
+  const partial = steady.filter(run => !(run.task === "addresses-quiz-002" && run.skill_content === "small"));
   const comparison = compareSkill(skill, tasks, partial);
 
   // quiz-002 keeps its `before` cell in the table but drops out of the totals: counting it
   // would put a run in the old column with nothing facing it in the new one.
   assert.deepEqual(comparison.coverage, { counted: 1, total: 2 });
-  assert.deepEqual(comparison.totals.before, { passed: 1, total: 2, rubrics: ["rubric-old"] });
+  assert.deepEqual(comparison.totals.before, { passed: 1, total: 2, rubrics: ["rubric-new"] });
   assert.deepEqual(comparison.totals.after, { passed: 2, total: 2, rubrics: ["rubric-new"] });
   assert.equal(comparison.rows[1].before?.total, 1, "the row itself still shows what ran");
+});
+
+test("when every shared row moved its rubric, the totals are each version's own and say so", () => {
+  const onlyMoved = runs.filter(run => run.task === "addresses-quiz-001");
+  const comparison = compareSkill(skill, tasks, onlyMoved);
+
+  assert.equal(comparison.comparable, false);
+  assert.equal(comparison.sharedRows, 1, "the versions share the task; the rubric is what moved");
+  assert.deepEqual(comparison.totals.before, { passed: 1, total: 2, rubrics: ["rubric-old"] });
+});
+
+test("unaided runs graded on no rubric the skilled column saw are shown, flagged, and left out", () => {
+  const offRubric = steady.map(run =>
+    run.task === "addresses-quiz-002" && run.variant === "no_skill" ? { ...run, rubric: "rubric-other" } : run,
+  );
+  const [, kept] = compareSkill(skill, tasks, offRubric).rows;
+
+  assert.deepEqual(kept.noSkill, { passed: 1, total: 1, rubrics: ["rubric-other"] }, "shown rather than an empty cell");
+  assert.equal(kept.unaidedOffRubric, true);
+  assert.equal(kept.counted, false);
+  assert.equal(kept.rubricMoved, false, "the skilled cells still compare with each other");
+});
+
+test("a retired task keeps its row, and is neither counted nor in the denominator", () => {
+  const retired = [tasks[0], { ...tasks[1], status: "retired" as const }];
+  const neverRerun = steady.filter(run => !(run.task === "addresses-quiz-002" && run.skill_content === "small"));
+  const comparison = compareSkill(skill, retired, neverRerun);
+
+  assert.equal(comparison.rows[1].retired, true);
+  assert.equal(comparison.rows[1].before?.total, 1, "what the older version scored is still shown");
+  assert.equal(comparison.rows[1].counted, false);
+  assert.deepEqual(comparison.coverage, { counted: 1, total: 1 }, "the newer version was never asked to run it");
+});
+
+test("a retracted grade is kept out of every count", () => {
+  const retracted = { ...run("addresses-quiz-002", "small", "rubric-kept", false), retracted: "the CLI was killed" };
+  const real = run("addresses-quiz-002", "small", "rubric-kept", true);
+
+  assert.deepEqual(tally([retracted, real]), { passed: 1, total: 1, rubrics: ["rubric-kept"] });
+  assert.equal(countRuns([retracted, real]), 1);
+  assert.equal(tally([retracted]), null);
 });
 
 test("the after column is the version that shipped, not the widest-covering intermediate", () => {

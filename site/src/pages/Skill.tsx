@@ -2,10 +2,18 @@ import { PatchDiff } from "@pierre/diffs/react";
 import Marker from "../components/Marker.js";
 import { useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { compareSkill, formatCell } from "../lib/compare.js";
+import { compareSkill, formatCell, mixed } from "../lib/compare.js";
 import { useIndex } from "../lib/data.js";
 import { patchBetween } from "../lib/diff.js";
-import { NO_SHARED_TASKS, PARTIAL_COVERAGE, RUBRIC_MOVED } from "../lib/notes.js";
+import {
+  MIXED_RUBRICS,
+  NO_COMPARABLE_ROWS,
+  NO_SHARED_TASKS,
+  PARTIAL_COVERAGE,
+  RETIRED_ROW,
+  RUBRIC_MOVED,
+  UNAIDED_OFF_RUBRIC,
+} from "../lib/notes.js";
 
 const size = (lines: number, words: number) => `${lines} lines / ${words} words`;
 
@@ -34,12 +42,16 @@ const Skill = () => {
     return <h1>No such skill</h1>;
   }
 
-  const { before, after, current, between } = comparison;
+  const { before, after, current, between, rows, coverage } = comparison;
   // Nothing to put side by side when the repo still holds the one version that was measured.
   const right = after ?? (current !== null && current.id !== before?.id ? current : null);
   const reports = index.reports.filter(report => report.skill.startsWith(skill.name));
   const prs = index.prs.filter(pr => pr.skill === skill.name);
-  const moved = comparison.rows.some(row => row.rubricMoved);
+  const moved = rows.some(row => row.rubricMoved);
+  const offRubric = rows.some(row => row.unaidedOffRubric);
+  const pooled = rows.some(row => mixed(row.noSkill) || mixed(row.before) || mixed(row.after));
+  const retired = after !== null && rows.some(row => row.retired);
+  const fullCoverage = coverage.counted === coverage.total;
 
   return (
     <>
@@ -59,7 +71,11 @@ const Skill = () => {
         <p className="lede">
           Rewritten from <strong>{size(before!.lines, before!.words)}</strong> to{" "}
           <strong>{size(after.lines, after.words)}</strong>
-          {comparison.comparable ? ", and both versions were put through the same tasks." : "."}
+          {comparison.comparable && fullCoverage
+            ? ", and both versions were put through the same tasks."
+            : comparison.comparable
+              ? `, and compared on ${coverage.counted} of ${coverage.total} tasks.`
+              : "."}
         </p>
       )}
 
@@ -87,20 +103,27 @@ const Skill = () => {
           </tr>
         </thead>
         <tbody>
-          {comparison.rows.map(row => (
-            <tr key={row.task}>
+          {rows.map(row => (
+            <tr key={row.task} className={after !== null && !row.counted ? "uncounted" : undefined}>
               <th scope="row">
                 <Link to={`/task/${row.task}`}>{row.task.replace(`${skill.name}-`, "")}</Link>{" "}
                 <span className="muted small">{row.kind}</span>
+                {row.retired && <Marker symbol="retired" note={RETIRED_ROW} className="tag warnTag" />}
               </th>
-              <td className="num">{formatCell(row.noSkill)}</td>
+              <td className="num">
+                {formatCell(row.noSkill)}
+                {row.unaidedOffRubric && <Marker symbol="§" note={UNAIDED_OFF_RUBRIC} />}
+                {mixed(row.noSkill) && <Marker symbol="†" note={MIXED_RUBRICS} />}
+              </td>
               <td className="num">
                 {formatCell(row.before)}
                 {row.rubricMoved && <Marker symbol="‡" note={RUBRIC_MOVED} />}
+                {mixed(row.before) && <Marker symbol="†" note={MIXED_RUBRICS} />}
               </td>
               <td className="num">
                 {formatCell(row.after)}
                 {row.rubricMoved && <Marker symbol="‡" note={RUBRIC_MOVED} />}
+                {mixed(row.after) && <Marker symbol="†" note={MIXED_RUBRICS} />}
               </td>
             </tr>
           ))}
@@ -108,9 +131,7 @@ const Skill = () => {
             <th scope="row">
               total{" "}
               <span className="muted small">
-                {comparison.coverage.counted === comparison.coverage.total
-                  ? `all ${comparison.coverage.total} tasks`
-                  : `${comparison.coverage.counted} of ${comparison.coverage.total} tasks`}
+                {fullCoverage ? `all ${coverage.total} tasks` : `${coverage.counted} of ${coverage.total} tasks`}
               </span>
             </th>
             <td className="num">{formatCell(comparison.totals.noSkill)}</td>
@@ -121,10 +142,10 @@ const Skill = () => {
       </table>
 
       {!comparison.comparable && (
-        <p className="note">{NO_SHARED_TASKS}</p>
+        <p className="note">{comparison.sharedRows === 0 ? NO_SHARED_TASKS : NO_COMPARABLE_ROWS}</p>
       )}
 
-      {comparison.comparable && comparison.coverage.counted < comparison.coverage.total && (
+      {comparison.comparable && after !== null && !fullCoverage && (
         <p className="footnote">
           <strong className="moved">*</strong> {PARTIAL_COVERAGE}
         </p>
@@ -133,6 +154,24 @@ const Skill = () => {
       {moved && (
         <p className="footnote">
           <strong className="moved">‡</strong> {RUBRIC_MOVED}
+        </p>
+      )}
+
+      {offRubric && (
+        <p className="footnote">
+          <strong className="moved">§</strong> {UNAIDED_OFF_RUBRIC}
+        </p>
+      )}
+
+      {pooled && (
+        <p className="footnote">
+          <strong className="moved">†</strong> {MIXED_RUBRICS}
+        </p>
+      )}
+
+      {retired && (
+        <p className="footnote">
+          <strong className="moved">retired</strong> {RETIRED_ROW}
         </p>
       )}
 

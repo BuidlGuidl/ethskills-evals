@@ -7,14 +7,21 @@ import type { Index, Run, Skill, SkillVersion, Task } from "./types.js";
 
 export type Cell = { passed: number; total: number; rubrics: string[] };
 
-export const tally = (runs: Run[]): Cell | null => {
-  // A regrade and the run it re-read are one run read twice. Whenever both are in the set
-  // being counted, the newer reading wins; a set holding only the source still counts it,
-  // which is what makes a per-rubric column come out right.
+// A retracted grade measured the harness, not the model — a killed CLI, a deliverable that
+// never reached the judge. The record stays on the task page and says why; no count has it.
+const measured = (run: Run) => run.retracted === null;
+
+// A regrade and the run it re-read are one run read twice. Whenever both are in the set
+// being counted, the newer reading wins; a set holding only the source still counts it,
+// which is what makes a per-rubric column come out right.
+const newest = (runs: Run[]) => {
   const present = new Set(runs.map(run => `${run.task}/${run.run}`));
-  const graded = runs.filter(
-    run => run.pass !== null && !(run.superseded_by !== null && present.has(`${run.task}/${run.superseded_by}`)),
-  );
+
+  return runs.filter(run => !(run.superseded_by !== null && present.has(`${run.task}/${run.superseded_by}`)));
+};
+
+export const tally = (runs: Run[]): Cell | null => {
+  const graded = newest(runs).filter(run => run.pass !== null && measured(run));
 
   if (graded.length === 0) {
     return null;
@@ -30,14 +37,13 @@ export const tally = (runs: Run[]): Cell | null => {
 // Records, not runs: a regrade and the run it re-read are one run read twice, and a headline
 // that counts records says 896 where the tables say 805. Ungraded runs are counted here and
 // not in a tally — they happened, they just have no verdict.
-export const countRuns = (runs: Run[]) => {
-  const present = new Set(runs.map(run => `${run.task}/${run.run}`));
-
-  return runs.filter(run => !(run.superseded_by !== null && present.has(`${run.task}/${run.superseded_by}`))).length;
-};
+export const countRuns = (runs: Run[]) => newest(runs).filter(measured).length;
 
 export const shareRubric = (left: Cell | null, right: Cell | null) =>
   left !== null && right !== null && left.rubrics.some(id => right.rubrics.includes(id));
+
+/** more than one rubric in one cell: a raw count, not a measurement under one set of expect lines */
+export const mixed = (cell: Cell | null) => cell !== null && cell.rubrics.length > 1;
 
 export const versionById = (skill: Skill, id: string | null) =>
   id === null ? null : (skill.versions.find(version => version.id === id) ?? null);
@@ -45,11 +51,17 @@ export const versionById = (skill: Skill, id: string | null) =>
 export type Row = {
   task: string;
   kind: "quiz" | "goal";
+  /** not run again, so a version measured after it was retired has no cell here */
+  retired: boolean;
   noSkill: Cell | null;
   before: Cell | null;
   after: Cell | null;
   /** the two skilled cells were graded against different expect lines, so they are not a comparison */
   rubricMoved: boolean;
+  /** no unaided run shares the skilled column's rubric, so noSkill pools every unaided run there is */
+  unaidedOffRubric: boolean;
+  /** in the totals: every cell on the row reads against the others */
+  counted: boolean;
 };
 
 export type SkillComparison = {
@@ -65,21 +77,24 @@ export type SkillComparison = {
   between: SkillVersion[];
   rows: Row[];
   /**
-   * Totalled over the tasks every column was graded on, under the same expect lines — so the
-   * three cells are a comparison rather than three different measurements added up. A version
-   * re-run on one task of six would otherwise show 3/3 beside the older 15/15 and read as the
-   * weaker result. `coverage` says how many rows that leaves.
+   * Totalled over the rows where every cell reads against the others: both versions ran the
+   * task, under the same expect lines, and the unaided runs were graded on those lines too.
+   * A version re-run on one task of six would otherwise show 3/3 beside the older 15/15 and
+   * read as the weaker result; a row whose rubric moved would add two different measurements
+   * into one number. `coverage` says how many rows that leaves.
    */
   totals: { noSkill: Cell | null; before: Cell | null; after: Cell | null };
   coverage: { counted: number; total: number };
-  /** false when the two versions share no task, so the totals are each version's own */
+  /** rows with a cell in both skilled columns, whatever their rubrics */
+  sharedRows: number;
+  /** false when no row is a comparison, so the totals are each version's own */
   comparable: boolean;
 };
 
 export const compareSkill = (skill: Skill, tasks: Task[], runs: Run[]): SkillComparison => {
   const mine = runs.filter(run => run.skill === skill.name);
-  const measured = skill.versions.filter(version => version.runs > 0);
-  const before = measured[0] ?? null;
+  const measuredVersions = skill.versions.filter(version => version.runs > 0);
+  const before = measuredVersions[0] ?? null;
   const current = versionById(skill, skill.current);
 
   const tasksOf = (version: SkillVersion) =>
@@ -93,7 +108,7 @@ export const compareSkill = (skill: Skill, tasks: Task[], runs: Run[]): SkillCom
   // otherwise the newest one benchmarked on at least half the older version's work; otherwise
   // whatever shares the most.
   const beforeTasks = before === null ? new Set<string>() : tasksOf(before);
-  const candidates = before === null ? [] : measured.filter(version => version.id !== before.id);
+  const candidates = before === null ? [] : measuredVersions.filter(version => version.id !== before.id);
   const shared = (version: SkillVersion) => [...tasksOf(version)].filter(task => beforeTasks.has(task)).length;
 
   const after =
@@ -115,32 +130,41 @@ export const compareSkill = (skill: Skill, tasks: Task[], runs: Run[]): SkillCom
 
       const beforeCell = cellFor(before);
       const afterCell = cellFor(after);
+      const rubricMoved = beforeCell !== null && afterCell !== null && !shareRubric(beforeCell, afterCell);
 
       // The unaided variant was graded on a rubric too. Align it with the newest skilled
-      // column on the row so the three cells are read against each other, and fall back to
-      // every unaided run when nothing overlaps rather than showing an empty cell.
+      // column on the row so the three cells are read against each other. When nothing
+      // overlaps, every unaided run is shown rather than an empty cell — and the row says
+      // so, because that number faces neither skilled column.
       const target = afterCell ?? beforeCell;
       const unaided = forTask.filter(run => run.variant === "no_skill");
       const aligned = target === null ? unaided : unaided.filter(run => run.rubric !== null && target.rubrics.includes(run.rubric));
+      const unaidedOffRubric = target !== null && unaided.length > 0 && aligned.length === 0;
+      const retired = task.status === "retired";
 
       return {
         task: task.id,
         kind: task.kind,
+        retired,
         noSkill: tally(aligned.length > 0 ? aligned : unaided),
         before: beforeCell,
         after: afterCell,
-        rubricMoved: beforeCell !== null && afterCell !== null && !shareRubric(beforeCell, afterCell),
+        rubricMoved,
+        unaidedOffRubric,
+        // A retired task keeps its cell for what the older version scored, but the newer
+        // version was never run on it, so it cannot be in a before-and-after total.
+        counted:
+          beforeCell !== null &&
+          !unaidedOffRubric &&
+          (after === null || (!retired && afterCell !== null && !rubricMoved)),
       };
     });
 
-  // Only the tasks both skilled columns actually ran, so the two totals share a denominator:
-  // a version re-run on one task of six would otherwise show 3/3 beside the older 15/15 and
-  // read as the weaker result. Rows where the expect lines moved stay in — they are a real
-  // measurement of each version, and `rubricMoved` marks them rather than deleting them.
-  const overlap = rows.filter(row => row.before !== null && (after === null || row.after !== null));
+  // Only the rows that are a comparison, so the totals share a denominator and a rubric.
   // skills/building-blocks was reduced and then benchmarked on a task the long version never
   // ran, so the two share nothing. Rather than empty every cell, total each column over its
   // own rows and say plainly that this is not a comparison.
+  const overlap = rows.filter(row => row.counted);
   const counted = overlap.length > 0 ? overlap : rows;
 
   const sum = (pick: (row: Row) => Cell | null): Cell | null => {
@@ -162,10 +186,14 @@ export const compareSkill = (skill: Skill, tasks: Task[], runs: Run[]): SkillCom
     after,
     current,
     editedAfterBenchmark: current !== null && current.runs === 0,
-    between: measured.filter(version => version.id !== before?.id && version.id !== after?.id),
+    between: measuredVersions.filter(version => version.id !== before?.id && version.id !== after?.id),
     rows,
     totals: { noSkill: sum(row => row.noSkill), before: sum(row => row.before), after: sum(row => row.after) },
-    coverage: { counted: overlap.length, total: rows.length },
+    coverage: {
+      counted: overlap.length,
+      total: after === null ? rows.length : rows.filter(row => !row.retired).length,
+    },
+    sharedRows: rows.filter(row => row.before !== null && row.after !== null).length,
     comparable: after === null || overlap.length > 0,
   };
 };
@@ -190,7 +218,8 @@ export const summarize = (index: Index): SkillSummary[] =>
 
     return {
       name: skill.name,
-      tasks: index.tasks.filter(task => task.skill === skill.name).length,
+      // Live tasks: a retired one is kept for its runs, and is not work the skill still faces.
+      tasks: index.tasks.filter(task => task.skill === skill.name && task.status === "live").length,
       runs: countRuns(mine),
       noSkill: comparison.totals.noSkill,
       before: comparison.totals.before,

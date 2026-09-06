@@ -1,5 +1,7 @@
 import { Link, useParams } from "react-router-dom";
+import Marker from "../components/Marker.js";
 import { useIndex } from "../lib/data.js";
+import { OLD_RUBRIC, RETRACTED } from "../lib/notes.js";
 
 const Task = () => {
   const index = useIndex();
@@ -12,7 +14,13 @@ const Task = () => {
 
   const runs = index.runs
     .filter(run => run.task === task.id)
-    .sort((a, b) => (a.created ?? "").localeCompare(b.created ?? ""));
+    .sort((a, b) => (a.created ?? "").localeCompare(b.created ?? "") || a.run.localeCompare(b.run));
+  // The list of expect lines is today's; a run graded before a rewrite carries an earlier
+  // rubric, and its dots count that rubric's lines, not these.
+  const onOldRubric = (run: { rubric: string | null }) =>
+    run.rubric !== null && task.rubric !== null && run.rubric !== task.rubric;
+  const olderRubrics = runs.filter(run => run.pass !== null && onOldRubric(run)).length;
+  const retracted = runs.some(run => run.retracted !== null);
 
   return (
     <>
@@ -37,6 +45,12 @@ const Task = () => {
           <li key={position}>{line}</li>
         ))}
       </ol>
+      {olderRubrics > 0 && (
+        <p className="footnote">
+          <strong className="moved">‡</strong> {olderRubrics} of the graded runs below were graded on an earlier
+          revision of these lines. {OLD_RUBRIC}
+        </p>
+      )}
 
       <h2>Runs</h2>
       {runs.some(entry => entry.regrade_of !== null) && (
@@ -46,6 +60,7 @@ const Task = () => {
           reading — never both.
         </p>
       )}
+      {retracted && <p className="note">{RETRACTED}</p>}
       <table className="grid">
         <thead>
           <tr>
@@ -66,7 +81,14 @@ const Task = () => {
               </th>
               <td>{run.variant}</td>
               <td className="mono small">{run.skill_content ? run.skill_content.slice(0, 8) : "—"}</td>
-              <td className="small">{run.executor_model ?? run.executor}</td>
+              <td className="small">
+                {run.executor_model ?? run.executor}
+                {run.judge?.self_judged === true && (
+                  <span className="tag idle" title="the judge was the same agent as the executor">
+                    self-judged
+                  </span>
+                )}
+              </td>
               <td>
                 {run.pass === null ? (
                   <span className="tag idle">ungraded</span>
@@ -75,6 +97,7 @@ const Task = () => {
                 ) : (
                   <span className="tag bad">fail</span>
                 )}
+                {run.retracted !== null && <Marker symbol="retracted" note={`${RETRACTED} Reason: ${run.retracted}`} className="tag warnTag" />}
                 {run.regrade_of !== null && (
                   <span className="tag" title={`re-read of ${run.regrade_of}`}>
                     regrade
@@ -90,6 +113,9 @@ const Task = () => {
                       </span>
                     ))
                   : "—"}
+                {run.expects && onOldRubric(run) && (
+                  <Marker symbol="‡" note={`${OLD_RUBRIC} This run was graded on ${run.rubric_expects ?? "?"} lines.`} />
+                )}
               </td>
               <td className="small">
                 {run.transcript_url ? <a href={run.transcript_url}>open</a> : <span className="muted">—</span>}
