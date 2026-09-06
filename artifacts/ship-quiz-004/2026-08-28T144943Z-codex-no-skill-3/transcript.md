@@ -1,0 +1,569 @@
+OpenAI Codex v0.150.1
+--------
+workdir: /ssd/workspace/buidlguidl/ethskills-evals-test/artifacts/ship-quiz-004/2026-08-28T144943Z-codex-no-skill-3/workspace
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR] (network access enabled)
+reasoning effort: none
+reasoning summaries: none
+session id: 01a048d9-1cd0-74f0-9a92-703378949ced
+--------
+user
+We publish a newsletter about our city's restaurants — around 200,000
+subscribers, almost none of whom have used a crypto wallet, though many
+already have Coinbase accounts. We want readers to tip a line cook directly;
+tips run $1-$5 and arrive in bursts after each issue.
+
+Two things before we commit to a build. Write the walkthrough of a first-time
+reader's first tip — every screen, and everything they have to install, sign
+up for, or fund before the money reaches the cook. Then tell me what would
+have to change about this product for that setup to be the wrong one.
+
+Write your answer to plan.md in this directory.
+
+2026-08-28T14:49:43.628784Z ERROR codex_core::shell_snapshot: Shell snapshot validation failed: Snapshot command exited with status exit status: 2: /home/damu/.codex/shell_snapshots/01a048d9-1cd0-74f0-9a92-703378949ced.tmp-1787928583385076486: line 2547: syntax error near unexpected token `('
+
+codex
+I’ll inspect the workspace for any existing product context or constraints, then write the end-to-end reader journey and the conditions that would invalidate the recommended setup into `plan.md`.
+exec
+/bin/bash -lc "rg --files -g '"'!*node_modules*'"' -g '"'!*.lock'"' | head -200 && find . -maxdepth 2 -type f -name 'AGENTS.md' -print" in /ssd/workspace/buidlguidl/ethskills-evals-test/artifacts/ship-quiz-004/2026-08-28T144943Z-codex-no-skill-3/workspace
+ succeeded in 14ms:
+TASK.md
+
+exec
+/bin/bash -lc "sed -n '1,240p' TASK.md" in /ssd/workspace/buidlguidl/ethskills-evals-test/artifacts/ship-quiz-004/2026-08-28T144943Z-codex-no-skill-3/workspace
+ succeeded in 0ms:
+codex
+The key design choice is whether “direct” means a reader-signed onchain transfer or simply a direct payout to the cook. I’m treating it as the former and will make the hidden operational assumptions explicit, because $1–$5 tips are dominated by onboarding and fee friction rather than contract complexity. I’m verifying the current Coinbase/Base flows before drafting.
+web search: 
+web search: site:docs.cdp.coinbase.com embedded wallets social login onramp USDC Base documentation ...
+codex
+I’ve settled on the lowest-friction onchain version: a hosted Coinbase “send/buy” checkout that deposits Base USDC straight into the cook’s address. The reader does not create or operate a wallet; the cook does. I’ll distinguish the existing-Coinbase path from the guest path and call out the crucial limitation: a $1–$4 fiat-funded first tip may not clear hosted-onramp minimums or economics.
+apply patch
+patch: completed
+/ssd/workspace/buidlguidl/ethskills-evals-test/artifacts/ship-quiz-004/2026-08-28T144943Z-codex-no-skill-3/workspace/plan.md
+diff --git a/plan.md b/plan.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..2a79ae22bf702450d70d5f22ae234f4cfcd5eb4c
+--- /dev/null
++++ b/plan.md
+@@ -0,0 +1,122 @@
++# First-tip plan
++
++## Recommendation and the promise we should make
++
++Use a newsletter link that opens our mobile web page, followed by a Coinbase-hosted checkout that sends **USDC on Base directly to the featured cook's wallet**. Do not ask the reader to install Coinbase Wallet, a browser extension, or our app, and do not create a reader wallet merely to relay one payment.
++
++The honest button label is **“Tip Maria with Coinbase”**, not simply “Tip $3.” A reader is making an onchain USDC transfer through Coinbase. The cook, not the reader, owns the destination wallet. We should show the cook's name and restaurant throughout, but keep the address and network under an expandable “payment details” section.
++
++This is the best onchain setup for this audience because it reuses an account many readers already trust and eliminates seed phrases, gas, chain selection, and wallet approvals. Base keeps the eventual transfer inexpensive. It does **not** make a fresh $1 fiat purchase sensible: Coinbase says guest card/Apple Pay/Google Pay purchases have an approximately $5 minimum, and fees can still apply. Therefore launch should either (a) make **$5 the first-tip minimum**, with $1–$4 available only to readers who already hold a usable Coinbase balance, or (b) offer a $5 “tip balance” that can be spent across later cooks. We must confirm the actual quote and minimum for every supported region before presenting an amount.
++
++## A first-time reader's first tip
++
++This is the complete happy path for a reader who already has a verified Coinbase account and a usable Coinbase cash or crypto balance/payment method. Coinbase can change wording and insert risk, identity, or compliance checks; these are screen responsibilities, not guaranteed literal titles.
++
++### 1. Newsletter
++
++The restaurant story ends with the cook's portrait, first name, a plain-language explanation (“Maria receives USDC, a digital dollar, directly”), and **Tip Maria** buttons for $1, $3, and $5. Below them: “Paid through Coinbase · final amount and any fee shown before you approve · onchain payments cannot be reversed.” If our live quote says an amount is unavailable, that button is disabled rather than failing later.
++
++The link is signed and identifies the issue, cook, and selected amount. It must not contain or accept an arbitrary destination address.
++
++### 2. Our confirmation page (mobile web)
++
++The page shows:
++
++- Maria, the restaurant, and the selected tip;
++- **Maria receives:** the exact USDC amount;
++- **You pay:** an estimate until Coinbase returns a quote, then the exact total and fee;
++- “USDC on Base,” with a short explanation and an expandable, checksummed destination address;
++- **Continue with Coinbase** and **Cancel**.
++
++The server, not the browser, looks up Maria's allowlisted wallet and creates a short-lived, single-use Coinbase Onramp session locked to USDC, Base, that address, and the amount. The user never types an address, chooses an asset, or chooses a network.
++
++### 3. Coinbase-hosted handoff
++
++A Coinbase-hosted page or modal opens and repeats the asset, Base network, amount, and destination. The reader chooses **Sign in to Coinbase**. If Coinbase offers a choice, the experience should default to transferring from Coinbase (`send`) rather than buying a new asset.
++
++Nothing is installed. This is a browser flow. We do not ask the reader to download Coinbase Wallet or manage a recovery phrase.
++
++### 4. Coinbase sign-in and security
++
++The reader enters the email/phone and password for their existing Coinbase account, then completes whatever passkey or two-factor challenge Coinbase requires. A reader whose device already has an active Coinbase session may skip most of this.
++
++If Coinbase requires updated terms, identity verification, a residence check, or an account restriction review, those screens happen here and the tip waits. We cannot promise a fixed number of screens or instant completion.
++
++### 5. Choose how to pay
++
++Coinbase shows eligible sources, for example an existing USD/USDC/crypto balance or a linked bank/debit method, depending on the reader and region. The reader selects one.
++
++- **Already-funded Coinbase account:** no new funding setup is required. Coinbase converts if necessary and sends USDC to Maria's Base address.
++- **Linked method but insufficient balance:** Coinbase shows the buy-and-send quote. The reader confirms the existing method; availability, holds, fees, and minimums are Coinbase's.
++- **No usable source:** the reader must add a supported payment method and may need bank authentication, card verification, or a deposit/settlement wait. The money does not reach Maria until Coinbase says the purchase and send can complete.
++
++We should never silently raise a $1 selection to $5. If a $1–$4 quote is unavailable, return to our page with: “Coinbase can't process this amount from that payment method. Tip $5, or cancel.”
++
++### 6. Coinbase review
++
++Before approval, Coinbase shows the amount purchased or transferred, payment source, Coinbase and network fees (if any), USDC, Base, destination, and total. The reader presses the final **Buy/Send/Confirm** control. This is the moment money is authorized; our earlier button is not.
++
++### 7. Processing
++
++Coinbase shows pending/processing. The browser redirects to our receipt page, but a redirect is not proof of payment. Our backend checks Coinbase transaction status and the Base transaction/receipt, and associates it with the signed tip intent. Closing the tab is safe.
++
++### 8. Our receipt
++
++While pending: “Coinbase is processing your $3 tip. We'll email the result.” After sufficient confirmation: “Maria received 3.00 USDC,” timestamp, transaction link, and receipt/reference. A failure page states that the cook was not paid and whether Coinbase reports a charge, reversal, or still-pending transfer; it offers support, not a blind retry that could double-tip.
++
++The cook's wallet balance increases once the Base transfer settles. There is no later newsletter-controlled sweep and no reader funds held by us.
++
++## What each person must install, sign up for, and fund
++
++### Reader with Coinbase
++
++- **Install:** nothing; a current browser is enough. The Coinbase app is optional if Coinbase uses it for authentication.
++- **Sign up:** nothing new, assuming the Coinbase account is already verified and permitted to transact. They may have to sign in, complete 2FA/passkey, or refresh KYC.
++- **Fund:** an existing eligible Coinbase balance is the clean path. Otherwise they must use/add a supported payment source, accept the displayed purchase/send fees and limits, and possibly wait for funds to become sendable.
++- **Learn/manage:** no wallet address, private key, seed phrase, ETH, gas, bridge, or chain selector.
++
++### Reader without Coinbase
++
++Coinbase may offer hosted guest checkout in supported countries. The reader enters contact/payment details, completes verification and card/Apple Pay/Google Pay authorization, reviews the quote, and confirms. They need no self-custody wallet, but the approximately $5 guest minimum means this cannot be the universal $1 first-tip path. Where guest checkout is unavailable, they would have to create and verify a Coinbase account or cannot use this route. The product must say so before handoff.
++
++### Cook (completed before publication)
++
++The cook needs a self-custody wallet that supports Base USDC, with recovery set up and tested, or another destination they demonstrably control and that accepts Base USDC. Onboarding screens are: create/import wallet; secure passkey/recovery material; acknowledge recovery warning; reveal Base receive address; sign a challenge proving control; receive and return a small test payment; choose payout preference.
++
++To turn tips into bank money, the cook also needs an exchange/offramp account supported in their jurisdiction, identity verification, a linked bank account, and a tested USDC-on-Base deposit/offramp route. We should provide this onboarding and support, disclose taxes/reporting obligations without giving tax advice, and never retain the recovery secret. If the cook cannot safely custody or cash out USDC, do not publish the tip button.
++
++### Publisher
++
++We need a Coinbase Developer Platform account and approved production Onramp access, secure server-held API credentials, allowlisted redirect domains, per-cook address verification, quote/minimum checks, webhook/status reconciliation, Base transaction monitoring, duplicate protection, receipts/support, sanctions/fraud/privacy review, and legal advice on money-transmission, charitable/tipping, employment, tax, and disclosure rules in our jurisdictions. Bursty traffic means session creation, quote capacity, and monitoring must be load-tested around send time; never pre-generate expiring single-use sessions in the email.
++
++Coinbase's current documentation says hosted Onramp can use Coinbase balances and linked payment methods, supports guest checkout only in certain markets, and creates single-use hosted sessions. It also says guest card/wallet purchase minimums are about $5 and actual fees are disclosed at checkout: [Hosted Onramp overview](https://docs.cdp.coinbase.com/onramp/coinbase-hosted-onramp/overview), [Onramp FAQ](https://docs.cdp.coinbase.com/onramp/additional-resources/faq), and [Create an Onramp session](https://docs.cdp.coinbase.com/api-reference/v2/rest-api/onramp/create-an-onramp-session).
++
++## What would make this the wrong setup
++
++This recommendation is conditional. Change the setup when any of these product facts changes:
++
++1. **The requirement is truly “one tap, $1 from any card/bank.”** A regulated fiat processor with familiar Apple Pay/Google Pay/card checkout, followed by batched payouts to cooks, will convert better. It is not an individual onchain transfer and may make us or a marketplace provider the intermediary, but forcing a crypto onramp into every $1 payment is the wrong optimization.
++
++2. **Most readers do not have usable Coinbase accounts/balances, or the newsletter expands outside supported regions.** Use local fiat rails or a provider selected for the actual geography. “Has heard of Coinbase” is not enough; measure verified, transacting, send-enabled accounts.
++
++3. **Research shows readers will create an app wallet and tip repeatedly.** Then an embedded passkey smart wallet, funded once in larger increments, with sponsored Base gas can make repeat $1 tips nearly one-tap. It is wrong for an unproven one-off reader because it adds another account and trapped-balance/recovery/support obligations.
++
++4. **Readers want one charge split among several cooks, subscriptions, matching, refunds, moderation, or chargebacks.** Direct immutable transfers cannot reliably implement those rules. Use a marketplace/ledger and periodic payouts, or a carefully audited allocation contract if onchain composability is itself required.
++
++5. **Cooks prefer dollars in a bank and will not custody or off-ramp USDC.** Pay them by ACH/payroll/instant payout through an appropriate platform. A technically direct token that creates work, risk, fees, or tax confusion for the recipient fails the product goal.
++
++6. **“Direct” is not a hard product value.** Aggregate tips in normal fiat checkout and batch the cook's payout. This is likely the better mainstream product at this scale; it trades per-tip onchain provenance for conversion, refunds, fraud handling, and understandable statements.
++
++7. **Coinbase's all-in quote, minimum, completion rate, account holds, or burst capacity is unacceptable.** Do not hide this with gas sponsorship: the costly/frictional step is fiat onboarding, not Base execution. Switch providers or rails based on production quotes and a measured pilot.
++
++8. **The business must guarantee delivery, reverse mistakes, protect a cook's identity, or recover a compromised destination.** An immediate direct transfer is final and publicly traceable. Add a controlled payout ledger/escrow and recipient-change delay, with the legal responsibilities that entails.
++
++9. **The asset or network requirement changes.** If cooks need another currency/network, or USDC on Base is not supported by their off-ramp, choose the rail from the recipient's cash-out path backward. Never make the reader bridge.
++
++10. **The audience becomes crypto-native.** Skip hosted fiat onboarding and expose WalletConnect/standard wallet payment alongside Coinbase; let users pay existing Base USDC with a normal wallet signature. Conversely, do not build this path for today's audience merely because a minority requests it.
++
++## Go/no-go pilot
++
++Before a full build, run a small, consented issue cohort with live production quotes and one fully onboarded cook. Ship only if the funnel meets predeclared thresholds for: eligible readers, checkout starts, confirmed tips, median time, all-in fee as a share of tip, support contacts, duplicate/failure rate, and the cook's cost/time to reach their bank. Segment existing-funded Coinbase users from linked-method and guest users; an aggregate conversion rate would conceal the decision.
++
++The decisive test is simple: if a typical first-time reader cannot get a chosen $1–$5 amount to the cook without creating a new financial account, adding funds, or paying a disproportionate fee, the product should stop insisting on a direct onchain transfer and use fiat collection plus batched cook payouts.
+
+diff --git a/plan.md b/plan.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..2a79ae22bf702450d70d5f22ae234f4cfcd5eb4c
+--- /dev/null
++++ b/plan.md
+@@ -0,0 +1,122 @@
++# First-tip plan
++
++## Recommendation and the promise we should make
++
++Use a newsletter link that opens our mobile web page, followed by a Coinbase-hosted checkout that sends **USDC on Base directly to the featured cook's wallet**. Do not ask the reader to install Coinbase Wallet, a browser extension, or our app, and do not create a reader wallet merely to relay one payment.
++
++The honest button label is **“Tip Maria with Coinbase”**, not simply “Tip $3.” A reader is making an onchain USDC transfer through Coinbase. The cook, not the reader, owns the destination wallet. We should show the cook's name and restaurant throughout, but keep the address and network under an expandable “payment details” section.
++
++This is the best onchain setup for this audience because it reuses an account many readers already trust and eliminates seed phrases, gas, chain selection, and wallet approvals. Base keeps the eventual transfer inexpensive. It does **not** make a fresh $1 fiat purchase sensible: Coinbase says guest card/Apple Pay/Google Pay purchases have an approximately $5 minimum, and fees can still apply. Therefore launch should either (a) make **$5 the first-tip minimum**, with $1–$4 available only to readers who already hold a usable Coinbase balance, or (b) offer a $5 “tip balance” that can be spent across later cooks. We must confirm the actual quote and minimum for every supported region before presenting an amount.
++
++## A first-time reader's first tip
++
++This is the complete happy path for a reader who already has a verified Coinbase account and a usable Coinbase cash or crypto balance/payment method. Coinbase can change wording and insert risk, identity, or compliance checks; these are screen responsibilities, not guaranteed literal titles.
++
++### 1. Newsletter
++
++The restaurant story ends with the cook's portrait, first name, a plain-language explanation (“Maria receives USDC, a digital dollar, directly”), and **Tip Maria** buttons for $1, $3, and $5. Below them: “Paid through Coinbase · final amount and any fee shown before you approve · onchain payments cannot be reversed.” If our live quote says an amount is unavailable, that button is disabled rather than failing later.
++
++The link is signed and identifies the issue, cook, and selected amount. It must not contain or accept an arbitrary destination address.
++
++### 2. Our confirmation page (mobile web)
++
++The page shows:
++
++- Maria, the restaurant, and the selected tip;
++- **Maria receives:** the exact USDC amount;
++- **You pay:** an estimate until Coinbase returns a quote, then the exact total and fee;
++- “USDC on Base,” with a short explanation and an expandable, checksummed destination address;
++- **Continue with Coinbase** and **Cancel**.
++
++The server, not the browser, looks up Maria's allowlisted wallet and creates a short-lived, single-use Coinbase Onramp session locked to USDC, Base, that address, and the amount. The user never types an address, chooses an asset, or chooses a network.
++
++### 3. Coinbase-hosted handoff
++
++A Coinbase-hosted page or modal opens and repeats the asset, Base network, amount, and destination. The reader chooses **Sign in to Coinbase**. If Coinbase offers a choice, the experience should default to transferring from Coinbase (`send`) rather than buying a new asset.
++
++Nothing is installed. This is a browser flow. We do not ask the reader to download Coinbase Wallet or manage a recovery phrase.
++
++### 4. Coinbase sign-in and security
++
++The reader enters the email/phone and password for their existing Coinbase account, then completes whatever passkey or two-factor challenge Coinbase requires. A reader whose device already has an active Coinbase session may skip most of this.
++
++If Coinbase requires updated terms, identity verification, a residence check, or an account restriction review, those screens happen here and the tip waits. We cannot promise a fixed number of screens or instant completion.
++
++### 5. Choose how to pay
++
++Coinbase shows eligible sources, for example an existing USD/USDC/crypto balance or a linked bank/debit method, depending on the reader and region. The reader selects one.
++
++- **Already-funded Coinbase account:** no new funding setup is required. Coinbase converts if necessary and sends USDC to Maria's Base address.
++- **Linked method but insufficient balance:** Coinbase shows the buy-and-send quote. The reader confirms the existing method; availability, holds, fees, and minimums are Coinbase's.
++- **No usable source:** the reader must add a supported payment method and may need bank authentication, card verification, or a deposit/settlement wait. The money does not reach Maria until Coinbase says the purchase and send can complete.
++
++We should never silently raise a $1 selection to $5. If a $1–$4 quote is unavailable, return to our page with: “Coinbase can't process this amount from that payment method. Tip $5, or cancel.”
++
++### 6. Coinbase review
++
++Before approval, Coinbase shows the amount purchased or transferred, payment source, Coinbase and network fees (if any), USDC, Base, destination, and total. The reader presses the final **Buy/Send/Confirm** control. This is the moment money is authorized; our earlier button is not.
++
++### 7. Processing
++
++Coinbase shows pending/processing. The browser redirects to our receipt page, but a redirect is not proof of payment. Our backend checks Coinbase transaction status and the Base transaction/receipt, and associates it with the signed tip intent. Closing the tab is safe.
++
++### 8. Our receipt
++
++While pending: “Coinbase is processing your $3 tip. We'll email the result.” After sufficient confirmation: “Maria received 3.00 USDC,” timestamp, transaction link, and receipt/reference. A failure page states that the cook was not paid and whether Coinbase reports a charge, reversal, or still-pending transfer; it offers support, not a blind retry that could double-tip.
++
++The cook's wallet balance increases once the Base transfer settles. There is no later newsletter-controlled sweep and no reader funds held by us.
++
++## What each person must install, sign up for, and fund
++
++### Reader with Coinbase
++
++- **Install:** nothing; a current browser is enough. The Coinbase app is optional if Coinbase uses it for authentication.
++- **Sign up:** nothing new, assuming the Coinbase account is already verified and permitted to transact. They may have to sign in, complete 2FA/passkey, or refresh KYC.
++- **Fund:** an existing eligible Coinbase balance is the clean path. Otherwise they must use/add a supported payment source, accept the displayed purchase/send fees and limits, and possibly wait for funds to become sendable.
++- **Learn/manage:** no wallet address, private key, seed phrase, ETH, gas, bridge, or chain selector.
++
++### Reader without Coinbase
++
++Coinbase may offer hosted guest checkout in supported countries. The reader enters contact/payment details, completes verification and card/Apple Pay/Google Pay authorization, reviews the quote, and confirms. They need no self-custody wallet, but the approximately $5 guest minimum means this cannot be the universal $1 first-tip path. Where guest checkout is unavailable, they would have to create and verify a Coinbase account or cannot use this route. The product must say so before handoff.
++
++### Cook (completed before publication)
++
++The cook needs a self-custody wallet that supports Base USDC, with recovery set up and tested, or another destination they demonstrably control and that accepts Base USDC. Onboarding screens are: create/import wallet; secure passkey/recovery material; acknowledge recovery warning; reveal Base receive address; sign a challenge proving control; receive and return a small test payment; choose payout preference.
++
++To turn tips into bank money, the cook also needs an exchange/offramp account supported in their jurisdiction, identity verification, a linked bank account, and a tested USDC-on-Base deposit/offramp route. We should provide this onboarding and support, disclose taxes/reporting obligations without giving tax advice, and never retain the recovery secret. If the cook cannot safely custody or cash out USDC, do not publish the tip button.
++
++### Publisher
++
++We need a Coinbase Developer Platform account and approved production Onramp access, secure server-held API credentials, allowlisted redirect domains, per-cook address verification, quote/minimum checks, webhook/status reconciliation, Base transaction monitoring, duplicate protection, receipts/support, sanctions/fraud/privacy review, and legal advice on money-transmission, charitable/tipping, employment, tax, and disclosure rules in our jurisdictions. Bursty traffic means session creation, quote capacity, and monitoring must be load-tested around send time; never pre-generate expiring single-use sessions in the email.
++
++Coinbase's current documentation says hosted Onramp can use Coinbase balances and linked payment methods, supports guest checkout only in certain markets, and creates single-use hosted sessions. It also says guest card/wallet purchase minimums are about $5 and actual fees are disclosed at checkout: [Hosted Onramp overview](https://docs.cdp.coinbase.com/onramp/coinbase-hosted-onramp/overview), [Onramp FAQ](https://docs.cdp.coinbase.com/onramp/additional-resources/faq), and [Create an Onramp session](https://docs.cdp.coinbase.com/api-reference/v2/rest-api/onramp/create-an-onramp-session).
++
++## What would make this the wrong setup
++
++This recommendation is conditional. Change the setup when any of these product facts changes:
++
++1. **The requirement is truly “one tap, $1 from any card/bank.”** A regulated fiat processor with familiar Apple Pay/Google Pay/card checkout, followed by batched payouts to cooks, will convert better. It is not an individual onchain transfer and may make us or a marketplace provider the intermediary, but forcing a crypto onramp into every $1 payment is the wrong optimization.
++
++2. **Most readers do not have usable Coinbase accounts/balances, or the newsletter expands outside supported regions.** Use local fiat rails or a provider selected for the actual geography. “Has heard of Coinbase” is not enough; measure verified, transacting, send-enabled accounts.
++
++3. **Research shows readers will create an app wallet and tip repeatedly.** Then an embedded passkey smart wallet, funded once in larger increments, with sponsored Base gas can make repeat $1 tips nearly one-tap. It is wrong for an unproven one-off reader because it adds another account and trapped-balance/recovery/support obligations.
++
++4. **Readers want one charge split among several cooks, subscriptions, matching, refunds, moderation, or chargebacks.** Direct immutable transfers cannot reliably implement those rules. Use a marketplace/ledger and periodic payouts, or a carefully audited allocation contract if onchain composability is itself required.
++
++5. **Cooks prefer dollars in a bank and will not custody or off-ramp USDC.** Pay them by ACH/payroll/instant payout through an appropriate platform. A technically direct token that creates work, risk, fees, or tax confusion for the recipient fails the product goal.
++
++6. **“Direct” is not a hard product value.** Aggregate tips in normal fiat checkout and batch the cook's payout. This is likely the better mainstream product at this scale; it trades per-tip onchain provenance for conversion, refunds, fraud handling, and understandable statements.
++
++7. **Coinbase's all-in quote, minimum, completion rate, account holds, or burst capacity is unacceptable.** Do not hide this with gas sponsorship: the costly/frictional step is fiat onboarding, not Base execution. Switch providers or rails based on production quotes and a measured pilot.
++
++8. **The business must guarantee delivery, reverse mistakes, protect a cook's identity, or recover a compromised destination.** An immediate direct transfer is final and publicly traceable. Add a controlled payout ledger/escrow and recipient-change delay, with the legal responsibilities that entails.
++
++9. **The asset or network requirement changes.** If cooks need another currency/network, or USDC on Base is not supported by their off-ramp, choose the rail from the recipient's cash-out path backward. Never make the reader bridge.
++
++10. **The audience becomes crypto-native.** Skip hosted fiat onboarding and expose WalletConnect/standard wallet payment alongside Coinbase; let users pay existing Base USDC with a normal wallet signature. Conversely, do not build this path for today's audience merely because a minority requests it.
++
++## Go/no-go pilot
++
++Before a full build, run a small, consented issue cohort with live production quotes and one fully onboarded cook. Ship only if the funnel meets predeclared thresholds for: eligible readers, checkout starts, confirmed tips, median time, all-in fee as a share of tip, support contacts, duplicate/failure rate, and the cook's cost/time to reach their bank. Segment existing-funded Coinbase users from linked-method and guest users; an aggregate conversion rate would conceal the decision.
++
++The decisive test is simple: if a typical first-time reader cannot get a chosen $1–$5 amount to the cook without creating a new financial account, adding funds, or paying a disproportionate fee, the product should stop insisting on a direct onchain transfer and use fiat collection plus batched cook payouts.
+
+exec
+/bin/bash -lc "test -s plan.md && wc -l plan.md && sed -n '1,30p' plan.md && git status --short" in /ssd/workspace/buidlguidl/ethskills-evals-test/artifacts/ship-quiz-004/2026-08-28T144943Z-codex-no-skill-3/workspace
+ succeeded in 3ms:
+diff --git a/plan.md b/plan.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..2a79ae22bf702450d70d5f22ae234f4cfcd5eb4c
+--- /dev/null
++++ b/plan.md
+@@ -0,0 +1,122 @@
++# First-tip plan
++
++## Recommendation and the promise we should make
++
++Use a newsletter link that opens our mobile web page, followed by a Coinbase-hosted checkout that sends **USDC on Base directly to the featured cook's wallet**. Do not ask the reader to install Coinbase Wallet, a browser extension, or our app, and do not create a reader wallet merely to relay one payment.
++
++The honest button label is **“Tip Maria with Coinbase”**, not simply “Tip $3.” A reader is making an onchain USDC transfer through Coinbase. The cook, not the reader, owns the destination wallet. We should show the cook's name and restaurant throughout, but keep the address and network under an expandable “payment details” section.
++
++This is the best onchain setup for this audience because it reuses an account many readers already trust and eliminates seed phrases, gas, chain selection, and wallet approvals. Base keeps the eventual transfer inexpensive. It does **not** make a fresh $1 fiat purchase sensible: Coinbase says guest card/Apple Pay/Google Pay purchases have an approximately $5 minimum, and fees can still apply. Therefore launch should either (a) make **$5 the first-tip minimum**, with $1–$4 available only to readers who already hold a usable Coinbase balance, or (b) offer a $5 “tip balance” that can be spent across later cooks. We must confirm the actual quote and minimum for every supported region before presenting an amount.
++
++## A first-time reader's first tip
++
++This is the complete happy path for a reader who already has a verified Coinbase account and a usable Coinbase cash or crypto balance/payment method. Coinbase can change wording and insert risk, identity, or compliance checks; these are screen responsibilities, not guaranteed literal titles.
++
++### 1. Newsletter
++
++The restaurant story ends with the cook's portrait, first name, a plain-language explanation (“Maria receives USDC, a digital dollar, directly”), and **Tip Maria** buttons for $1, $3, and $5. Below them: “Paid through Coinbase · final amount and any fee shown before you approve · onchain payments cannot be reversed.” If our live quote says an amount is unavailable, that button is disabled rather than failing later.
++
++The link is signed and identifies the issue, cook, and selected amount. It must not contain or accept an arbitrary destination address.
++
++### 2. Our confirmation page (mobile web)
++
++The page shows:
++
++- Maria, the restaurant, and the selected tip;
++- **Maria receives:** the exact USDC amount;
++- **You pay:** an estimate until Coinbase returns a quote, then the exact total and fee;
++- “USDC on Base,” with a short explanation and an expandable, checksummed destination address;
++- **Continue with Coinbase** and **Cancel**.
++
++The server, not the browser, looks up Maria's allowlisted wallet and creates a short-lived, single-use Coinbase Onramp session locked to USDC, Base, that address, and the amount. The user never types an address, chooses an asset, or chooses a network.
++
++### 3. Coinbase-hosted handoff
++
++A Coinbase-hosted page or modal opens and repeats the asset, Base network, amount, and destination. The reader chooses **Sign in to Coinbase**. If Coinbase offers a choice, the experience should default to transferring from Coinbase (`send`) rather than buying a new asset.
++
++Nothing is installed. This is a browser flow. We do not ask the reader to download Coinbase Wallet or manage a recovery phrase.
++
++### 4. Coinbase sign-in and security
++
++The reader enters the email/phone and password for their existing Coinbase account, then completes whatever passkey or two-factor challenge Coinbase requires. A reader whose device already has an active Coinbase session may skip most of this.
++
++If Coinbase requires updated terms, identity verification, a residence check, or an account restriction review, those screens happen here and the tip waits. We cannot promise a fixed number of screens or instant completion.
++
++### 5. Choose how to pay
++
++Coinbase shows eligible sources, for example an existing USD/USDC/crypto balance or a linked bank/debit method, depending on the reader and region. The reader selects one.
++
++- **Already-funded Coinbase account:** no new funding setup is required. Coinbase converts if necessary and sends USDC to Maria's Base address.
++- **Linked method but insufficient balance:** Coinbase shows the buy-and-send quote. The reader confirms the existing method; availability, holds, fees, and minimums are Coinbase's.
++- **No usable source:** the reader must add a supported payment method and may need bank authentication, card verification, or a deposit/settlement wait. The money does not reach Maria until Coinbase says the purchase and send can complete.
++
++We should never silently raise a $1 selection to $5. If a $1–$4 quote is unavailable, return to our page with: “Coinbase can't process this amount from that payment method. Tip $5, or cancel.”
++
++### 6. Coinbase review
++
++Before approval, Coinbase shows the amount purchased or transferred, payment source, Coinbase and network fees (if any), USDC, Base, destination, and total. The reader presses the final **Buy/Send/Confirm** control. This is the moment money is authorized; our earlier button is not.
++
++### 7. Processing
++
++Coinbase shows pending/processing. The browser redirects to our receipt page, but a redirect is not proof of payment. Our backend checks Coinbase transaction status and the Base transaction/receipt, and associates it with the signed tip intent. Closing the tab is safe.
++
++### 8. Our receipt
++
++While pending: “Coinbase is processing your $3 tip. We'll email the result.” After sufficient confirmation: “Maria received 3.00 USDC,” timestamp, transaction link, and receipt/reference. A failure page states that the cook was not paid and whether Coinbase reports a charge, reversal, or still-pending transfer; it offers support, not a blind retry that could double-tip.
++
++The cook's wallet balance increases once the Base transfer settles. There is no later newsletter-controlled sweep and no reader funds held by us.
++
++## What each person must install, sign up for, and fund
++
++### Reader with Coinbase
++
++- **Install:** nothing; a current browser is enough. The Coinbase app is optional if Coinbase uses it for authentication.
++- **Sign up:** nothing new, assuming the Coinbase account is already verified and permitted to transact. They may have to sign in, complete 2FA/passkey, or refresh KYC.
++- **Fund:** an existing eligible Coinbase balance is the clean path. Otherwise they must use/add a supported payment source, accept the displayed purchase/send fees and limits, and possibly wait for funds to become sendable.
++- **Learn/manage:** no wallet address, private key, seed phrase, ETH, gas, bridge, or chain selector.
++
++### Reader without Coinbase
++
++Coinbase may offer hosted guest checkout in supported countries. The reader enters contact/payment details, completes verification and card/Apple Pay/Google Pay authorization, reviews the quote, and confirms. They need no self-custody wallet, but the approximately $5 guest minimum means this cannot be the universal $1 first-tip path. Where guest checkout is unavailable, they would have to create and verify a Coinbase account or cannot use this route. The product must say so before handoff.
++
++### Cook (completed before publication)
++
++The cook needs a self-custody wallet that supports Base USDC, with recovery set up and tested, or another destination they demonstrably control and that accepts Base USDC. Onboarding screens are: create/import wallet; secure passkey/recovery material; acknowledge recovery warning; reveal Base receive address; sign a challenge proving control; receive and return a small test payment; choose payout preference.
++
++To turn tips into bank money, the cook also needs an exchange/offramp account supported in their jurisdiction, identity verification, a linked bank account, and a tested USDC-on-Base deposit/offramp route. We should provide this onboarding and support, disclose taxes/reporting obligations without giving tax advice, and never retain the recovery secret. If the cook cannot safely custody or cash out USDC, do not publish the tip button.
++
++### Publisher
++
++We need a Coinbase Developer Platform account and approved production Onramp access, secure server-held API credentials, allowlisted redirect domains, per-cook address verification, quote/minimum checks, webhook/status reconciliation, Base transaction monitoring, duplicate protection, receipts/support, sanctions/fraud/privacy review, and legal advice on money-transmission, charitable/tipping, employment, tax, and disclosure rules in our jurisdictions. Bursty traffic means session creation, quote capacity, and monitoring must be load-tested around send time; never pre-generate expiring single-use sessions in the email.
++
++Coinbase's current documentation says hosted Onramp can use Coinbase balances and linked payment methods, supports guest checkout only in certain markets, and creates single-use hosted sessions. It also says guest card/wallet purchase minimums are about $5 and actual fees are disclosed at checkout: [Hosted Onramp overview](https://docs.cdp.coinbase.com/onramp/coinbase-hosted-onramp/overview), [Onramp FAQ](https://docs.cdp.coinbase.com/onramp/additional-resources/faq), and [Create an Onramp session](https://docs.cdp.coinbase.com/api-reference/v2/rest-api/onramp/create-an-onramp-session).
++
++## What would make this the wrong setup
++
++This recommendation is conditional. Change the setup when any of these product facts changes:
++
++1. **The requirement is truly “one tap, $1 from any card/bank.”** A regulated fiat processor with familiar Apple Pay/Google Pay/card checkout, followed by batched payouts to cooks, will convert better. It is not an individual onchain transfer and may make us or a marketplace provider the intermediary, but forcing a crypto onramp into every $1 payment is the wrong optimization.
++
++2. **Most readers do not have usable Coinbase accounts/balances, or the newsletter expands outside supported regions.** Use local fiat rails or a provider selected for the actual geography. “Has heard of Coinbase” is not enough; measure verified, transacting, send-enabled accounts.
++
++3. **Research shows readers will create an app wallet and tip repeatedly.** Then an embedded passkey smart wallet, funded once in larger increments, with sponsored Base gas can make repeat $1 tips nearly one-tap. It is wrong for an unproven one-off reader because it adds another account and trapped-balance/recovery/support obligations.
++
++4. **Readers want one charge split among several cooks, subscriptions, matching, refunds, moderation, or chargebacks.** Direct immutable transfers cannot reliably implement those rules. Use a marketplace/ledger and periodic payouts, or a carefully audited allocation contract if onchain composability is itself required.
++
++5. **Cooks prefer dollars in a bank and will not custody or off-ramp USDC.** Pay them by ACH/payroll/instant payout through an appropriate platform. A technically direct token that creates work, risk, fees, or tax confusion for the recipient fails the product goal.
++
++6. **“Direct” is not a hard product value.** Aggregate tips in normal fiat checkout and batch the cook's payout. This is likely the better mainstream product at this scale; it trades per-tip onchain provenance for conversion, refunds, fraud handling, and understandable statements.
++
++7. **Coinbase's all-in quote, minimum, completion rate, account holds, or burst capacity is unacceptable.** Do not hide this with gas sponsorship: the costly/frictional step is fiat onboarding, not Base execution. Switch providers or rails based on production quotes and a measured pilot.
++
++8. **The business must guarantee delivery, reverse mistakes, protect a cook's identity, or recover a compromised destination.** An immediate direct transfer is final and publicly traceable. Add a controlled payout ledger/escrow and recipient-change delay, with the legal responsibilities that entails.
++
++9. **The asset or network requirement changes.** If cooks need another currency/network, or USDC on Base is not supported by their off-ramp, choose the rail from the recipient's cash-out path backward. Never make the reader bridge.
++
++10. **The audience becomes crypto-native.** Skip hosted fiat onboarding and expose WalletConnect/standard wallet payment alongside Coinbase; let users pay existing Base USDC with a normal wallet signature. Conversely, do not build this path for today's audience merely because a minority requests it.
++
++## Go/no-go pilot
++
++Before a full build, run a small, consented issue cohort with live production quotes and one fully onboarded cook. Ship only if the funnel meets predeclared thresholds for: eligible readers, checkout starts, confirmed tips, median time, all-in fee as a share of tip, support contacts, duplicate/failure rate, and the cook's cost/time to reach their bank. Segment existing-funded Coinbase users from linked-method and guest users; an aggregate conversion rate would conceal the decision.
++
++The decisive test is simple: if a typical first-time reader cannot get a chosen $1–$5 amount to the cook without creating a new financial account, adding funds, or paying a disproportionate fee, the product should stop insisting on a direct onchain transfer and use fiat collection plus batched cook payouts.
+
+codex
+Created [plan.md](/ssd/workspace/buidlguidl/ethskills-evals-test/artifacts/ship-quiz-004/2026-08-28T144943Z-codex-no-skill-3/workspace/plan.md) with the complete first-tip journey, onboarding requirements, operational caveats, and conditions under which the recommended Coinbase/Base setup would be wrong.
+diff --git a/plan.md b/plan.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..2a79ae22bf702450d70d5f22ae234f4cfcd5eb4c
+--- /dev/null
++++ b/plan.md
+@@ -0,0 +1,122 @@
++# First-tip plan
++
++## Recommendation and the promise we should make
++
++Use a newsletter link that opens our mobile web page, followed by a Coinbase-hosted checkout that sends **USDC on Base directly to the featured cook's wallet**. Do not ask the reader to install Coinbase Wallet, a browser extension, or our app, and do not create a reader wallet merely to relay one payment.
++
++The honest button label is **“Tip Maria with Coinbase”**, not simply “Tip $3.” A reader is making an onchain USDC transfer through Coinbase. The cook, not the reader, owns the destination wallet. We should show the cook's name and restaurant throughout, but keep the address and network under an expandable “payment details” section.
++
++This is the best onchain setup for this audience because it reuses an account many readers already trust and eliminates seed phrases, gas, chain selection, and wallet approvals. Base keeps the eventual transfer inexpensive. It does **not** make a fresh $1 fiat purchase sensible: Coinbase says guest card/Apple Pay/Google Pay purchases have an approximately $5 minimum, and fees can still apply. Therefore launch should either (a) make **$5 the first-tip minimum**, with $1–$4 available only to readers who already hold a usable Coinbase balance, or (b) offer a $5 “tip balance” that can be spent across later cooks. We must confirm the actual quote and minimum for every supported region before presenting an amount.
++
++## A first-time reader's first tip
++
++This is the complete happy path for a reader who already has a verified Coinbase account and a usable Coinbase cash or crypto balance/payment method. Coinbase can change wording and insert risk, identity, or compliance checks; these are screen responsibilities, not guaranteed literal titles.
++
++### 1. Newsletter
++
++The restaurant story ends with the cook's portrait, first name, a plain-language explanation (“Maria receives USDC, a digital dollar, directly”), and **Tip Maria** buttons for $1, $3, and $5. Below them: “Paid through Coinbase · final amount and any fee shown before you approve · onchain payments cannot be reversed.” If our live quote says an amount is unavailable, that button is disabled rather than failing later.
++
++The link is signed and identifies the issue, cook, and selected amount. It must not contain or accept an arbitrary destination address.
++
++### 2. Our confirmation page (mobile web)
++
++The page shows:
++
++- Maria, the restaurant, and the selected tip;
++- **Maria receives:** the exact USDC amount;
++- **You pay:** an estimate until Coinbase returns a quote, then the exact total and fee;
++- “USDC on Base,” with a short explanation and an expandable, checksummed destination address;
++- **Continue with Coinbase** and **Cancel**.
++
++The server, not the browser, looks up Maria's allowlisted wallet and creates a short-lived, single-use Coinbase Onramp session locked to USDC, Base, that address, and the amount. The user never types an address, chooses an asset, or chooses a network.
++
++### 3. Coinbase-hosted handoff
++
++A Coinbase-hosted page or modal opens and repeats the asset, Base network, amount, and destination. The reader chooses **Sign in to Coinbase**. If Coinbase offers a choice, the experience should default to transferring from Coinbase (`send`) rather than buying a new asset.
++
++Nothing is installed. This is a browser flow. We do not ask the reader to download Coinbase Wallet or manage a recovery phrase.
++
++### 4. Coinbase sign-in and security
++
++The reader enters the email/phone and password for their existing Coinbase account, then completes whatever passkey or two-factor challenge Coinbase requires. A reader whose device already has an active Coinbase session may skip most of this.
++
++If Coinbase requires updated terms, identity verification, a residence check, or an account restriction review, those screens happen here and the tip waits. We cannot promise a fixed number of screens or instant completion.
++
++### 5. Choose how to pay
++
++Coinbase shows eligible sources, for example an existing USD/USDC/crypto balance or a linked bank/debit method, depending on the reader and region. The reader selects one.
++
++- **Already-funded Coinbase account:** no new funding setup is required. Coinbase converts if necessary and sends USDC to Maria's Base address.
++- **Linked method but insufficient balance:** Coinbase shows the buy-and-send quote. The reader confirms the existing method; availability, holds, fees, and minimums are Coinbase's.
++- **No usable source:** the reader must add a supported payment method and may need bank authentication, card verification, or a deposit/settlement wait. The money does not reach Maria until Coinbase says the purchase and send can complete.
++
++We should never silently raise a $1 selection to $5. If a $1–$4 quote is unavailable, return to our page with: “Coinbase can't process this amount from that payment method. Tip $5, or cancel.”
++
++### 6. Coinbase review
++
++Before approval, Coinbase shows the amount purchased or transferred, payment source, Coinbase and network fees (if any), USDC, Base, destination, and total. The reader presses the final **Buy/Send/Confirm** control. This is the moment money is authorized; our earlier button is not.
++
++### 7. Processing
++
++Coinbase shows pending/processing. The browser redirects to our receipt page, but a redirect is not proof of payment. Our backend checks Coinbase transaction status and the Base transaction/receipt, and associates it with the signed tip intent. Closing the tab is safe.
++
++### 8. Our receipt
++
++While pending: “Coinbase is processing your $3 tip. We'll email the result.” After sufficient confirmation: “Maria received 3.00 USDC,” timestamp, transaction link, and receipt/reference. A failure page states that the cook was not paid and whether Coinbase reports a charge, reversal, or still-pending transfer; it offers support, not a blind retry that could double-tip.
++
++The cook's wallet balance increases once the Base transfer settles. There is no later newsletter-controlled sweep and no reader funds held by us.
++
++## What each person must install, sign up for, and fund
++
++### Reader with Coinbase
++
++- **Install:** nothing; a current browser is enough. The Coinbase app is optional if Coinbase uses it for authentication.
++- **Sign up:** nothing new, assuming the Coinbase account is already verified and permitted to transact. They may have to sign in, complete 2FA/passkey, or refresh KYC.
++- **Fund:** an existing eligible Coinbase balance is the clean path. Otherwise they must use/add a supported payment source, accept the displayed purchase/send fees and limits, and possibly wait for funds to become sendable.
++- **Learn/manage:** no wallet address, private key, seed phrase, ETH, gas, bridge, or chain selector.
++
++### Reader without Coinbase
++
++Coinbase may offer hosted guest checkout in supported countries. The reader enters contact/payment details, completes verification and card/Apple Pay/Google Pay authorization, reviews the quote, and confirms. They need no self-custody wallet, but the approximately $5 guest minimum means this cannot be the universal $1 first-tip path. Where guest checkout is unavailable, they would have to create and verify a Coinbase account or cannot use this route. The product must say so before handoff.
++
++### Cook (completed before publication)
++
++The cook needs a self-custody wallet that supports Base USDC, with recovery set up and tested, or another destination they demonstrably control and that accepts Base USDC. Onboarding screens are: create/import wallet; secure passkey/recovery material; acknowledge recovery warning; reveal Base receive address; sign a challenge proving control; receive and return a small test payment; choose payout preference.
++
++To turn tips into bank money, the cook also needs an exchange/offramp account supported in their jurisdiction, identity verification, a linked bank account, and a tested USDC-on-Base deposit/offramp route. We should provide this onboarding and support, disclose taxes/reporting obligations without giving tax advice, and never retain the recovery secret. If the cook cannot safely custody or cash out USDC, do not publish the tip button.
++
++### Publisher
++
++We need a Coinbase Developer Platform account and approved production Onramp access, secure server-held API credentials, allowlisted redirect domains, per-cook address verification, quote/minimum checks, webhook/status reconciliation, Base transaction monitoring, duplicate protection, receipts/support, sanctions/fraud/privacy review, and legal advice on money-transmission, charitable/tipping, employment, tax, and disclosure rules in our jurisdictions. Bursty traffic means session creation, quote capacity, and monitoring must be load-tested around send time; never pre-generate expiring single-use sessions in the email.
++
++Coinbase's current documentation says hosted Onramp can use Coinbase balances and linked payment methods, supports guest checkout only in certain markets, and creates single-use hosted sessions. It also says guest card/wallet purchase minimums are about $5 and actual fees are disclosed at checkout: [Hosted Onramp overview](https://docs.cdp.coinbase.com/onramp/coinbase-hosted-onramp/overview), [Onramp FAQ](https://docs.cdp.coinbase.com/onramp/additional-resources/faq), and [Create an Onramp session](https://docs.cdp.coinbase.com/api-reference/v2/rest-api/onramp/create-an-onramp-session).
++
++## What would make this the wrong setup
++
++This recommendation is conditional. Change the setup when any of these product facts changes:
++
++1. **The requirement is truly “one tap, $1 from any card/bank.”** A regulated fiat processor with familiar Apple Pay/Google Pay/card checkout, followed by batched payouts to cooks, will convert better. It is not an individual onchain transfer and may make us or a marketplace provider the intermediary, but forcing a crypto onramp into every $1 payment is the wrong optimization.
++
++2. **Most readers do not have usable Coinbase accounts/balances, or the newsletter expands outside supported regions.** Use local fiat rails or a provider selected for the actual geography. “Has heard of Coinbase” is not enough; measure verified, transacting, send-enabled accounts.
++
++3. **Research shows readers will create an app wallet and tip repeatedly.** Then an embedded passkey smart wallet, funded once in larger increments, with sponsored Base gas can make repeat $1 tips nearly one-tap. It is wrong for an unproven one-off reader because it adds another account and trapped-balance/recovery/support obligations.
++
++4. **Readers want one charge split among several cooks, subscriptions, matching, refunds, moderation, or chargebacks.** Direct immutable transfers cannot reliably implement those rules. Use a marketplace/ledger and periodic payouts, or a carefully audited allocation contract if onchain composability is itself required.
++
++5. **Cooks prefer dollars in a bank and will not custody or off-ramp USDC.** Pay them by ACH/payroll/instant payout through an appropriate platform. A technically direct token that creates work, risk, fees, or tax confusion for the recipient fails the product goal.
++
++6. **“Direct” is not a hard product value.** Aggregate tips in normal fiat checkout and batch the cook's payout. This is likely the better mainstream product at this scale; it trades per-tip onchain provenance for conversion, refunds, fraud handling, and understandable statements.
++
++7. **Coinbase's all-in quote, minimum, completion rate, account holds, or burst capacity is unacceptable.** Do not hide this with gas sponsorship: the costly/frictional step is fiat onboarding, not Base execution. Switch providers or rails based on production quotes and a measured pilot.
++
++8. **The business must guarantee delivery, reverse mistakes, protect a cook's identity, or recover a compromised destination.** An immediate direct transfer is final and publicly traceable. Add a controlled payout ledger/escrow and recipient-change delay, with the legal responsibilities that entails.
++
++9. **The asset or network requirement changes.** If cooks need another currency/network, or USDC on Base is not supported by their off-ramp, choose the rail from the recipient's cash-out path backward. Never make the reader bridge.
++
++10. **The audience becomes crypto-native.** Skip hosted fiat onboarding and expose WalletConnect/standard wallet payment alongside Coinbase; let users pay existing Base USDC with a normal wallet signature. Conversely, do not build this path for today's audience merely because a minority requests it.
++
++## Go/no-go pilot
++
++Before a full build, run a small, consented issue cohort with live production quotes and one fully onboarded cook. Ship only if the funnel meets predeclared thresholds for: eligible readers, checkout starts, confirmed tips, median time, all-in fee as a share of tip, support contacts, duplicate/failure rate, and the cook's cost/time to reach their bank. Segment existing-funded Coinbase users from linked-method and guest users; an aggregate conversion rate would conceal the decision.
++
++The decisive test is simple: if a typical first-time reader cannot get a chosen $1–$5 amount to the cook without creating a new financial account, adding funds, or paying a disproportionate fee, the product should stop insisting on a direct onchain transfer and use fiat collection plus batched cook payouts.
+
+tokens used
+37,394
+Created [plan.md](/ssd/workspace/buidlguidl/ethskills-evals-test/artifacts/ship-quiz-004/2026-08-28T144943Z-codex-no-skill-3/workspace/plan.md) with the complete first-tip journey, onboarding requirements, operational caveats, and conditions under which the recommended Coinbase/Base setup would be wrong.

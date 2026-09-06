@@ -1,0 +1,123 @@
+# Susu: shippable contract plan and six-week liveness review
+
+## Executive answer
+
+Running circles **cannot keep time or move money merely because a date passes**. An EVM contract never wakes itself up. They can keep working while both builders are away only if every required transition is callable by members (or anyone), without an owner signature, and at least one person has a reason and the ETH needed to call it. A hosted cron/keeper and the web app may make this convenient, but neither may be the sole path.
+
+There is also a more fundamental problem in the stated economics: after a $1,200 pot is paid, the earlier contributions are gone. They cannot later cover a missed payment. “Forfeit their turn” also cannot punish someone whose turn already happened. An uncollateralized implementation will therefore pay less than $1,200, become insolvent, or depend on the builders/social group to collect the debt. Code cannot fix that accounting fact.
+
+The safe MVP below requires each member to lock a $1,200 USDC performance reserve in addition to making the monthly payments. A missed $100 is taken from that member's reserve. This is less capital-efficient than a traditional trust-based susu, but it is the smallest design that guarantees every recipient gets $1,200 even when a member defaults after receiving their own pot. If members will not lock collateral, the product must clearly promise only “whatever was actually contributed,” not a guaranteed pot.
+
+Do not leave for six weeks relying on existing circles unless the pre-departure audit in the final section confirms the permissionless paths on their **actual deployed bytecode**. A new design does not repair already deployed contracts or recapitalize them.
+
+## Product rules to settle before launch
+
+The verbal rules conflict at the edges, so the contract must choose deterministic rules:
+
+- Exactly 12 fixed member addresses and an immutable payout order are committed at creation. No address replacement after activation.
+- One round is 30 days, not a calendar month. The start time and all 12 deadlines are fixed at activation; late transactions do not shift later rounds.
+- `100_000_000` base units of native USDC (6 decimals) is due from every active member per round. The pot is `1_200_000_000` units.
+- Every member escrows a `1_200_000_000`-unit performance reserve before activation. Normal payments are separate `transferFrom` payments; collateral is not released early.
+- Settlement attempts to pull each member's $100. A failed or absent payment consumes $100 of that member's reserve and permanently marks the member defaulted.
+- A defaulted member loses an upcoming payout. If their payout already occurred, it cannot be clawed back; their reserve is still slashed for every missed remaining payment. This is the enforceable substitute for an impossible retroactive “forfeit.”
+- When a scheduled recipient has defaulted, settlement skips them and pays the next non-defaulted, not-yet-paid member in the original order. The order is therefore a fixed subsequence. If nobody remains eligible, collected round payments are credited back to their payers and unused reserves are returned at close; no pot is stranded or captured by the protocol.
+- A member who defaults in the same round in which they would receive is ineligible for that payout.
+- There are at most 12 payouts and no member can receive twice. Defaulting members may cause the circle to finish with fewer payouts and earlier than 12 paid recipients; this is an intentional consequence and must be explained in the UI.
+
+That skip rule is a product decision, not an implementation detail. If “twelve calendar payout dates no matter what” is required instead, define who receives forfeited pots before coding.
+
+## Onchain boundary
+
+One custom, non-upgradeable `SusuCircle` contract per circle holds USDC, the reserves, membership/order, round deadlines, payment/default state, payout credits, and refunds. It emits all contribution, reserve-use, default, settlement, payout-credit, claim, and close events.
+
+Names, avatars, invitations, chat, reminders, search, analytics, and reputation stay offchain. Reputation is derived from events; no score or leaderboard is stored onchain. A deployment service or UI can deploy each circle directly; an MVP factory is unnecessary and would add another trust/blast-radius surface.
+
+Use OpenZeppelin `SafeERC20`, checks-effects-interactions, a reentrancy guard, and exact balance-delta checks on deposits. Pin native USDC at construction and reject any token whose observed transfer amount is not exact. There is no arbitrary token rescue, fee withdrawal, pause, upgrade proxy, or owner settlement path. An accidental unrelated-token transfer may remain stuck; that is preferable to an admin drain over member funds.
+
+## Minimal contract surface
+
+```solidity
+constructor(address usdc, address[12] members, uint64 startTime)
+fundReserve()                         // member deposits exactly $1,200 before start
+settleRound(uint8 round)              // permissionless, sequential, after deadline
+claimPayout(address to)               // credited recipient pulls; only recipient calls
+claimRefund(address to)               // member pulls unused reserve/refund after close
+circleState()                         // compact state for clients
+memberState(address member)
+```
+
+Activation is automatic once all 12 reserves are funded and `startTime` arrives; if all reserves are not funded by a fixed enrollment expiry, contributors can permissionlessly cancel and pull refunds. Constructor validates 12 unique nonzero members, a bounded future start, and the canonical token.
+
+Before each deadline, members approve at least $100 USDC. `settleRound` runs only for the next unsettled round and loops over exactly 12 fixed members. Each `transferFrom` is isolated with a low-level call so one revoked allowance, insufficient balance, or token-level block does not revert everyone else's settlement; a failure consumes that member's reserve. Accounting is updated before external transfers.
+
+Settlement credits the full $1,200 internally to the eligible recipient rather than pushing it. `claimPayout` lets that recipient choose a destination and means a blacklisted or reverting recipient cannot block later rounds. Only the credited recipient can redirect their claim. Refunds are also pull-based. The contract must maintain and test the invariant:
+
+`USDC balance >= total unclaimed payouts + total refundable balances + collateral still backing future obligations`.
+
+Use custom errors, immutable configuration where possible, and events containing circle address, round, member, amount, and reason. Do not accept signatures, relayers, fees, yield strategies, or governance in v1.
+
+## Who advances the contract
+
+| Transition | Caller | Why they pay gas | If nobody calls |
+| --- | --- | --- | --- |
+| `fundReserve()` | each member | admission to the circle | circle never activates; after enrollment expiry, deposits are refundable |
+| USDC `approve()` | each member | keeps their reserve intact and payout eligibility | settlement uses their reserve and marks them defaulted |
+| `settleRound(nextRound)` | current eligible recipient, any member, or optional keeper | recipient unlocks $1,200; members advance/finish their circle; keeper may be sponsored offchain | nothing is lost; settlement waits and later deadlines do not change |
+| `claimPayout(to)` | credited recipient | receives $1,200 | credit remains in the contract and later rounds can still settle |
+| `claimRefund(to)` | member | recovers unused reserve/refunds | funds remain claimable indefinitely |
+
+There is deliberately no onchain keeper fee: taking it from the pot violates the $1,200 promise, and taking it from reserves weakens collateral. The recipient has a strong direct incentive to settle. An optional automation service is redundancy only. Every member needs a small Base ETH balance for gas, or the team can operate a paymaster—but paymaster downtime must not remove direct wallet access.
+
+## Launch chain
+
+Launch on **Base mainnet (chain ID 8453)** using native USDC at `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`. Base is an EVM L2 with production USDC recurring-payment support, fitting repeated low-value wallet actions; the network details are in [Base's official documentation](https://docs.base.org/base-chain/quickstart/connecting-to-base), and the token address is from [Circle's official address list](https://developers.circle.com/stablecoins/usdc-contract-addresses). Use a paid production RPC; Base says its public endpoint is rate-limited and not for production.
+
+USDC itself is upgradeable/centrally administered and can block addresses. The pull-credit design prevents one blocked recipient from halting settlement, but it cannot make Circle transfer blocked funds. Base also has sequencer and L1 dependencies. These are accepted external trust/liveness risks and belong in user disclosures.
+
+## Tests and review gates
+
+Unit and invariant tests must cover all 12 positions; duplicate members; early/late calls; skipped rounds; revoked allowance; insufficient balance; malformed token return data; a transfer that reverts; default before/on/after one's payout; multiple defaulters; skipped recipients; no eligible recipient; double settlement/claim/refund; reentrancy; exact reserve exhaustion; enrollment cancellation; and timestamp boundaries.
+
+Fork Base and test against the canonical USDC contract, including its actual `approve`, `transferFrom`, and return behavior. Fuzz call order and assert conservation of funds, at-most-once payout, monotonically increasing settlement, and that one member's failure cannot halt another round. Obtain an independent security review; this contract custody can reach $14,400 per circle before normal payments and is not suitable for unaudited mainnet release.
+
+## Deployment runbook
+
+Repository assumptions: Foundry, deployment script `script/DeploySusu.s.sol`, and constructor inputs supplied by environment. Production deployment is intentionally not owned; if the implementation adds emergency powers, stop and redesign or transfer them to a named Safe before accepting deposits.
+
+```bash
+export BASE_RPC_URL='https://<production-provider>'
+export BASESCAN_API_KEY='<verification-key>'
+export DEPLOYER_PRIVATE_KEY='<hardware-backed-deployment-key>'
+export USDC='0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
+export MEMBERS_JSON='["0x...", "0x...", "0x...", "0x...", "0x...", "0x...", "0x...", "0x...", "0x...", "0x...", "0x...", "0x..."]'
+export START_TIME='<unix-seconds>'
+
+forge test
+forge test --fork-url "$BASE_RPC_URL"
+forge script script/DeploySusu.s.sol:DeploySusu \
+  --rpc-url "$BASE_RPC_URL" --broadcast --verify \
+  --etherscan-api-key "$BASESCAN_API_KEY"
+```
+
+Do not paste a private key into shell history in production; the script should also support a hardware wallet or Foundry keystore. Record the compiler version, optimizer settings, git commit, constructor arguments, deployed address, and verification URL. Independently compare runtime bytecode to the reviewed artifact and read back all 12 members, order, token, start, deadlines, and absence of an owner.
+
+Post-deploy, use a fresh test circle on Base with 12 team-controlled test addresses and real small-denomination USDC parameters compiled into a separate staging build; fund all reserves, approve, advance through a shortened round, settle, claim, and refund. Never add a production “test mode” or mutable amount/duration switch. Then have a reviewer who did not author the contract reproduce the checks before announcing the production address.
+
+## What happens during the six-week absence
+
+For the design above, up to two round deadlines may pass. Members approve/pay and any address calls `settleRound`; recipients claim. If no one settles, the only effect is delay: deadlines and eligibility are evaluated when settlement eventually occurs, funds remain accounted for, and rounds are caught up sequentially. The website, indexer, reminder bot, production RPC, automation, deployer key, and both builders may all be offline without changing this onchain path. Publish the verified address, ABI, Base explorer link, direct-call instructions, backup RPCs, and a support explanation before leaving.
+
+Existing deployments are safe to leave unattended **only if all of these are proven onchain**:
+
+1. No pending step requires an owner/admin/builder signature, a backend attestation, a server-generated Merkle root, or an upgrade.
+2. Contribution/default processing and payout finalization are permissionless; dates are predicates checked by calls, not expected cron events.
+3. Failure to call merely delays the action—there is no narrow claim/settle window, expiring keeper role, or deadline that permanently traps value.
+4. One failed `transferFrom` or payout does not revert the whole round, and payouts/refunds are pull claims.
+5. The contract already holds enough enforceable collateral for every future $1,200 promise. An allowance is not collateral: it can be revoked and the wallet can be emptied.
+6. Members know how to call without the team's frontend, have ETH for gas, and at least the current recipients understand their incentive to settle.
+7. Production RPC/domain/automation credentials will not expire, and monitoring alerts go to someone who is actually available. These are convenience checks, not protocol liveness dependencies.
+8. USDC token/address, chain, bytecode, reserves, next round, deadlines, allowances, and claim balances have been read directly from each deployed contract and reconciled.
+
+If an existing contract fails items 1–4, the six-week absence breaks liveness: rounds will not finalize, or a single bad member/recipient will freeze them. Arrange a trusted operator/keeper with the exact required permissions and monitored gas, or pause new deposits and migrate **with every member's informed consent** before leaving. If it fails item 5, automation does not help: the promise is undercollateralized. The choices are to top up a separately enforceable reserve, get explicit agreement that pots may be short, or wind down/refund according to the existing contract's available exits. Never describe an admin wallet or cron job as a solvency fix.
+
+Finally, simulate the whole absence on a Base fork using each live address and state: advance time by six weeks, revoke one member's allowance, empty another member's wallet, make the scheduled recipient's transfer fail, call every public recovery path from an unrelated address, and reconcile every USDC unit. If that exercise cannot complete without either builder's key or server, the circles do not keep working while the team is gone.

@@ -1,0 +1,159 @@
+diff --git a/plan.md b/plan.md
+new file mode 100644
+index 0000000..0b63e5d
+--- /dev/null
++++ b/plan.md
+@@ -0,0 +1,150 @@
++# Susu MVP: contract and unattended-operation plan
++
++## Executive decision
++
++Do **not** launch the rules exactly as stated. They contain two contradictions:
++
++1. Contributions already paid to earlier recipients are no longer in the contract, so they cannot cover a later missed payment.
++2. “Everyone gets exactly one turn” and “a member who misses a payment forfeits their turn” cannot both remain true.
++
++The smallest honest design is a fully collateralized circle. Before activation, every member escrows a $1,200 USDC bond. Members still pay $100 each round; if one does not, settlement takes $100 from that member's bond and marks them in default. This guarantees a full $1,200 payout without an operator, but asks each member to lock an additional $1,200. If that capital requirement is unacceptable, the product must instead disclose that payouts can be less than $1,200 or add an external guarantor/credit facility. There is no smart-contract technique that creates the missing money.
++
++There is a further time-ordering problem: if Alice receives in month 1 and first defaults in month 10, her month-1 transfer is irreversible, so the contract cannot literally forfeit it. The recommended executable rule is therefore: a default **before or in** a member's slot forfeits that slot; a first default **after** their slot consumes collateral but cannot claw back the completed payout. If the family requires retroactive forfeiture, every $1,200 payout must remain locked until the end of the year (which stops being a monthly susu), or a separate $1,200 penalty bond must be forfeited after a post-payout default. This choice must be signed off before implementation. The rest of this plan assumes the recommended prospective rule.
++
++For a forfeited payout slot, this plan keeps that round's $1,200 in the contract and, after round 12, divides all such forfeited payouts equally among members who never missed a payment. That is a proposed product rule, not something implied by “susu”; the twelve members must explicitly accept it before activation. A simpler alternative is to refund that round's contribution to each payer.
++
++## MVP boundary
++
++Deploy one non-upgradeable `SusuCircle` contract for one circle. Avoid a factory until more than one real circle is needed. It holds native USDC, fixes the twelve wallet addresses and payout order at construction, accounts for bonds and payments, settles rounds, pays claims, and emits events.
++
++Onchain:
++
++- the twelve members and immutable payout order;
++- native USDC token, $100 contribution (`100_000_000` at six decimals), $1,200 bond, start time, payment window, and 12 rounds;
++- payment, collateral debit, forfeiture, settlement, payout, final surplus distribution, and bond refunds;
++- events sufficient for a UI/indexer to reconstruct status.
++
++Offchain:
++
++- names, contact details, reminders, calendar display, transaction relaying, search, and analytics;
++- an optional keeper that calls settlement when a deadline passes;
++- no private family information in events or storage.
++
++Launch on **Base mainnet (chain ID 8453)**: the intended asset has native USDC liquidity there, transactions are inexpensive enough for repeated small payments, and it is EVM-compatible. Use Circle's documented native USDC at `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`; verify this address again from Circle immediately before deployment. Sources: [Circle USDC addresses](https://developers.circle.com/stablecoins/usdc-contract-addresses) and [Base network information](https://docs.base.org/base-chain/quickstart/connecting-to-base).
++
++## Lifecycle and contract surface
++
++The constructor receives `usdc`, exactly twelve unique nonzero member addresses in payout order, `startTime`, and `paymentWindow`. Require enough time between deployment and `startTime` for all funding and review. Read USDC decimals and require six (or use immutable six-decimal constants only after verifying the token).
++
++### Funding and activation
++
++- `depositBond()` transfers exactly 1,200 USDC from the caller. Use `SafeERC20` and checks-effects-interactions.
++- `cancelBeforeStart()` is permissionless after a funding cutoff if all twelve bonds are not present. It changes the circle to cancelled.
++- `withdrawCancelled()` lets each member recover their own bond.
++- Activation is automatic from state: all bonds funded and `block.timestamp >= startTime`. There is no owner-only activate call.
++
++No circle should be considered running until all 14,400 USDC of bonds are actually held by the contract. An allowance is not funding.
++
++### Each round
++
++- Round `r` opens at `startTime + r * period` and has a fixed deadline. Store concrete seconds, not “month”; use a 30-day period if predictable cadence matters, or encode twelve agreed UTC timestamps at deployment if calendar months matter. Prefer the latter for a family product.
++- `pay(round)` is callable only by that member during that round and transfers exactly 100 USDC. A member cannot prepay an arbitrary future round in the MVP.
++- `settle(round)` is permissionless after its deadline and processes all twelve members in one bounded loop. For each unpaid member it reclassifies 100 USDC of that member's bond as the contribution and marks that member in default. It then records exactly 1,200 USDC as that round's pot. Rounds settle in order.
++- If the scheduled recipient has not defaulted before or in that round, settlement credits 1,200 USDC to `claimable[recipient]`. If they have already defaulted, it credits the amount to the final compliant-member pool instead. A later default cannot reverse an already claimed payout.
++- `claim()` lets a recipient pull credited USDC. Use a pull payment so a bad recipient address cannot block later rounds.
++
++A late transaction does not count: the chain timestamp at inclusion must be at or before the deadline. The UI should warn well ahead of the cutoff. Define equality precisely in code (`<= deadline` for payment, `> deadline` for settlement).
++
++### Completion
++
++- `finalize()` is permissionless after round 12 is settled. It calculates each bond refund (1,200 less bond amounts consumed for missed payments) and each eligible share of forfeited payout slots. Decide before coding how integer dust is assigned; recommended: leave dust claimable by the last eligible member, never by an operator.
++- `claimRefund()` lets members pull their bond remainder and final distribution.
++- There is no admin sweep of member funds and no deadline after which claims expire.
++
++Use explicit accounting invariants rather than relying on the raw token balance. The principal invariant is:
++
++`USDC balance >= unpaid claimable payouts + refundable bonds + final-pool liabilities`.
++
++Also test that every settled round accounts for exactly 1,200 USDC, no member can receive a scheduled payout after any missed deadline, each slot settles at most once, and total withdrawals never exceed deposits.
++
++## Who advances the contract
++
++Smart contracts do not wake up on dates. Time passing only makes a function callable.
++
++| Transition | Caller | Why they pay gas | If nobody calls |
++| --- | --- | --- | --- |
++| `depositBond()` | each member | join the circle | circle never starts; anyone can cancel after cutoff |
++| `cancelBeforeStart()` | any member | unlock their bond | bonds remain safely withdrawable once cancellation is called |
++| `pay(round)` | each member | avoid bond debit and a default | after deadline, settlement debits their bond and may forfeit an upcoming/current slot |
++| `settle(round)` | current recipient, any member, or optional keeper | recipient unlocks $1,200; members advance circle | nothing is lost; settlement and later rounds wait |
++| `claim()` | credited recipient | receives $1,200 | credit remains indefinitely |
++| `finalize()` | any compliant member or optional keeper | unlocks refunds/distribution | funds remain accounted for and final claims wait |
++| `claimRefund()` | each member | recovers their money | credit remains indefinitely |
++
++Do not require your two builder wallets, an owner transaction, a frontend, a server, or a keeper for any of these paths. An optional keeper is convenience only. Because the recipient has a direct $1,200 incentive to settle, no keeper fee is necessary for the MVP. Permit catch-up settlement: after a long gap, anyone can settle every expired round in order through repeated calls.
++
++## Will running circles work while both builders are away for six weeks?
++
++**With the design above: yes, without either builder, but not literally by themselves.** Members must still send payments, and someone must submit `settle`. The current recipient can do that directly from a block-explorer contract interface even if the website and keeper are down. If nobody settles for six weeks, funds are not lost and deadlines still have their intended effect; on return, any person can settle all expired rounds in order. Payouts are delayed, not corrupted.
++
++This answer applies only after the implementation passes the tests and launch checks below. There is no existing contract in this workspace to inspect, so it would be unsafe to claim that any already-deployed circles have these properties. For an existing deployment, check its verified source and answer all of the following before leaving:
++
++- Is round advancement permissionless, or does it require either builder/admin/keeper?
++- Can multiple expired rounds be settled in order after downtime?
++- Does a missed payment draw from USDC already in escrow, or merely from an allowance/balance that might not exist? Does the code honestly define what happens if default occurs after payout?
++- Can one reverting transfer or unbounded loop block the entire circle?
++- Can recipients claim directly without the hosted frontend?
++- Are RPC provider, relayer, automation subscription, server, domain, and monitoring paid through the return date?
++- Are both builders the only signers on an emergency/admin multisig?
++
++Exactly what breaks in common admin/cron designs:
++
++- If only an owner can advance a round, every payout reaching a deadline during the six weeks stops until that owner transacts. Fix: deploy/migrate to permissionless ordered settlement; an automation service alone is not sufficient.
++- If a cron job pulls USDC using allowances, the job, RPC, relayer balance, or allowance can fail; even a valid allowance cannot cover an empty wallet. Fix: escrow collateral and retain direct member calls.
++- If the frontend is the only transaction path, members may believe funds are stuck. Fix: publish the verified contract, ABI, chain, and a short block-explorer claim/settle guide before departure.
++- If settlement is allowed only inside a narrow time window, downtime can permanently wedge the state machine. Fix: deadlines should open settlement forever, and delayed rounds must be catch-up safe.
++- If pushing a payout is part of settlement, a token transfer failure can block progression. Fix: settlement creates a credit and the recipient claims separately.
++- If an upgrade, pause, or repair requires the two absent builders, genuine emergencies cannot be handled. Fix: use a reviewed non-upgradeable contract with minimal powers. If a pause is retained, give it to a properly staffed multisig and understand that pausing sacrifices liveness.
++
++The remaining failures are external and cannot be designed away: Base could halt, Circle could pause USDC or freeze an address, a member could lose keys, or wallets could lack ETH for gas. These delay or prevent affected actions. Before leaving, give every member a little Base ETH, test direct explorer interaction, use a recovery-capable wallet policy, and document that USDC issuer controls remain in force.
++
++## Security and test gates
++
++- Use OpenZeppelin `SafeERC20` and `ReentrancyGuard`; follow checks-effects-interactions.
++- Reject duplicate members, zero addresses, wrong token, malformed timestamps, repeated payments/settlements/claims, early settlement, and late payment.
++- Fuzz state-machine sequences and the solvency invariant; test 0, 1, 11, and 12 defaults, including a default before and after a member's scheduled slot.
++- Test six-plus weeks with no calls, then catch up all expired rounds.
++- Test failed/reverting token transfers and ensure one recipient cannot block another.
++- Fork Base and exercise the real native USDC contract, including its six decimals.
++- Have a fresh reviewer audit the final vertical slice. This holds family savings and should not be shipped from this plan alone.
++
++## Deployment and departure runbook
++
++Assuming a Foundry repository with script `script/DeploySusu.s.sol:DeploySusu`, check in the actual member list/timestamps via a non-secret config and document its hash. Never type private keys into a shared shell history. Use a hardware wallet or deployment account supported by the chosen signing flow.
++
++Required environment variables:
++
++```sh
++export BASE_RPC_URL='https://YOUR_PRODUCTION_BASE_RPC'
++export BASESCAN_API_KEY='YOUR_KEY'
++export DEPLOYER_ADDRESS='0x...'
++```
++
++Exact command shape (the implementation must make these executable before launch):
++
++```sh
++forge test
++forge test --fork-url "$BASE_RPC_URL"
++forge script script/DeploySusu.s.sol:DeploySusu --rpc-url "$BASE_RPC_URL" --sender "$DEPLOYER_ADDRESS" --broadcast --verify
++```
++
++Post-deploy:
++
++1. Confirm chain ID 8453, bytecode verification, constructor arguments, all twelve addresses/order, timestamps, and native USDC address against the signed launch sheet.
++2. Have every member approve and call `depositBond`; independently reconcile that the contract holds exactly 14,400 USDC before start.
++3. On a Base Sepolia rehearsal first, make one payment, deliberately miss another, settle permissionlessly from a wallet belonging to neither builder, claim, then simulate six weeks and catch up.
++4. Publish the verified address, ABI, rules, timezone/deadlines, direct `pay`, `settle`, and `claim` instructions, plus support/recovery contacts. Pin the frontend build or maintain a static fallback page.
++5. Configure monitoring for payments, approaching deadlines, settlement, low relayer ETH, and invariant/accounting discrepancies. Alerts should go to members too, not only the absent builders.
++6. Do not begin a mainnet circle less than one full payment window before departure. If any existing contract fails the unattended checklist, pause new enrollment and either complete the circle while staffed or obtain explicit member consent for a migration/refund. Never silently migrate custody.
++
++There is deliberately no production owner in this design. If implementation introduces an owner, upgrade proxy, pause key, fee recipient, or rescue function, this plan's unattended conclusion must be reassessed and the owner must be a staffed multisig—not either builder's individual wallet.
+
+# Untracked files and status
+ A plan.md

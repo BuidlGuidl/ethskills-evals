@@ -25,7 +25,7 @@ Then write `tasks/<id>.yaml` and run the loop. Report back at the end, not durin
 
 The skills under `skills/` are vendored at a pinned commit, and a task spec may already exist under `tasks/`. When it does:
 
-1. Ask exactly one question: the stack. Detect which harness you are running on and propose running everything on it — executor and judge both (claude → opus, codex → the model in `~/.codex/config.toml`). One skill runs on one stack, start to finish. A second stack is a separate benchmark with its own runs and report, never blended into one table.
+1. Ask exactly one question: the stack. Detect which harness you are running on and propose running everything on it — executor and judge both (claude → opus, codex → the model the harness reads out of `~/.codex/config.toml` and passes explicitly, see "The three roles"). One skill runs on one stack, start to finish. A second stack is a separate benchmark with its own runs and report, never blended into one table.
 2. Run the loop as written, grading every run with `--judge-agent <your agent> --judge-model <your model>`.
 3. File the results PR titled `eval: <skill> (<stack>)`, report included.
 
@@ -67,9 +67,13 @@ the two.
 yarn run-executor --run artifacts/<id>/<run-id> --model <model>
 ```
 
-The script builds the executor's command, so the flags that matter cannot be forgotten: `--setting-sources project` for claude (user-level config crowds the skill listing and skills stop triggering) and `sandbox_workspace_write.network_access=true` for codex (`workspace-write` blocks network by default, so without it every live-data task fails for the wrong reason). Omit `--model` to let the CLI pick its own default; whatever ran is recorded in `executor.yaml` and copied into `result.yaml`.
+The script builds the executor's command, so the flags that matter cannot be forgotten: `--setting-sources project` for claude (user-level config crowds the skill listing and skills stop triggering), and for codex `sandbox_workspace_write.network_access=true` (`workspace-write` blocks network by default, so without it every live-data task fails for the wrong reason) plus `--disable shell_snapshot` (codex otherwise sources a snapshot of the operator's interactive shell into every command; one unparseable line in it takes the executor's shell down for the whole run, and a run that cannot open a file grades as a skill that did not help) and `--ephemeral` (the codex home below is shared by every run on the machine, and without it each run's session log lands there for the next run to find). The codex judge carries both flags too. The same exposure on the claude side is still open: `--setting-sources project` governs settings-file discovery only, and claude snapshots the operator's shell the same way. Two limits on that codex flag worth stating: it removes the snapshot, not the login shell — codex still runs every command through `/bin/bash -lc`, so `/etc/profile` and the operator's `~/.bash_profile` are sourced with it on — and it does not fail open, because an unrecognised feature name exits 1 before the run starts and `verify` refuses a non-zero exit, so a codex rename surfaces as a dead run rather than as a flag that quietly stopped applying.
 
-It writes `<run-dir>/transcript.md` beside the raw capture, and `<run-dir>/executor.yaml` with `started`, `finished`, `exit`. A run whose `finished` is still null was killed — including by Ctrl-C, which leaves the record untouched on purpose: it is a dead run, not a zero. Delete it and set up a new one. A run that finished with a non-zero exit is refused by `verify` unless you pass `--grade-failed-run`, so a CLI that was missing or crashed cannot be recorded as a model failure.
+Codex also runs with `CODEX_HOME` pointed at `.codex-home/` in this repo, built by `lib/codex-home.ts`: the harness puts a generated `config.toml` and a symlink to the operator's `auth.json` there, and nothing of the operator's beyond that. Flags do not cover this: `--ignore-user-config` drops `config.toml` alone, while `~/.codex/skills`, `plugins/`, `rules/` and `memories` load by directory discovery, so an operator with a global codex skill on the task's subject contaminates the `no_skill` variant and nothing in the record shows it. Codex fills the rest of the dir in itself as it runs — its own bundled skills, plugin cache and state dbs — which is machine-local and the same for every operator, and `--ephemeral` keeps run content (`sessions/`, `history.jsonl`) out of it so one run's skill text cannot reach the next one. The judge runs under the same home. Delete `.codex-home/` any time; the next run rebuilds it.
+
+Omit `--model` to let the CLI pick its own default; whatever ran is recorded in `executor.yaml` and copied into `result.yaml`. For codex that default is now the harness's business: since the redirect means codex reads no `~/.codex/config.toml`, `run-executor` and `verify` read the operator's top-level `model =` out of it themselves and pass it on the command line, so the model in the record is the model that ran. The operator's top-level `model_reasoning_effort =` travels the same way, on argv and into `executor.yaml` as `reasoning_effort`, because it moves the answer as much as the model does and a benchmark cannot straddle a silent change to it. A value set only under a `[profile]` table is not picked up — the harness says so and records `null` rather than naming a setting the run never used.
+
+It writes `<run-dir>/transcript.md` beside the raw capture, and `<run-dir>/executor.yaml` with `started`, `finished`, `exit`. A run whose `finished` is still null was killed — including by Ctrl-C, which leaves the record untouched on purpose: it is a dead run, not a zero. Delete it and set up a new one. A run that finished with a non-zero exit is refused by `verify` unless you pass `--grade-failed-run`, so a CLI that was missing or crashed cannot be recorded as a model failure. The same refusal covers the runs the exit code cannot see: `executor.err` is scanned for the signatures of an executor that had no working shell (`Shell snapshot validation failed`, `bwrap:`), because those exit 0 and read as a model that chose not to look at anything. `run-executor` scans first and exits non-zero itself, so the loop stops on the run that broke rather than on the `verify` two steps later; `verify` scans again for runs launched by hand. Only the executor's own signatures are matched, and only up to its first successful command — past that the capture is the run's output, and this repo's own files hold both signatures verbatim. `--grade-failed-run` overrides both refusals and writes `harness_failure:` into `result.yaml` so a run graded over one is never mistaken for a clean one. Add a signature to `SHELL_FAILURES` in `lib/executor-health.ts` whenever a new way of losing the shell turns up.
 
 `transcript.md` means the same thing on both stacks, which takes assembling: claude streams the whole session as stream-json on stdout, while codex writes the session log to stderr and leaves only the final message on stdout. Mine transcripts from `transcript.md` alone; the raw streams beside it are gitignored.
 
@@ -115,6 +119,8 @@ Tooling resolves context by walking *up* the filesystem, and every such walk use
 
 **A minimal `package.json`** is dropped into any workspace that has none. npm resolves its project root by walking up for the nearest manifest, and a git boundary does not stop it: in a bare workspace the nearest one was this repo's, so `npm install` inside a run rewrote the framework's own manifest. The stub is part of the baseline commit, so it never appears in a diff, and `verify` skips it in the snapshot by content match.
 
+**The agent's own config is the benchmark's, not the operator's** — `--setting-sources project` for claude, and for codex a `CODEX_HOME` pointed at `.codex-home/` in this repo (see "The three roles"), which is what keeps a global codex skill on the task's subject from contaminating the `no_skill` variant. Neither half is complete: claude still discovers `CLAUDE.md` up the filesystem, and still sources the operator's interactive shell into its own Bash tool — codex no longer does, since `--disable shell_snapshot`.
+
 What is still open: a concurrent run's workspace, two directories up — the one an executor reaches without meaning to — and this repo, which nothing stops an executor from finding on purpose. Closing either means a sandbox profile or a container.
 
 ## Task spec
@@ -158,6 +164,8 @@ To force the trigger, prepend one line to the spawn prompt (`Use the <name> skil
 
 `artifacts/<task-id>/<run-id>/result.yaml`, one per run. `setup` writes the top half, `verify` the rest.
 
+`skill_version` is the repo's HEAD at setup time, not a hash of the skill, so it only identifies the text as long as that commit stays reachable. A rebase, an amend or a squash-merge orphans it and the run stops being able to say what it was given. Before a branch merges, check every `skill_version` it adds with `git merge-base --is-ancestor <sha> HEAD`; where one is unreachable, restamp it to a reachable commit whose `skills/<name>/SKILL.md` blob is byte-identical (`git rev-parse <sha>:skills/<name>/SKILL.md`) and say so in the report. Restamping to a commit with different text is falsifying the record.
+
 ```yaml
 task: gas-cost-estimate-001
 run: 2026-07-06T093000Z-claude-with-skill-1
@@ -167,7 +175,9 @@ skill_version: 191dcc1                # git short sha of the skill source; null 
 input_sha: 4f2b9c1de803               # sha256 of the input this run was given; absent on pre-2026-08-28 runs
 created: 2026-07-06T09:30:00Z
 executor_model: claude-opus-5         # what actually ran; null when the CLI picked its default
+executor_reasoning_effort: null       # codex only; the operator's model_reasoning_effort, passed on argv
 executor_exit: 0                      # verify refuses anything else unless --grade-failed-run
+harness_failure:                      # absent unless --grade-failed-run graded over a refusal
 usage:                                # what the run cost; absent on runs made before 2026-08-27
   duration_s: 812                     # the harness's own wall clock — the one figure both stacks share
   turns: 34                           # claude only
@@ -215,12 +225,20 @@ key per measurement instead of the two bare variant lines — see
 **Every cost or duration number in a report comes out of `yarn run-stats`, never off a keyboard.**
 
 ```bash
-yarn run-stats --tasks <id>,<id> [--since 2026-08-27] [--variant no_skill] [--runs]
+yarn run-stats --tasks <id>,<id> [--since 2026-08-27] [--variant no_skill] [--skill-version <sha>] [--runs]
 ```
 
 It reads the `## run stats` footer `run-executor` writes into each committed `transcript.md`,
-prints per-task medians per variant with the cost range beside them, and says `(n with no footer)`
-for runs made before that footer existed — whose cost and duration this repo simply does not have.
+falling back to the raw `## result` block older transcripts carry instead — the same result event
+under different labels, so those runs are derivable too — and to `result.yaml`'s `usage` block for
+what neither holds, which on codex is the token total. It prints per-task medians per variant with
+the cost range beside them and the median `total_tokens`, and says `(n with no stats)` for runs
+that carry none of the three — whose cost and duration this repo simply does not have.
+
+`--skill-version` filters on `result.yaml`'s `skill_version`. Two `with_skill` arms of one task
+differ only by which revision of the skill they read, and the run directory name does not say, so
+an arm is one command rather than a date range a reader has to know the boundaries of.
+
 Print the range as well as the median: at `n=3` a goal task's cheapest and dearest run can differ by
 more than the delta the median is being read for, and a median that carries a headline needs its
 spread printed next to it. A number that `run-stats` cannot produce does not go in the table; write

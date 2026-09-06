@@ -2,7 +2,8 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { loadYamlFile, parseArgs, requireString } from "../lib/task.js";
-import type { Variant } from "../lib/types.js";
+import { parseTranscriptStats, parseUsageRecord } from "../lib/usage.js";
+import type { RunUsage, Variant } from "../lib/types.js";
 
 // Every number a report puts in a cost table has to come from here, from the committed
 // transcripts, so a reader can re-derive the table instead of trusting it. The wallets report
@@ -10,7 +11,7 @@ import type { Variant } from "../lib/types.js";
 // report — one cell took its duration from an aggregate over seven tasks and its cost from the
 // wrong column — and nothing in the repo could have caught it.
 const ROOT = process.cwd();
-const STATS_ARGS = new Set(["tasks", "since", "variant", "runs"]);
+const STATS_ARGS = new Set(["tasks", "since", "variant", "skill-version", "runs"]);
 
 type RunStats = {
   run: string;
@@ -19,22 +20,35 @@ type RunStats = {
   turns: number | null;
   duration: number | null;
   cost: number | null;
+  tokens: number | null;
 };
 
-// run-executor appends this footer to every transcript; runs made before it existed have none,
-// which is the difference between a number this repo can show you and one it cannot.
-const readFooter = (transcriptPath: string) => {
-  const text = readFileSync(transcriptPath, "utf8");
-  const read = (label: string, pattern: RegExp) => {
-    const match = text.match(pattern);
+const EMPTY: RunUsage = {
+  duration_s: null,
+  turns: null,
+  cost_usd: null,
+  input_tokens: null,
+  cache_creation_input_tokens: null,
+  cache_read_input_tokens: null,
+  output_tokens: null,
+  total_tokens: null,
+};
 
-    return match === null ? null : Number(match[1]);
-  };
+// The transcript is the primary source: it is what the executor itself reported, and it is the
+// file a reader opens to check a cell. result.yaml's usage block fills what the transcript does
+// not carry — codex transcripts have no stats section at all, and their token total lives only
+// there. Runs older than both stay absent rather than becoming zeros.
+const readStats = (runDir: string, result: Record<string, unknown>) => {
+  const transcriptPath = path.join(runDir, "transcript.md");
+  const transcript = existsSync(transcriptPath) ? parseTranscriptStats(readFileSync(transcriptPath, "utf8")) : null;
+  const recorded = parseUsageRecord(result.usage) ?? EMPTY;
+  const usage = transcript ?? EMPTY;
 
   return {
-    turns: read("turns", /^- turns: (\d+)$/m),
-    duration: read("duration", /^- duration: (\d+)s$/m),
-    cost: read("cost", /^- cost: \$([\d.]+)$/m),
+    turns: usage.turns ?? recorded.turns,
+    duration: usage.duration_s ?? recorded.duration_s,
+    cost: usage.cost_usd ?? recorded.cost_usd,
+    tokens: usage.total_tokens ?? recorded.total_tokens,
   };
 };
 
@@ -49,7 +63,10 @@ const median = (values: number[]) => {
   return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
 };
 
-const collect = (taskIds: string[], since: string | null, variant: Variant | null) => {
+// Two with_skill arms of one task differ only by which revision of the skill they read, and
+// the run directory name does not say. skill_version does, so an arm is a filter rather than a
+// date range a reader has to know the boundaries of.
+const collect = (taskIds: string[], since: string | null, variant: Variant | null, skillVersion: string | null) => {
   const stats: RunStats[] = [];
 
   for (const taskId of taskIds) {
@@ -70,8 +87,8 @@ const collect = (taskIds: string[], since: string | null, variant: Variant | nul
         continue;
       }
 
-      const resultPath = path.join(taskDir, run, "result.yaml");
-      const transcriptPath = path.join(taskDir, run, "transcript.md");
+      const runDir = path.join(taskDir, run);
+      const resultPath = path.join(runDir, "result.yaml");
 
       if (!existsSync(resultPath)) {
         continue;
@@ -84,11 +101,15 @@ const collect = (taskIds: string[], since: string | null, variant: Variant | nul
         continue;
       }
 
+      if (skillVersion !== null && result.skill_version !== skillVersion) {
+        continue;
+      }
+
       stats.push({
         run,
         task: taskId,
         variant: runVariant,
-        ...(existsSync(transcriptPath) ? readFooter(transcriptPath) : { turns: null, duration: null, cost: null }),
+        ...readStats(runDir, result),
       });
     }
   }
@@ -104,22 +125,26 @@ const main = () => {
     const taskIds = requireString(args.tasks, "--tasks").split(",").map(id => id.trim());
     const since = args.since === undefined ? null : requireString(args.since, "--since");
     const variant = args.variant === undefined ? null : (requireString(args.variant, "--variant") as Variant);
+    const skillVersion = args["skill-version"] === undefined ? null : requireString(args["skill-version"], "--skill-version");
     const showRuns = args.runs !== undefined;
-    const stats = collect(taskIds, since, variant);
+    const stats = collect(taskIds, since, variant, skillVersion);
 
     if (showRuns) {
-      console.log("| run | variant | turns | duration | cost |");
-      console.log("| --- | --- | --- | --- | --- |");
+      console.log("| run | variant | turns | duration | cost | tokens |");
+      console.log("| --- | --- | --- | --- | --- | --- |");
 
       for (const s of stats) {
-        console.log(`| ${s.task}/${s.run} | ${s.variant} | ${format(s.turns, "")} | ${format(s.duration, "s")} | ${format(s.cost, "$")} |`);
+        console.log(
+          `| ${s.task}/${s.run} | ${s.variant} | ${format(s.turns, "")} | ${format(s.duration, "s")} `
+            + `| ${format(s.cost, "$")} | ${format(s.tokens, "")} |`,
+        );
       }
 
       console.log("");
     }
 
-    console.log("| task | variant | n | turns | duration | cost | cost range |");
-    console.log("| --- | --- | --- | --- | --- | --- | --- |");
+    console.log("| task | variant | n | turns | duration | cost | cost range | tokens |");
+    console.log("| --- | --- | --- | --- | --- | --- | --- | --- |");
 
     for (const taskId of taskIds) {
       for (const v of ["no_skill", "with_skill"] as Variant[]) {
@@ -137,11 +162,15 @@ const main = () => {
           : `$${Math.min(...costs).toFixed(2)}–$${Math.max(...costs).toFixed(2)}`;
         const missing = rows.length - costs.length;
 
+        // total_tokens, never input_tokens: under prompt caching a skill's whole context cost
+        // lands in the cache fields, which is exactly what a with_skill arm is being read for.
+        const tokens = rows.map(s => s.tokens).filter((t): t is number => t !== null);
+
         console.log(
-          `| ${taskId} | ${v} | ${rows.length}${missing > 0 ? ` (${missing} with no footer)` : ""} `
+          `| ${taskId} | ${v} | ${rows.length}${missing > 0 ? ` (${missing} with no stats)` : ""} `
             + `| ${format(median(rows.map(s => s.turns).filter((t): t is number => t !== null)), "")} `
             + `| ${format(median(rows.map(s => s.duration).filter((d): d is number => d !== null)), "s")} `
-            + `| ${format(median(costs), "$")} | ${range} |`,
+            + `| ${format(median(costs), "$")} | ${range} | ${format(median(tokens), "")} |`,
         );
       }
     }

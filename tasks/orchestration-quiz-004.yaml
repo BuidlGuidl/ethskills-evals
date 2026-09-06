@@ -1,0 +1,119 @@
+skill: skills/orchestration
+template: templates/se-2-foundry
+input: |
+  This is our Scaffold-ETH 2 (foundry flavor) checkout. We build against a
+  local fork of Base, because the contract we're about to write reads USDC
+  on Base at 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913.
+
+  The onboarding note a teammate wrote says:
+
+      Start the chain with `yarn fork base` — that gives you Base with all
+      the real tokens already deployed. Sanity-check it with `cast
+      chain-id` against your local node; if you get a chain id back, the
+      fork is up and you're on Base.
+
+  Two people followed it this week and hit the same thing: the local node
+  answers fine, transactions mine, but every read of that USDC address
+  comes back empty, as though the token were not deployed. One of them ran
+  the chain-id check, got a number, and concluded the fork was healthy and
+  the problem was our contract.
+
+  Sort this out in this checkout and write FORK.md at the repo root:
+
+  - what the onboarding note gets wrong, and why the token reads come back
+    empty
+  - the command that actually gives us a fork of Base here
+  - a check that would have caught this — one that actually distinguishes
+    a fork of Base from a fork of some other chain
+
+  Ground it in this repo: quote the script, Makefile or config lines you're
+  relying on. Running things is fine; finished FORK.md in the working tree
+  is the deliverable, no commit required.
+expect:
+  - "FORK.md's diagnosis is that the fork ran against the wrong chain — the script's default (Ethereum mainnet), not Base — so the address genuinely has no code on the chain that was forked. Wording is free ('it forked mainnet', 'FORK_URL stayed at its default', 'you're on an ETH fork'). These fail the line: blaming the RPC endpoint, rate limits or the network being unreachable; claiming the address is wrong or is the Ethereum-mainnet USDC; claiming a fork does not carry token state, or needs a warm cache, an archive node, or a block-number setting to see it."
+  - "FORK.md explains why the argument did not take effect: `base` never reached FORK_URL, so `make fork FORK_URL=${1:-mainnet}` fell back to its default. Either route counts — naming yarn's argument handling (the first token after the script name binds to $0, so a lone `base` left $1 empty), or demonstrating it in the checkout and reporting what FORK_URL actually resolved to. An answer that gives a corrected command with no account of why the original one silently did something else fails this line."
+  - "FORK.md gives a command that actually forks Base in this checkout. Any of these pass: `yarn fork --network base` (or any invocation that passes two separate tokens, the value second, so the value lands in $1 — `-n base` and `-- base` count too); the same with a full Base RPC URL in place of the `base` alias; `make fork FORK_URL=base` or `FORK_URL=<base rpc>` run inside packages/foundry; a direct `anvil --fork-url <base rpc or alias>` invocation. These fail: repeating `yarn fork base`; any single-token spelling such as `yarn fork --network=base`, which binds to $0 exactly as a bare `base` does and forks mainnet just as silently; `yarn chain`; `FORK_URL=... yarn fork` with the variable exported into the environment, which does not survive make's command-line assignment; and any answer whose only fix is editing foundry.toml or .env rather than the invocation."
+  - "The proposed check is state the target chain has and another chain does not — code or a `symbol()`/`decimals()` call at the Base USDC address, another Base-only deployment, or the fork's block height read against Base's current height. It also rejects the note's chain-id check, on the ground that the fork is pinned to chain id 31337 whatever it forked (Makefile `fork:` passes `--chain-id 31337`), so chain id can never tell you which chain is underneath. An answer that proposes a state check but leaves the chain-id check standing as valid fails this line."
+runs: 3
+notes: |
+  Quiz task for skills/orchestration. One claim per quiz; this one targets
+  the fork invocation in SKILL.md "SE-2 specifics worth having right":
+  `yarn fork --network base` needs two tokens, because any single-token
+  spelling (`yarn fork base`, `yarn fork --network=base`) silently forks
+  Ethereum mainnet instead, and the fork's chain id is pinned to 31337
+  either way so it cannot tell you which chain you got.
+
+  Written 2026-08-26 alongside the minimal rewrite, and the reason it
+  exists: that claim entered the skill from a bench check, not from a run.
+  Every other line in the minimal skill is backed by a delta in the
+  2026-08-13 benchmark; this one is backed by nothing until this task
+  runs. If both arms pass, it is dead weight by the first row of #1's
+  verdict matrix and comes out again.
+
+  Ground truth, all verified 2026-08-26/27 against templates/se-2-foundry
+  and re-checkable in it:
+
+  - packages/foundry/package.json: `"fork": "make fork FORK_URL=${1:-mainnet}"`,
+    and the root package.json forwards `yarn fork` to it.
+  - yarn 4.13.0 binds the first token after the script name to `$0`, whatever
+    that token looks like, so `$1` is set only when a second token follows.
+    Measured on a two-line throwaway package, not inferred (`echo "0=[$0]
+    1=[$1]"`): `yarn s base` -> $0=base, $1 empty; `yarn s --network=base` ->
+    $0=--network=base, $1 empty; `yarn s --network base` -> $1=base;
+    `yarn s -n base` -> $1=base; `yarn s -- base` -> $1=base; `yarn s a b` ->
+    $1=b. So it is not that a flag is required and not that a bare positional
+    is dropped: it is a two-token rule, and `--network=base` — the natural
+    second guess for anyone told "the flag is load-bearing" — falls back to
+    `mainnet` exactly as `base` does. Re-measured 2026-09-03 on yarn 4.13.0
+    when the skill line was corrected.
+  - packages/foundry/Makefile: `fork: anvil --fork-url ${FORK_URL} --chain-id 31337`.
+    The chain id is pinned, which is what makes the note's sanity check
+    useless and the wrong fork silent.
+  - `anvil --fork-url base` resolves `base` through foundry.toml
+    [rpc_endpoints] (https://mainnet.base.org) when run inside
+    packages/foundry, and fails with "No such file or directory ... /base"
+    outside it. Both confirmed by running it.
+  - 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 answers `symbol()` -> "USDC"
+    on Base and has empty code on Ethereum mainnet, so the symptom in the
+    input is what a mainnet fork actually produces.
+
+  Repo-shaped, like quiz-003 and for the same reason: the defect lives in
+  this checkout's package scripts, and a bare-workspace version would ask
+  the model to recall a package.json it cannot read, so no_skill would fail
+  vacuously and fake a delta. Here both arms can reach the answer — by
+  reading the scripts and knowing (or testing) how yarn binds arguments —
+  which is the honest measurement of what the skill line is worth.
+
+  Derivation, not retrieval: the symptom is given, the cause is not. The
+  input never says fork, flag, argument, mainnet or chain id as a
+  diagnosis — it says reads come back empty and the chain id looked fine.
+
+  The chain-id half (expect_4) is the part most likely to separate the
+  variants, and the part a reasoning-from-files run can still get: the
+  Makefile line is right there. Watch for the failure mode where a run
+  proposes checking `cast chain-id` against 8453 — that is the note's
+  error restated, since the fork answers 31337 whatever it forked.
+
+  Setup, per AGENTS.md's rule that the task notes carry the install. Same
+  template as quiz-003, so one install serves both: `yarn install` inside
+  templates/se-2-foundry once per machine (node_modules is gitignored and
+  setup CoW-clones the template into each workspace). That install is what
+  puts the defaults in place — create-eth's postinstall copies
+  packages/foundry/.env.example to .env, which is where ALCHEMY_API_KEY and
+  ETHERSCAN_API_KEY come from. A working install: `yarn --version` reports
+  4.13.0 and `forge test` in packages/foundry passes YourContract's tests.
+  Foundry on PATH (`anvil --version`, `cast --version`) is what lets a run
+  test the command instead of only reading the scripts, and runs need
+  network access — a Base fork resolves the foundry.toml alias to
+  https://mainnet.base.org, and the wrong-command case reaches alchemy on
+  the template's default key. A workspace without anvil still produces a
+  gradeable FORK.md: package.json, the Makefile and foundry.toml are all
+  readable, and no expect line requires having run anything.
+
+  Record whether each run determined the cause by running something or by
+  reading the scripts, and whether anvil was available in the sandbox at
+  all — a run that cannot start a fork has to reason it out, and the two
+  routes are worth telling apart in the report.
+
+  Skill vendored at skills/orchestration (source
+  ethskills.com/orchestration/SKILL.md).

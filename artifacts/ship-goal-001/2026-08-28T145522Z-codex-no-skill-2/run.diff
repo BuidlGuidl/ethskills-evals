@@ -1,0 +1,1742 @@
+diff --git a/.env.example b/.env.example
+new file mode 100644
+index 0000000..5b4a159
+--- /dev/null
++++ b/.env.example
+@@ -0,0 +1,4 @@
++VITE_TOOLSHED_ADDRESS=0xYourToolshedContract
++VITE_USDC_ADDRESS=0xYourUsdcContract
++VITE_CHAIN_ID=31337
++
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..fa74125
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,8 @@
++node_modules/
++cache/
++broadcast/
++dist/
++out/
++.env
++*.local
++
+diff --git a/README.md b/README.md
+new file mode 100644
+index 0000000..67a1b99
+--- /dev/null
++++ b/README.md
+@@ -0,0 +1,121 @@
++# Toolshed
++
++Toolshed is a neighborhood tool-lending MVP for a private association of roughly 300 members. Members list tools, borrowers escrow a USDC deposit, owners accept or reject requests, and returns settle the deposit. Late fees are paid to the owner and the remainder goes back to the borrower.
++
++The app includes:
++
++- an admin-managed member allowlist;
++- tool listings with a photo URL, description, condition, deposit, and daily late fee;
++- a request/accept/return lifecycle with USDC held by the contract;
++- late fees rounded up per started late day and capped at the deposit;
++- completed-loan and late-return reputation;
++- an owner request inbox ranked by lowest late-return rate, then most completed loans;
++- a three-day fallback allowing a borrower to settle a return if an owner does not respond.
++
++## Architecture
++
++`contracts/Toolshed.sol` is the source of truth. It stores membership, tools, loans, and reputation, and escrows one ERC-20 token chosen at deployment. It has no external library dependencies. `contracts/MockUSDC.sol` is a six-decimal development token only.
++
++`src/` is a React/Vite single-page client. It talks directly to the contracts through the injected browser wallet using ethers. There is no server or database: this keeps the operational surface appropriate for a small association and makes the audit trail public. Photos are stored as URLs, not uploaded on-chain; use IPFS, Arweave, or an association-controlled image host in production.
++
++The main lifecycle is:
++
++1. An allowlisted member lists a tool.
++2. Another member approves and escrows the exact deposit while requesting 1–30 days. The tool is reserved immediately.
++3. The owner accepts (starting the due-date clock) or rejects (immediate refund). A borrower can cancel before acceptance.
++4. The borrower marks the tool returned. This timestamp fixes the fee calculation.
++5. The owner confirms; the contract sends late fees to the owner and refunds the balance. After three days without confirmation, the borrower can finalize the same calculation.
++
++For an MVP, identity is a wallet address and the admin is a single immutable wallet. See “Production notes” before managing meaningful value.
++
++## Run locally
++
++Requirements: Node.js 20+, npm, [Foundry](https://book.getfoundry.sh/getting-started/installation), and a browser wallet.
++
++Install and test:
++
++```bash
++npm install
++npm test
++```
++
++In terminal one, start a local chain:
++
++```bash
++anvil
++```
++
++In terminal two, deploy the development contracts with one of Anvil's printed private keys:
++
++```bash
++export PRIVATE_KEY=<anvil-private-key>
++forge script script/Deploy.s.sol:Deploy \
++  --rpc-url http://127.0.0.1:8545 \
++  --private-key "$PRIVATE_KEY" \
++  --broadcast
++```
++
++Copy the two deployed addresses printed under `Contract Address` into `.env` (the first is MockUSDC and the second is Toolshed):
++
++```bash
++cp .env.example .env
++# edit VITE_TOOLSHED_ADDRESS and VITE_USDC_ADDRESS
++npm run dev
++```
++
++Add the Anvil network (`http://127.0.0.1:8545`, chain ID `31337`) and an Anvil account to the wallet. The deployer is already a member. From the **Members** tab, allowlist other account addresses.
++
++For local deposits, mint mock USDC and then add the mock token address to the wallet:
++
++```bash
++cast send "$VITE_USDC_ADDRESS" "mint(address,uint256)" <member-address> 1000000000 \
++  --rpc-url http://127.0.0.1:8545 --private-key "$PRIVATE_KEY"
++```
++
++Replace `$VITE_USDC_ADDRESS` with the address from `.env` (or export it in the shell first). `1000000000` is 1,000 mock USDC because USDC has six decimals.
++
++## Deploy
++
++Choose an EVM network where the association and USDC are available. Obtain the official USDC contract address for that network from Circle's current documentation; do not deploy or use `MockUSDC` in production.
++
++Deploy `Toolshed` with the production USDC address:
++
++```bash
++export RPC_URL=<network-rpc-url>
++export PRIVATE_KEY=<deployer-private-key>
++export USDC_ADDRESS=<official-usdc-address>
++
++forge create contracts/Toolshed.sol:Toolshed \
++  --rpc-url "$RPC_URL" \
++  --private-key "$PRIVATE_KEY" \
++  --broadcast \
++  --constructor-args "$USDC_ADDRESS"
++```
++
++Set the returned contract address and the same USDC address in the frontend host's environment:
++
++```bash
++VITE_TOOLSHED_ADDRESS=<deployed-toolshed-address>
++VITE_USDC_ADDRESS=<official-usdc-address>
++VITE_CHAIN_ID=<network-chain-id>
++npm run build
++```
++
++Deploy the generated `dist/` directory to any static host (Cloudflare Pages, Netlify, S3, etc.). Build-time variables are embedded in the bundle, so rebuild after changing addresses. Keep the deployer wallet secure; it is the only wallet that can change membership.
++
++## Contract tests
++
++Run `forge test -vv`. Tests in `test/Toolshed.t.sol` cover full on-time refunds, rounded-up/capped late-fee settlement and reputation, rejected-request refunds, and borrower finalization after the owner response window.
++
++## Production notes
++
++This is a first version, not an audited custody system. Before real deposits, commission an independent smart-contract review and test on a public testnet. In particular:
++
++- move admin authority to an association multisig (the current admin cannot be changed);
++- decide how disputes about damage or whether a physical return actually occurred are resolved—the contract deliberately does not attempt to adjudicate them;
++- pin photo assets and add content moderation/privacy rules;
++- add event indexing if full-history reads become slow;
++- document wallet recovery, member offboarding, deposit limits, and local legal/tax treatment;
++- use only the canonical, six-decimal USDC token on the selected network.
++
++Late fees are based on the on-chain `markReturned` timestamp and are capped at the escrowed deposit. Removing a member prevents new listings and requests but intentionally does not strand an existing loan; its return and settlement actions remain available.
+diff --git a/contracts/MockUSDC.sol b/contracts/MockUSDC.sol
+new file mode 100644
+index 0000000..61b4c76
+--- /dev/null
++++ b/contracts/MockUSDC.sol
+@@ -0,0 +1,38 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.20;
++
++contract MockUSDC {
++    string public constant name = "Mock USDC";
++    string public constant symbol = "USDC";
++    uint8 public constant decimals = 6;
++    mapping(address => uint256) public balanceOf;
++    mapping(address => mapping(address => uint256)) public allowance;
++
++    function mint(address to, uint256 amount) external {
++        balanceOf[to] += amount;
++    }
++
++    function approve(address spender, uint256 amount) external returns (bool) {
++        allowance[msg.sender][spender] = amount;
++        return true;
++    }
++
++    function transfer(address to, uint256 amount) external returns (bool) {
++        _move(msg.sender, to, amount);
++        return true;
++    }
++
++    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
++        uint256 allowed = allowance[from][msg.sender];
++        require(allowed >= amount, "allowance");
++        allowance[from][msg.sender] = allowed - amount;
++        _move(from, to, amount);
++        return true;
++    }
++
++    function _move(address from, address to, uint256 amount) private {
++        require(balanceOf[from] >= amount, "balance");
++        balanceOf[from] -= amount;
++        balanceOf[to] += amount;
++    }
++}
+diff --git a/contracts/Toolshed.sol b/contracts/Toolshed.sol
+new file mode 100644
+index 0000000..b682bbc
+--- /dev/null
++++ b/contracts/Toolshed.sol
+@@ -0,0 +1,230 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.20;
++
++interface IERC20 {
++    function transfer(address to, uint256 value) external returns (bool);
++    function transferFrom(address from, address to, uint256 value) external returns (bool);
++}
++
++/// @title Toolshed - member-to-member tool lending with USDC escrow
++contract Toolshed {
++    uint256 public constant DAY = 1 days;
++    uint256 public constant OWNER_RESPONSE_WINDOW = 3 days;
++
++    enum LoanStatus {
++        None,
++        Requested,
++        Active,
++        ReturnMarked,
++        Complete,
++        Rejected,
++        Cancelled
++    }
++
++    struct Tool {
++        uint256 id;
++        address owner;
++        string name;
++        string photoURI;
++        string condition;
++        uint256 deposit;
++        uint256 dailyLateFee;
++        bool available;
++        bool active;
++    }
++
++    struct Loan {
++        uint256 id;
++        uint256 toolId;
++        address borrower;
++        uint32 durationDays;
++        uint64 startedAt;
++        uint64 dueAt;
++        uint64 returnMarkedAt;
++        LoanStatus status;
++    }
++
++    struct Reputation {
++        uint32 completedLoans;
++        uint32 lateReturns;
++    }
++
++    address public immutable admin;
++    IERC20 public immutable usdc;
++    uint256 public toolCount;
++    uint256 public loanCount;
++    mapping(address => bool) public members;
++    mapping(uint256 => Tool) public tools;
++    mapping(uint256 => Loan) public loans;
++    mapping(address => Reputation) public reputation;
++    mapping(uint256 => uint256[]) private _toolLoans;
++    uint256 private _locked = 1;
++
++    event MemberSet(address indexed member, bool enabled);
++    event ToolListed(uint256 indexed toolId, address indexed owner, string name);
++    event ToolUpdated(uint256 indexed toolId);
++    event LoanRequested(uint256 indexed loanId, uint256 indexed toolId, address indexed borrower);
++    event LoanStarted(uint256 indexed loanId, uint64 dueAt);
++    event ReturnMarked(uint256 indexed loanId, uint64 markedAt);
++    event LoanSettled(uint256 indexed loanId, uint256 ownerFee, uint256 borrowerRefund, bool late);
++    event LoanClosed(uint256 indexed loanId, LoanStatus status);
++
++    modifier onlyAdmin() {
++        require(msg.sender == admin, "admin only");
++        _;
++    }
++    modifier onlyMember() {
++        require(members[msg.sender], "members only");
++        _;
++    }
++    modifier nonReentrant() {
++        require(_locked == 1, "reentrant");
++        _locked = 2;
++        _;
++        _locked = 1;
++    }
++
++    constructor(address usdcAddress) {
++        require(usdcAddress != address(0), "zero USDC");
++        admin = msg.sender;
++        usdc = IERC20(usdcAddress);
++        members[msg.sender] = true;
++        emit MemberSet(msg.sender, true);
++    }
++
++    function setMember(address member, bool enabled) external onlyAdmin {
++        require(member != address(0), "zero member");
++        members[member] = enabled;
++        emit MemberSet(member, enabled);
++    }
++
++    function listTool(
++        string calldata name,
++        string calldata photoURI,
++        string calldata condition,
++        uint256 deposit,
++        uint256 dailyLateFee
++    ) external onlyMember returns (uint256 id) {
++        require(bytes(name).length > 0, "name required");
++        require(deposit > 0, "deposit required");
++        require(dailyLateFee <= deposit, "fee exceeds deposit");
++        id = ++toolCount;
++        tools[id] = Tool(id, msg.sender, name, photoURI, condition, deposit, dailyLateFee, true, true);
++        emit ToolListed(id, msg.sender, name);
++    }
++
++    function updateTool(
++        uint256 id,
++        string calldata photoURI,
++        string calldata condition,
++        uint256 deposit,
++        uint256 dailyLateFee,
++        bool active
++    ) external {
++        Tool storage tool = tools[id];
++        require(tool.owner == msg.sender, "owner only");
++        require(tool.available, "loan pending");
++        require(deposit > 0 && dailyLateFee <= deposit, "bad terms");
++        tool.photoURI = photoURI;
++        tool.condition = condition;
++        tool.deposit = deposit;
++        tool.dailyLateFee = dailyLateFee;
++        tool.active = active;
++        tool.available = active;
++        emit ToolUpdated(id);
++    }
++
++    function requestLoan(uint256 toolId, uint32 durationDays) external onlyMember nonReentrant returns (uint256 id) {
++        Tool storage tool = tools[toolId];
++        require(tool.active && tool.available, "not available");
++        require(tool.owner != msg.sender, "cannot borrow own tool");
++        require(durationDays > 0 && durationDays <= 30, "duration 1-30 days");
++        tool.available = false;
++        id = ++loanCount;
++        loans[id] = Loan(id, toolId, msg.sender, durationDays, 0, 0, 0, LoanStatus.Requested);
++        _toolLoans[toolId].push(id);
++        require(usdc.transferFrom(msg.sender, address(this), tool.deposit), "deposit failed");
++        emit LoanRequested(id, toolId, msg.sender);
++    }
++
++    function acceptLoan(uint256 id) external {
++        Loan storage loan = loans[id];
++        Tool storage tool = tools[loan.toolId];
++        require(tool.owner == msg.sender, "owner only");
++        require(loan.status == LoanStatus.Requested, "not requested");
++        loan.status = LoanStatus.Active;
++        loan.startedAt = uint64(block.timestamp);
++        loan.dueAt = uint64(block.timestamp + uint256(loan.durationDays) * DAY);
++        emit LoanStarted(id, loan.dueAt);
++    }
++
++    function rejectLoan(uint256 id) external nonReentrant {
++        Loan storage loan = loans[id];
++        Tool storage tool = tools[loan.toolId];
++        require(tool.owner == msg.sender, "owner only");
++        require(loan.status == LoanStatus.Requested, "not requested");
++        loan.status = LoanStatus.Rejected;
++        tool.available = tool.active;
++        require(usdc.transfer(loan.borrower, tool.deposit), "refund failed");
++        emit LoanClosed(id, LoanStatus.Rejected);
++    }
++
++    function cancelRequest(uint256 id) external nonReentrant {
++        Loan storage loan = loans[id];
++        Tool storage tool = tools[loan.toolId];
++        require(loan.borrower == msg.sender, "borrower only");
++        require(loan.status == LoanStatus.Requested, "not requested");
++        loan.status = LoanStatus.Cancelled;
++        tool.available = tool.active;
++        require(usdc.transfer(loan.borrower, tool.deposit), "refund failed");
++        emit LoanClosed(id, LoanStatus.Cancelled);
++    }
++
++    function markReturned(uint256 id) external {
++        Loan storage loan = loans[id];
++        require(loan.borrower == msg.sender, "borrower only");
++        require(loan.status == LoanStatus.Active, "not active");
++        loan.status = LoanStatus.ReturnMarked;
++        loan.returnMarkedAt = uint64(block.timestamp);
++        emit ReturnMarked(id, loan.returnMarkedAt);
++    }
++
++    function confirmReturned(uint256 id) external nonReentrant {
++        Loan storage loan = loans[id];
++        require(tools[loan.toolId].owner == msg.sender, "owner only");
++        require(loan.status == LoanStatus.ReturnMarked, "return not marked");
++        _settle(id);
++    }
++
++    function finalizeUnconfirmedReturn(uint256 id) external nonReentrant {
++        Loan storage loan = loans[id];
++        require(loan.borrower == msg.sender, "borrower only");
++        require(loan.status == LoanStatus.ReturnMarked, "return not marked");
++        require(block.timestamp >= uint256(loan.returnMarkedAt) + OWNER_RESPONSE_WINDOW, "response window");
++        _settle(id);
++    }
++
++    function _settle(uint256 id) private {
++        Loan storage loan = loans[id];
++        Tool storage tool = tools[loan.toolId];
++        uint256 lateDays;
++        if (loan.returnMarkedAt > loan.dueAt) {
++            lateDays = (uint256(loan.returnMarkedAt) - loan.dueAt + DAY - 1) / DAY;
++        }
++        uint256 ownerFee = lateDays * tool.dailyLateFee;
++        if (ownerFee > tool.deposit) ownerFee = tool.deposit;
++        uint256 refund = tool.deposit - ownerFee;
++        loan.status = LoanStatus.Complete;
++        tool.available = tool.active;
++        Reputation storage rep = reputation[loan.borrower];
++        rep.completedLoans++;
++        if (lateDays > 0) rep.lateReturns++;
++        if (ownerFee > 0) require(usdc.transfer(tool.owner, ownerFee), "fee failed");
++        if (refund > 0) require(usdc.transfer(loan.borrower, refund), "refund failed");
++        emit LoanSettled(id, ownerFee, refund, lateDays > 0);
++    }
++
++    function toolLoanIds(uint256 toolId) external view returns (uint256[] memory) {
++        return _toolLoans[toolId];
++    }
++}
+diff --git a/foundry.toml b/foundry.toml
+new file mode 100644
+index 0000000..a504d58
+--- /dev/null
++++ b/foundry.toml
+@@ -0,0 +1,9 @@
++[profile.default]
++src = "contracts"
++test = "test"
++script = "script"
++out = "out"
++solc_version = "0.8.20"
++optimizer = true
++optimizer_runs = 200
++
+diff --git a/index.html b/index.html
+new file mode 100644
+index 0000000..2560502
+--- /dev/null
++++ b/index.html
+@@ -0,0 +1,10 @@
++<!doctype html>
++<html lang="en">
++  <head>
++    <meta charset="UTF-8" />
++    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
++    <meta name="theme-color" content="#173f35" />
++    <title>Toolshed — neighborhood lending</title>
++  </head>
++  <body><div id="root"></div><script type="module" src="/src/main.jsx"></script></body>
++</html>
+diff --git a/package-lock.json b/package-lock.json
+new file mode 100644
+index 0000000..1eb177c
+--- /dev/null
++++ b/package-lock.json
+@@ -0,0 +1,944 @@
++{
++  "name": "toolshed",
++  "version": "0.1.0",
++  "lockfileVersion": 3,
++  "requires": true,
++  "packages": {
++    "": {
++      "name": "toolshed",
++      "version": "0.1.0",
++      "dependencies": {
++        "@vitejs/plugin-react": "latest",
++        "ethers": "^6.15.0",
++        "react": "latest",
++        "react-dom": "latest",
++        "vite": "latest"
++      },
++      "devDependencies": {}
++    },
++    "node_modules/@adraffy/ens-normalize": {
++      "version": "1.11.1",
++      "resolved": "https://registry.npmjs.org/@adraffy/ens-normalize/-/ens-normalize-1.11.1.tgz",
++      "integrity": "sha512-nhCBV3quEgesuf7c7KYfperqSS14T8bYuvJ8PcLJp6znkZpFc0AuW4qBtr8eKVyPPe/8RSr7sglCWPU5eaxwKQ==",
++      "license": "MIT"
++    },
++    "node_modules/@noble/curves": {
++      "version": "1.2.0",
++      "resolved": "https://registry.npmjs.org/@noble/curves/-/curves-1.2.0.tgz",
++      "integrity": "sha512-oYclrNgRaM9SsBUBVbb8M6DTV7ZHRTKugureoYEncY5c65HOmRzvSiTE3y5CYaPYJA/GVkrhXEoF0M3Ya9PMnw==",
++      "license": "MIT",
++      "dependencies": {
++        "@noble/hashes": "1.3.2"
++      },
++      "funding": {
++        "url": "https://paulmillr.com/funding/"
++      }
++    },
++    "node_modules/@noble/hashes": {
++      "version": "1.3.2",
++      "resolved": "https://registry.npmjs.org/@noble/hashes/-/hashes-1.3.2.tgz",
++      "integrity": "sha512-MVC8EAQp7MvEcm30KWENFjgR+Mkmf+D189XJTkFIlwohU5hcBbn1ZkKq7KVTi2Hme3PMGF390DaL52beVrIihQ==",
++      "license": "MIT",
++      "engines": {
++        "node": ">= 16"
++      },
++      "funding": {
++        "url": "https://paulmillr.com/funding/"
++      }
++    },
++    "node_modules/@oxc-project/types": {
++      "version": "0.147.0",
++      "resolved": "https://registry.npmjs.org/@oxc-project/types/-/types-0.147.0.tgz",
++      "integrity": "sha512-IJ3s6ltHLp45S0bh7phkX+gJO7A1Wuz2EaqpAhb8WjqDwbzMiWKHhyyT42tskaWjEYXtHtVCPpnBJVT9+dcRLg==",
++      "license": "MIT",
++      "funding": {
++        "url": "https://github.com/sponsors/Boshen"
++      }
++    },
++    "node_modules/@rolldown/binding-android-arm-eabi": {
++      "version": "1.2.6",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-android-arm-eabi/-/binding-android-arm-eabi-1.2.6.tgz",
++      "integrity": "sha512-b+jTcARdTiFLI6jB4a5XjTm0RWd6KcRfQj/I2356fxUZemiho9zQLxo0RtCuMDAyKcLo6cEltkgbQp6d1+sjjQ==",
++      "cpu": [
++        "arm"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "android"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
++    },
++    "node_modules/@rolldown/binding-android-arm64": {
++      "version": "1.2.6",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-android-arm64/-/binding-android-arm64-1.2.6.tgz",
++      "integrity": "sha512-lkWU8ZJaRk9q3CIEY1Tc7vIFALp3Xw5NfGJo2hQg5oIqNgxWi1zI+IiDEK3r70BF5Dzol1tcXsnzsRc8NLhG+Q==",
++      "cpu": [
++        "arm64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "android"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
++    },
++    "node_modules/@rolldown/binding-darwin-arm64": {
++      "version": "1.2.6",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-darwin-arm64/-/binding-darwin-arm64-1.2.6.tgz",
++      "integrity": "sha512-dgR56NYnvAszm7Ob1B2/Vn0e8bUQYZH2UjVaMMtMVOCKFSfjhfLmuA/9+O+F+ajUdG6B/bSssrKW6JJYASa8jA==",
++      "cpu": [
++        "arm64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "darwin"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
++    },
++    "node_modules/@rolldown/binding-darwin-x64": {
++      "version": "1.2.6",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-darwin-x64/-/binding-darwin-x64-1.2.6.tgz",
++      "integrity": "sha512-vpVxFvUCFioJqug7OTvqptkc4yb8UX0AwfDmJpaR/0sWz+BUmqSVAf7c8JkUgnN8YLspb4a/N6NhTyMAmdyQ7Q==",
++      "cpu": [
++        "x64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "darwin"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
++    },
++    "node_modules/@rolldown/binding-freebsd-x64": {
++      "version": "1.2.6",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-freebsd-x64/-/binding-freebsd-x64-1.2.6.tgz",
++      "integrity": "sha512-h1wG6Y6K3JlRswxsI64qQJqBAy4vrLuHgRbc8CZMGSWTOFRY6ghMApM1NKzB2I0n5xV1fjkE18SuVl2QpLeNpA==",
++      "cpu": [
++        "x64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "freebsd"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
++    },
++    "node_modules/@rolldown/binding-linux-arm-gnueabihf": {
++      "version": "1.2.6",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-linux-arm-gnueabihf/-/binding-linux-arm-gnueabihf-1.2.6.tgz",
++      "integrity": "sha512-tbCiqub0q2MVWJKgF5PoAlNWCtQydiOYSLIkd8sByqK/6MMYLJRcSXSYodqYtd0O+Fw7QaVmKKlS4oL94YRZ0w==",
++      "cpu": [
++        "arm"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
++    },
++    "node_modules/@rolldown/binding-linux-arm64-gnu": {
++      "version": "1.2.6",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-linux-arm64-gnu/-/binding-linux-arm64-gnu-1.2.6.tgz",
++      "integrity": "sha512-oxK9+baEBPhZG5HB4URY+uU04zJWeZlH6Tb9rB5DK4DF9XR1uXNLXt5Q5ZsugTKayNCNLhkcwz/ye74hRI98dg==",
++      "cpu": [
++        "arm64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
++    },
++    "node_modules/@rolldown/binding-linux-arm64-musl": {
++      "version": "1.2.6",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-linux-arm64-musl/-/binding-linux-arm64-musl-1.2.6.tgz",
++      "integrity": "sha512-muWCk27FVBEZtv0MsK8gnfSmgczA8KQ0uRVJbTABKhkRfQc38aUrcb7fhi3BNiyseFmgcRsoMfQsSNJ+DbZdSw==",
++      "cpu": [
++        "arm64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
++    },
++    "node_modules/@rolldown/binding-linux-ppc64-gnu": {
++      "version": "1.2.6",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-linux-ppc64-gnu/-/binding-linux-ppc64-gnu-1.2.6.tgz",
++      "integrity": "sha512-eWDoSfU7Co2qj3vgB3Dt4lj1mG6CoWbcJQkRMP3XJplyCMtuaq3LHvPFjS9QIPvMGWVadJC04Xiy0IdcVPtnwQ==",
++      "cpu": [
++        "ppc64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
++    },
++    "node_modules/@rolldown/binding-linux-s390x-gnu": {
++      "version": "1.2.6",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-linux-s390x-gnu/-/binding-linux-s390x-gnu-1.2.6.tgz",
++      "integrity": "sha512-2bWNjRSIayvupRKxXUY2tWG9fYdoUlTqWywHRvE8Eq3GvuQ+f2HeIkve697fIt+IQs/PV8yFsdWuhp1aJ1PdnA==",
++      "cpu": [
++        "s390x"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
++    },
++    "node_modules/@rolldown/binding-linux-x64-gnu": {
++      "version": "1.2.6",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-linux-x64-gnu/-/binding-linux-x64-gnu-1.2.6.tgz",
++      "integrity": "sha512-KekI0gS0wLxe1UBSQSjenBVwou/JkcQPDzBPICGZjxUv9k3RteHDPBQaiOicZUFKRIH2wKEimGwVpnJsbPzu7w==",
++      "cpu": [
++        "x64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
++    },
++    "node_modules/@rolldown/binding-linux-x64-musl": {
++      "version": "1.2.6",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-linux-x64-musl/-/binding-linux-x64-musl-1.2.6.tgz",
++      "integrity": "sha512-TvtPnfVr+HtyGiDmPK4VWmlNm7QhNNAcK5Q9A7aOXsI8545yCyaoMaicXrFZ72JzeYjaUVk7yT243zT0jzjFKQ==",
++      "cpu": [
++        "x64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
++    },
++    "node_modules/@rolldown/binding-openharmony-arm64": {
++      "version": "1.2.6",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-openharmony-arm64/-/binding-openharmony-arm64-1.2.6.tgz",
++      "integrity": "sha512-iOo0VEay2XFhaCcH0sps5XIimkSuOnNaZrf6+ZkoSOQBJPKNU48RkmJv0/lSpipexu5P+ouFgafe5IGr/DiQfg==",
++      "cpu": [
++        "arm64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "openharmony"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
++    },
++    "node_modules/@rolldown/binding-win32-arm64-msvc": {
++      "version": "1.2.6",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-win32-arm64-msvc/-/binding-win32-arm64-msvc-1.2.6.tgz",
++      "integrity": "sha512-y5NTmmasMS455JlOCO4ZM9krIchv3Mvm1crL1iUPGOPgEzSkves9n0SdC5Sjz6+qWDFhd8/JpfWMH8NSWNHe+A==",
++      "cpu": [
++        "arm64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "win32"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
++    },
++    "node_modules/@rolldown/binding-win32-x64-msvc": {
++      "version": "1.2.6",
++      "resolved": "https://registry.npmjs.org/@rolldown/binding-win32-x64-msvc/-/binding-win32-x64-msvc-1.2.6.tgz",
++      "integrity": "sha512-np8iZSLfXlAD4kWhiyq/u0Yt8oZDtRQ8lGhQaCXo2rl37KNjeU0GjJuwr4P3oeZ++ROfofsKNBqR5LTO8aXyWQ==",
++      "cpu": [
++        "x64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "win32"
++      ],
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      }
++    },
++    "node_modules/@rolldown/pluginutils": {
++      "version": "1.0.1",
++      "resolved": "https://registry.npmjs.org/@rolldown/pluginutils/-/pluginutils-1.0.1.tgz",
++      "integrity": "sha512-2j9bGt5Jh8hj+vPtgzPtl72j0yRxHAyumoo6TNfAjsLB04UtpSvPbPcDcBMxz7n+9CYB0c1GxQFxYRg2jimqGw==",
++      "license": "MIT"
++    },
++    "node_modules/@types/node": {
++      "version": "26.4.0",
++      "resolved": "https://registry.npmjs.org/@types/node/-/node-26.4.0.tgz",
++      "integrity": "sha512-faiGnoIrLH/V8cibOMEAZ8pMw6oXqSukl29ra4mN8GdaB2ZewzeaLj+INpV5N+Z1eKWzY+IzaIZH2EIR6YZRNQ==",
++      "license": "MIT",
++      "optional": true,
++      "peer": true,
++      "dependencies": {
++        "undici-types": "~8.3.0"
++      }
++    },
++    "node_modules/@vitejs/plugin-react": {
++      "version": "6.1.1",
++      "resolved": "https://registry.npmjs.org/@vitejs/plugin-react/-/plugin-react-6.1.1.tgz",
++      "integrity": "sha512-yxLaQV9gkhS8ezJqCM6+ndU7mDY6gqAg75NQ+0IjwEI8IYOmQCgkRwHKVSfWXW076DsqMo0Dk+0FK1U+M5RgFw==",
++      "license": "MIT",
++      "dependencies": {
++        "@rolldown/pluginutils": "^1.0.1"
++      },
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      },
++      "peerDependencies": {
++        "@rolldown/plugin-babel": "^0.1.7 || ^0.2.0",
++        "babel-plugin-react-compiler": "^1.0.0",
++        "oxc-transform-react": "^0.145.0",
++        "vite": "^8.0.0"
++      },
++      "peerDependenciesMeta": {
++        "@rolldown/plugin-babel": {
++          "optional": true
++        },
++        "babel-plugin-react-compiler": {
++          "optional": true
++        },
++        "oxc-transform-react": {
++          "optional": true
++        }
++      }
++    },
++    "node_modules/aes-js": {
++      "version": "4.0.0-beta.5",
++      "resolved": "https://registry.npmjs.org/aes-js/-/aes-js-4.0.0-beta.5.tgz",
++      "integrity": "sha512-G965FqalsNyrPqgEGON7nIx1e/OVENSgiEIzyC63haUMuvNnwIgIjMs52hlTCKhkBny7A2ORNlfY9Zu+jmGk1Q==",
++      "license": "MIT"
++    },
++    "node_modules/detect-libc": {
++      "version": "2.1.2",
++      "resolved": "https://registry.npmjs.org/detect-libc/-/detect-libc-2.1.2.tgz",
++      "integrity": "sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ==",
++      "license": "Apache-2.0",
++      "engines": {
++        "node": ">=8"
++      }
++    },
++    "node_modules/ethers": {
++      "version": "6.17.0",
++      "resolved": "https://registry.npmjs.org/ethers/-/ethers-6.17.0.tgz",
++      "integrity": "sha512-BpyrpIPJ3ydEVow8zGaz1DuPS7YU8DcWxuBnY9a0UA/lvAPwrMr+EPXsfrul628SRaekPNeIM4UFh/91GWZang==",
++      "funding": [
++        {
++          "type": "individual",
++          "url": "https://github.com/sponsors/ethers-io/"
++        },
++        {
++          "type": "individual",
++          "url": "https://www.buymeacoffee.com/ricmoo"
++        }
++      ],
++      "license": "MIT",
++      "dependencies": {
++        "@adraffy/ens-normalize": "1.11.1",
++        "@noble/curves": "1.2.0",
++        "@noble/hashes": "1.3.2",
++        "@types/node": "22.7.5",
++        "aes-js": "4.0.0-beta.5",
++        "tslib": "2.7.0",
++        "ws": "8.21.0"
++      },
++      "engines": {
++        "node": ">=14.0.0"
++      }
++    },
++    "node_modules/ethers/node_modules/@types/node": {
++      "version": "22.7.5",
++      "resolved": "https://registry.npmjs.org/@types/node/-/node-22.7.5.tgz",
++      "integrity": "sha512-jML7s2NAzMWc//QSJ1a3prpk78cOPchGvXJsC3C6R6PSMoooztvRVQEz89gmBTBY1SPMaqo5teB4uNHPdetShQ==",
++      "license": "MIT",
++      "dependencies": {
++        "undici-types": "~6.19.2"
++      }
++    },
++    "node_modules/ethers/node_modules/undici-types": {
++      "version": "6.19.8",
++      "resolved": "https://registry.npmjs.org/undici-types/-/undici-types-6.19.8.tgz",
++      "integrity": "sha512-ve2KP6f/JnbPBFyobGHuerC9g1FYGn/F8n1LWTwNxCEzd6IfqTwUQcNXgEtmmQ6DlRrC1hrSrBnCZPokRrDHjw==",
++      "license": "MIT"
++    },
++    "node_modules/fdir": {
++      "version": "6.5.0",
++      "resolved": "https://registry.npmjs.org/fdir/-/fdir-6.5.0.tgz",
++      "integrity": "sha512-tIbYtZbucOs0BRGqPJkshJUYdL+SDH7dVM8gjy+ERp3WAUjLEFJE+02kanyHtwjWOnwrKYBiwAmM0p4kLJAnXg==",
++      "license": "MIT",
++      "engines": {
++        "node": ">=12.0.0"
++      },
++      "peerDependencies": {
++        "picomatch": "^3 || ^4"
++      },
++      "peerDependenciesMeta": {
++        "picomatch": {
++          "optional": true
++        }
++      }
++    },
++    "node_modules/fsevents": {
++      "version": "2.3.3",
++      "resolved": "https://registry.npmjs.org/fsevents/-/fsevents-2.3.3.tgz",
++      "integrity": "sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw==",
++      "hasInstallScript": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "darwin"
++      ],
++      "engines": {
++        "node": "^8.16.0 || ^10.6.0 || >=11.0.0"
++      }
++    },
++    "node_modules/lightningcss": {
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss/-/lightningcss-1.33.0.tgz",
++      "integrity": "sha512-WkUDrojuJs0xkgGf2udWxa3yGBRxPtxUkB79i6aCZLRgc7PM8fZe9TosfPDcvEpQZbuFASnHYmRLBLUbmLOIIA==",
++      "license": "MPL-2.0",
++      "dependencies": {
++        "detect-libc": "^2.0.3"
++      },
++      "engines": {
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
++      },
++      "optionalDependencies": {
++        "lightningcss-android-arm64": "1.33.0",
++        "lightningcss-darwin-arm64": "1.33.0",
++        "lightningcss-darwin-x64": "1.33.0",
++        "lightningcss-freebsd-x64": "1.33.0",
++        "lightningcss-linux-arm-gnueabihf": "1.33.0",
++        "lightningcss-linux-arm64-gnu": "1.33.0",
++        "lightningcss-linux-arm64-musl": "1.33.0",
++        "lightningcss-linux-x64-gnu": "1.33.0",
++        "lightningcss-linux-x64-musl": "1.33.0",
++        "lightningcss-win32-arm64-msvc": "1.33.0",
++        "lightningcss-win32-x64-msvc": "1.33.0"
++      }
++    },
++    "node_modules/lightningcss-android-arm64": {
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-android-arm64/-/lightningcss-android-arm64-1.33.0.tgz",
++      "integrity": "sha512-gEpRTalKdosp4Bb8qWtc2iOgE5SeIHlpS1up9bFq2wAyYhl1UdTObYiHe98zEM9SQvSoqQZ1IQD0JNpg3Ml5pg==",
++      "cpu": [
++        "arm64"
++      ],
++      "license": "MPL-2.0",
++      "optional": true,
++      "os": [
++        "android"
++      ],
++      "engines": {
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
++      }
++    },
++    "node_modules/lightningcss-darwin-arm64": {
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-darwin-arm64/-/lightningcss-darwin-arm64-1.33.0.tgz",
++      "integrity": "sha512-Sciaz8eenNTKn9b3t7+xr0ipTp9YxKQY4npwQ3mrRuL0BAVHBLyZxofhaKBAVtzmtRZ/zTyo0/to4B1uWG/Djg==",
++      "cpu": [
++        "arm64"
++      ],
++      "license": "MPL-2.0",
++      "optional": true,
++      "os": [
++        "darwin"
++      ],
++      "engines": {
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
++      }
++    },
++    "node_modules/lightningcss-darwin-x64": {
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-darwin-x64/-/lightningcss-darwin-x64-1.33.0.tgz",
++      "integrity": "sha512-Z5UPAxzrjlWNNyGy6i65cJzzvgJ5D3T6wMvs+gWpY9d7qRhANrxqAp6LhxIgZhWEw18RfJTGcRxjuLIBr+m8XQ==",
++      "cpu": [
++        "x64"
++      ],
++      "license": "MPL-2.0",
++      "optional": true,
++      "os": [
++        "darwin"
++      ],
++      "engines": {
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
++      }
++    },
++    "node_modules/lightningcss-freebsd-x64": {
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-freebsd-x64/-/lightningcss-freebsd-x64-1.33.0.tgz",
++      "integrity": "sha512-QQM/Ti/hQajJwCY+RiWuCZ9sdtI/XQk7nDK5vC8kkdwixezOlDgvDx7+RT+QjK6FcFT4MpsuoBnHIo/O3StRRg==",
++      "cpu": [
++        "x64"
++      ],
++      "license": "MPL-2.0",
++      "optional": true,
++      "os": [
++        "freebsd"
++      ],
++      "engines": {
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
++      }
++    },
++    "node_modules/lightningcss-linux-arm-gnueabihf": {
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-linux-arm-gnueabihf/-/lightningcss-linux-arm-gnueabihf-1.33.0.tgz",
++      "integrity": "sha512-N7FVBe6iS24MlM6R/4RBTxGhQheZGs7tiQ9U32UtF75NzP5Q7xWPRqLBCKxlRQRk3rY1jCIPLzx7WzOhuUIRLQ==",
++      "cpu": [
++        "arm"
++      ],
++      "license": "MPL-2.0",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
++      }
++    },
++    "node_modules/lightningcss-linux-arm64-gnu": {
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-linux-arm64-gnu/-/lightningcss-linux-arm64-gnu-1.33.0.tgz",
++      "integrity": "sha512-j2v/itmy4HlNxlc6voKXYgBqNi0Ng2LShg4z7GufpEgs05P+2suBVyi9I6YHq5uoVFx9ETin3eCEhLVyXGQnKg==",
++      "cpu": [
++        "arm64"
++      ],
++      "license": "MPL-2.0",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
++      }
++    },
++    "node_modules/lightningcss-linux-arm64-musl": {
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-linux-arm64-musl/-/lightningcss-linux-arm64-musl-1.33.0.tgz",
++      "integrity": "sha512-yiO5ROMuYQgXbC60yjZU5CYSFZGKXL0HFATXt9mHJn1+zW55oCtMI9NfcVhYLMFDL7gV7oBPon/EmMMGg2OvtQ==",
++      "cpu": [
++        "arm64"
++      ],
++      "license": "MPL-2.0",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
++      }
++    },
++    "node_modules/lightningcss-linux-x64-gnu": {
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-linux-x64-gnu/-/lightningcss-linux-x64-gnu-1.33.0.tgz",
++      "integrity": "sha512-ar+Ju7LmcN0Jo4FpL4hpFybwNG9/3A/Br5KW2n2jyODg3MEZXaDYADdemoNS+BDNfMgKvylJLj4S5tyRActuAg==",
++      "cpu": [
++        "x64"
++      ],
++      "license": "MPL-2.0",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
++      }
++    },
++    "node_modules/lightningcss-linux-x64-musl": {
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-linux-x64-musl/-/lightningcss-linux-x64-musl-1.33.0.tgz",
++      "integrity": "sha512-RYiYbkokw0trfKqqzfF55lginwEPrD3OJDfTuJzFs1MK6iFnDenaz1fqLLtX4ITG3OktJQXOeTaw1awrBAlZPw==",
++      "cpu": [
++        "x64"
++      ],
++      "license": "MPL-2.0",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
++      }
++    },
++    "node_modules/lightningcss-win32-arm64-msvc": {
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-win32-arm64-msvc/-/lightningcss-win32-arm64-msvc-1.33.0.tgz",
++      "integrity": "sha512-1K+MPfLSFVpphzpdbfkhlWk6wBrTObBzS2T6db10PNOZgR9GoVsAWzwNyuhUYYbTp23j+4RrncfujZ4uAzXvwA==",
++      "cpu": [
++        "arm64"
++      ],
++      "license": "MPL-2.0",
++      "optional": true,
++      "os": [
++        "win32"
++      ],
++      "engines": {
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
++      }
++    },
++    "node_modules/lightningcss-win32-x64-msvc": {
++      "version": "1.33.0",
++      "resolved": "https://registry.npmjs.org/lightningcss-win32-x64-msvc/-/lightningcss-win32-x64-msvc-1.33.0.tgz",
++      "integrity": "sha512-OlEICDx/Xl0FqSp4bry8zFnCvGpig3Gl4gCquvYwHuqJKEC1+n9NgDniFvqHGmMv1ZkqDJrDqKKSykTDX+ehuA==",
++      "cpu": [
++        "x64"
++      ],
++      "license": "MPL-2.0",
++      "optional": true,
++      "os": [
++        "win32"
++      ],
++      "engines": {
++        "node": ">= 12.0.0"
++      },
++      "funding": {
++        "type": "opencollective",
++        "url": "https://opencollective.com/parcel"
++      }
++    },
++    "node_modules/nanoid": {
++      "version": "3.3.18",
++      "resolved": "https://registry.npmjs.org/nanoid/-/nanoid-3.3.18.tgz",
++      "integrity": "sha512-DTg4MJbGMWkfi6VZFdNt2/caMbQy4Ou+Op/hJQvGEWcnVfoA1QA+xzRKAzw9jD6+GVOOeYr/mIcuDSdug6F6+w==",
++      "funding": [
++        {
++          "type": "github",
++          "url": "https://github.com/sponsors/ai"
++        }
++      ],
++      "license": "MIT",
++      "bin": {
++        "nanoid": "bin/nanoid.cjs"
++      },
++      "engines": {
++        "node": "^10 || ^12 || ^13.7 || ^14 || >=15.0.1"
++      }
++    },
++    "node_modules/picocolors": {
++      "version": "1.1.1",
++      "resolved": "https://registry.npmjs.org/picocolors/-/picocolors-1.1.1.tgz",
++      "integrity": "sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA==",
++      "license": "ISC"
++    },
++    "node_modules/picomatch": {
++      "version": "4.0.7",
++      "resolved": "https://registry.npmjs.org/picomatch/-/picomatch-4.0.7.tgz",
++      "integrity": "sha512-qcJu88Q2IWqJsDD529JKMdwGm/dvInW4HvQnRwiH9JtihJvzGOscDtHE3x1pBKeUOTysQ8kVmLnJ2kJu7yhcGA==",
++      "license": "MIT",
++      "engines": {
++        "node": ">=12"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/jonschlinkert"
++      }
++    },
++    "node_modules/postcss": {
++      "version": "8.5.26",
++      "resolved": "https://registry.npmjs.org/postcss/-/postcss-8.5.26.tgz",
++      "integrity": "sha512-u82N74LFzG8ca+dD8puPnplTXoGH4fTPpVGuIbt36G3qvNlkvfD0lEAZSxaly3KX8TS/L1A1gsCEmvKmBcVbkQ==",
++      "funding": [
++        {
++          "type": "opencollective",
++          "url": "https://opencollective.com/postcss/"
++        },
++        {
++          "type": "tidelift",
++          "url": "https://tidelift.com/funding/github/npm/postcss"
++        },
++        {
++          "type": "github",
++          "url": "https://github.com/sponsors/ai"
++        }
++      ],
++      "license": "MIT",
++      "dependencies": {
++        "nanoid": "^3.3.17",
++        "picocolors": "^1.1.1",
++        "source-map-js": "^1.2.1"
++      },
++      "engines": {
++        "node": "^10 || ^12 || >=14"
++      }
++    },
++    "node_modules/react": {
++      "version": "19.2.8",
++      "resolved": "https://registry.npmjs.org/react/-/react-19.2.8.tgz",
++      "integrity": "sha512-PWaYA1L/q9u2u7xYQi+Y3L3Yfnie7XyLeaJICV1MGD6LprsBxcAqGjYyr0eY3p+QdsA+x/Irkt4Qif8D63+Sbw==",
++      "license": "MIT",
++      "engines": {
++        "node": ">=0.10.0"
++      }
++    },
++    "node_modules/react-dom": {
++      "version": "19.2.8",
++      "resolved": "https://registry.npmjs.org/react-dom/-/react-dom-19.2.8.tgz",
++      "integrity": "sha512-rVprimfGBG3DR+Tq0IQG2DT5PxKth1WIGDmj5yPmlzr4YBe7uyE+Du4oVqTDXZSHGGGXRtTJEGSSePyQCMBglQ==",
++      "license": "MIT",
++      "dependencies": {
++        "scheduler": "^0.27.0"
++      },
++      "peerDependencies": {
++        "react": "^19.2.8"
++      }
++    },
++    "node_modules/rolldown": {
++      "version": "1.2.6",
++      "resolved": "https://registry.npmjs.org/rolldown/-/rolldown-1.2.6.tgz",
++      "integrity": "sha512-vMM4q3aixf46GiF1Kok8jDPFsEpXgFWGjUHXNkNHNm+Y2adXAG2dbX91jkti3i0ZRsOlcmbuzAz1poObSHCmUA==",
++      "license": "MIT",
++      "dependencies": {
++        "@oxc-project/types": "=0.147.0",
++        "@rolldown/pluginutils": "^1.0.0"
++      },
++      "bin": {
++        "rolldown": "bin/cli.mjs"
++      },
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      },
++      "optionalDependencies": {
++        "@rolldown/binding-android-arm-eabi": "1.2.6",
++        "@rolldown/binding-android-arm64": "1.2.6",
++        "@rolldown/binding-darwin-arm64": "1.2.6",
++        "@rolldown/binding-darwin-x64": "1.2.6",
++        "@rolldown/binding-freebsd-x64": "1.2.6",
++        "@rolldown/binding-linux-arm-gnueabihf": "1.2.6",
++        "@rolldown/binding-linux-arm64-gnu": "1.2.6",
++        "@rolldown/binding-linux-arm64-musl": "1.2.6",
++        "@rolldown/binding-linux-ppc64-gnu": "1.2.6",
++        "@rolldown/binding-linux-s390x-gnu": "1.2.6",
++        "@rolldown/binding-linux-x64-gnu": "1.2.6",
++        "@rolldown/binding-linux-x64-musl": "1.2.6",
++        "@rolldown/binding-openharmony-arm64": "1.2.6",
++        "@rolldown/binding-win32-arm64-msvc": "1.2.6",
++        "@rolldown/binding-win32-x64-msvc": "1.2.6"
++      }
++    },
++    "node_modules/scheduler": {
++      "version": "0.27.0",
++      "resolved": "https://registry.npmjs.org/scheduler/-/scheduler-0.27.0.tgz",
++      "integrity": "sha512-eNv+WrVbKu1f3vbYJT/xtiF5syA5HPIMtf9IgY/nKg0sWqzAUEvqY/xm7OcZc/qafLx/iO9FgOmeSAp4v5ti/Q==",
++      "license": "MIT"
++    },
++    "node_modules/source-map-js": {
++      "version": "1.2.1",
++      "resolved": "https://registry.npmjs.org/source-map-js/-/source-map-js-1.2.1.tgz",
++      "integrity": "sha512-UXWMKhLOwVKb728IUtQPXxfYU+usdybtUrK/8uGE8CQMvrhOpwvzDBwj0QhSL7MQc7vIsISBG8VQ8+IDQxpfQA==",
++      "license": "BSD-3-Clause",
++      "engines": {
++        "node": ">=0.10.0"
++      }
++    },
++    "node_modules/tinyglobby": {
++      "version": "0.2.17",
++      "resolved": "https://registry.npmjs.org/tinyglobby/-/tinyglobby-0.2.17.tgz",
++      "integrity": "sha512-wXR/dYpcqKmfWpEdZjiKJOwCNFndD0DMnrW/cYjVGttEkBfVgcLFHoNrlj47mjOVic9yyNu65alsgF4NQyTa2g==",
++      "license": "MIT",
++      "dependencies": {
++        "fdir": "^6.5.0",
++        "picomatch": "^4.0.4"
++      },
++      "engines": {
++        "node": ">=12.0.0"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/SuperchupuDev"
++      }
++    },
++    "node_modules/tslib": {
++      "version": "2.7.0",
++      "resolved": "https://registry.npmjs.org/tslib/-/tslib-2.7.0.tgz",
++      "integrity": "sha512-gLXCKdN1/j47AiHiOkJN69hJmcbGTHI0ImLmbYLHykhgeN0jVGola9yVjFgzCUklsZQMW55o+dW7IXv3RCXDzA==",
++      "license": "0BSD"
++    },
++    "node_modules/undici-types": {
++      "version": "8.3.0",
++      "resolved": "https://registry.npmjs.org/undici-types/-/undici-types-8.3.0.tgz",
++      "integrity": "sha512-j375ScV60dom+YkPFIfTLcOiPxkN/buHz5GobjLhixFuANaNs3C9l4GmrWqejgXWJ7BbJcFYpTEUkS1Ge8bpZQ==",
++      "license": "MIT",
++      "optional": true,
++      "peer": true
++    },
++    "node_modules/vite": {
++      "version": "8.2.2",
++      "resolved": "https://registry.npmjs.org/vite/-/vite-8.2.2.tgz",
++      "integrity": "sha512-cFKLV/PRgAUlIRm5WjMjJ86jrftzpqcgH+Us+DS8mI3CDNiH30Whrz8uHL3+MOLPAgqbMBAqWdAHAphOAM+z/Q==",
++      "license": "MIT",
++      "dependencies": {
++        "lightningcss": "^1.33.0",
++        "picomatch": "^4.0.5",
++        "postcss": "^8.5.26",
++        "rolldown": "~1.2.4",
++        "tinyglobby": "^0.2.17"
++      },
++      "bin": {
++        "vite": "bin/vite.js"
++      },
++      "engines": {
++        "node": "^20.19.0 || >=22.12.0"
++      },
++      "funding": {
++        "url": "https://github.com/vitejs/vite?sponsor=1"
++      },
++      "optionalDependencies": {
++        "fsevents": "~2.3.3"
++      },
++      "peerDependencies": {
++        "@types/node": "^20.19.0 || >=22.12.0",
++        "@vitejs/devtools": "^0.4.0 || ^0.5.0",
++        "esbuild": "^0.27.0 || ^0.28.0",
++        "jiti": ">=1.21.0",
++        "less": "^4.0.0",
++        "sass": "^1.70.0",
++        "sass-embedded": "^1.70.0",
++        "stylus": ">=0.54.8",
++        "sugarss": "^5.0.0",
++        "terser": "^5.16.0",
++        "tsx": "^4.8.1",
++        "yaml": "^2.4.2"
++      },
++      "peerDependenciesMeta": {
++        "@types/node": {
++          "optional": true
++        },
++        "@vitejs/devtools": {
++          "optional": true
++        },
++        "esbuild": {
++          "optional": true
++        },
++        "jiti": {
++          "optional": true
++        },
++        "less": {
++          "optional": true
++        },
++        "sass": {
++          "optional": true
++        },
++        "sass-embedded": {
++          "optional": true
++        },
++        "stylus": {
++          "optional": true
++        },
++        "sugarss": {
++          "optional": true
++        },
++        "terser": {
++          "optional": true
++        },
++        "tsx": {
++          "optional": true
++        },
++        "yaml": {
++          "optional": true
++        }
++      }
++    },
++    "node_modules/ws": {
++      "version": "8.21.0",
++      "resolved": "https://registry.npmjs.org/ws/-/ws-8.21.0.tgz",
++      "integrity": "sha512-Vsp28b7DRcimFQvrqu2Wek3z1iYxDCWqHYB8Qsnk/S4RfaCQzPGPyBNuVjJV3cd6UiKtUtp6sNM77gWvzcCH+g==",
++      "license": "MIT",
++      "engines": {
++        "node": ">=10.0.0"
++      },
++      "peerDependencies": {
++        "bufferutil": "^4.0.1",
++        "utf-8-validate": ">=5.0.2"
++      },
++      "peerDependenciesMeta": {
++        "bufferutil": {
++          "optional": true
++        },
++        "utf-8-validate": {
++          "optional": true
++        }
++      }
++    }
++  }
++}
+diff --git a/package.json b/package.json
+new file mode 100644
+index 0000000..53d7ad3
+--- /dev/null
++++ b/package.json
+@@ -0,0 +1,22 @@
++{
++  "name": "toolshed",
++  "private": true,
++  "version": "0.1.0",
++  "type": "module",
++  "scripts": {
++    "dev": "vite",
++    "build": "vite build",
++    "preview": "vite preview",
++    "contracts:build": "forge build",
++    "contracts:test": "forge test -vv",
++    "test": "npm run contracts:test && npm run build"
++  },
++  "dependencies": {
++    "@vitejs/plugin-react": "latest",
++    "ethers": "^6.15.0",
++    "vite": "latest",
++    "react": "latest",
++    "react-dom": "latest"
++  },
++  "devDependencies": {}
++}
+diff --git a/script/Deploy.s.sol b/script/Deploy.s.sol
+new file mode 100644
+index 0000000..3bbf5ff
+--- /dev/null
++++ b/script/Deploy.s.sol
+@@ -0,0 +1,21 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.20;
++
++import "../contracts/Toolshed.sol";
++import "../contracts/MockUSDC.sol";
++
++interface Vm {
++    function startBroadcast() external;
++    function stopBroadcast() external;
++}
++
++contract Deploy {
++    Vm constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
++
++    function run() external returns (Toolshed shed, MockUSDC token) {
++        vm.startBroadcast();
++        token = new MockUSDC();
++        shed = new Toolshed(address(token));
++        vm.stopBroadcast();
++    }
++}
+diff --git a/src/contracts.js b/src/contracts.js
+new file mode 100644
+index 0000000..dcc194b
+--- /dev/null
++++ b/src/contracts.js
+@@ -0,0 +1,25 @@
++export const toolshedAbi = [
++  "function admin() view returns (address)",
++  "function members(address) view returns (bool)",
++  "function toolCount() view returns (uint256)",
++  "function loanCount() view returns (uint256)",
++  "function tools(uint256) view returns (uint256 id,address owner,string name,string photoURI,string condition,uint256 deposit,uint256 dailyLateFee,bool available,bool active)",
++  "function loans(uint256) view returns (uint256 id,uint256 toolId,address borrower,uint32 durationDays,uint64 startedAt,uint64 dueAt,uint64 returnMarkedAt,uint8 status)",
++  "function reputation(address) view returns (uint32 completedLoans,uint32 lateReturns)",
++  "function setMember(address member,bool enabled)",
++  "function listTool(string name,string photoURI,string condition,uint256 deposit,uint256 dailyLateFee) returns (uint256)",
++  "function requestLoan(uint256 toolId,uint32 durationDays) returns (uint256)",
++  "function acceptLoan(uint256 id)",
++  "function rejectLoan(uint256 id)",
++  "function cancelRequest(uint256 id)",
++  "function markReturned(uint256 id)",
++  "function confirmReturned(uint256 id)",
++  "function finalizeUnconfirmedReturn(uint256 id)",
++];
++
++export const usdcAbi = [
++  "function approve(address spender,uint256 amount) returns (bool)",
++  "function balanceOf(address) view returns (uint256)",
++];
++
++export const STATUS = ["None", "Requested", "Active", "Return marked", "Complete", "Rejected", "Cancelled"];
+diff --git a/src/main.jsx b/src/main.jsx
+new file mode 100644
+index 0000000..bd8d648
+--- /dev/null
++++ b/src/main.jsx
+@@ -0,0 +1,99 @@
++import React, { useEffect, useMemo, useState } from "react";
++import { createRoot } from "react-dom/client";
++import { BrowserProvider, Contract, formatUnits, parseUnits } from "ethers";
++import { STATUS, toolshedAbi, usdcAbi } from "./contracts";
++import "./styles.css";
++
++const SHED = import.meta.env.VITE_TOOLSHED_ADDRESS;
++const USDC = import.meta.env.VITE_USDC_ADDRESS;
++const short = (a = "") => a ? `${a.slice(0, 6)}…${a.slice(-4)}` : "";
++const money = (n) => `$${Number(formatUnits(n || 0, 6)).toFixed(2)}`;
++const date = (n) => Number(n) ? new Date(Number(n) * 1000).toLocaleDateString() : "—";
++
++function App() {
++  const [provider, setProvider] = useState();
++  const [account, setAccount] = useState("");
++  const [contract, setContract] = useState();
++  const [tools, setTools] = useState([]);
++  const [loans, setLoans] = useState([]);
++  const [reps, setReps] = useState({});
++  const [tab, setTab] = useState("browse");
++  const [notice, setNotice] = useState("");
++  const [busy, setBusy] = useState(false);
++  const [isMember, setIsMember] = useState(false);
++  const [isAdmin, setIsAdmin] = useState(false);
++
++  async function connect() {
++    if (!window.ethereum) return setNotice("Install a browser wallet to continue.");
++    if (!SHED || !USDC) return setNotice("Add contract addresses to .env first.");
++    const p = new BrowserProvider(window.ethereum);
++    const signer = await p.getSigner();
++    const address = await signer.getAddress();
++    const c = new Contract(SHED, toolshedAbi, signer);
++    setProvider(p); setAccount(address); setContract(c);
++    setIsMember(await c.members(address));
++    setIsAdmin((await c.admin()).toLowerCase() === address.toLowerCase());
++  }
++
++  async function load() {
++    if (!contract) return;
++    const [tc, lc] = await Promise.all([contract.toolCount(), contract.loanCount()]);
++    const allTools = await Promise.all(Array.from({ length: Number(tc) }, (_, i) => contract.tools(i + 1)));
++    const allLoans = await Promise.all(Array.from({ length: Number(lc) }, (_, i) => contract.loans(i + 1)));
++    const borrowers = [...new Set(allLoans.map(l => l.borrower.toLowerCase()))];
++    const entries = await Promise.all(borrowers.map(async a => [a, await contract.reputation(a)]));
++    setTools(allTools); setLoans(allLoans); setReps(Object.fromEntries(entries));
++  }
++  useEffect(() => { load().catch(e => setNotice(e.shortMessage || e.message)); }, [contract]);
++
++  async function transact(label, fn) {
++    try { setBusy(true); setNotice(`${label}…`); const tx = await fn(); await tx.wait(); await load(); setNotice(`${label} complete.`); }
++    catch (e) { setNotice(e.shortMessage || e.reason || e.message); }
++    finally { setBusy(false); }
++  }
++
++  async function request(tool, days) {
++    const token = new Contract(USDC, usdcAbi, await provider.getSigner());
++    await transact("Approving deposit", async () => { const tx = await token.approve(SHED, tool.deposit); await tx.wait(); return contract.requestLoan(tool.id, days); });
++  }
++
++  const myTools = tools.filter(t => t.owner.toLowerCase() === account.toLowerCase());
++  const myLoans = loans.filter(l => l.borrower.toLowerCase() === account.toLowerCase());
++  const ownerLoans = loans.filter(l => myTools.some(t => t.id === l.toolId));
++  const rankedRequests = useMemo(() => [...ownerLoans].sort((a, b) => {
++    const ar = reps[a.borrower.toLowerCase()] || [0n, 0n], br = reps[b.borrower.toLowerCase()] || [0n, 0n];
++    const as = Number(ar[0]) ? Number(ar[1]) / Number(ar[0]) : 0;
++    const bs = Number(br[0]) ? Number(br[1]) / Number(br[0]) : 0;
++    return as - bs || Number(br[0]) - Number(ar[0]);
++  }), [ownerLoans, reps]);
++
++  if (!account) return <Landing connect={connect} notice={notice} />;
++  return <div className="app">
++    <header><button className="brand" onClick={() => setTab("browse")}><span>⌂</span> Toolshed</button><nav>
++      {[['browse','Browse'],['mine','My tools'],['loans','Loans'],...(isAdmin?[['admin','Members']]:[])].map(([id,label]) => <button className={tab === id ? "active" : ""} onClick={() => setTab(id)} key={id}>{label}</button>)}
++    </nav><div className="wallet"><i />{short(account)}</div></header>
++    {notice && <button className="notice" onClick={() => setNotice("")}>{notice} ×</button>}
++    <main>
++      {!isMember ? <Membership isAdmin={isAdmin} contract={contract} transact={transact} /> : <>
++        {tab === "browse" && <Browse tools={tools} account={account} request={request} busy={busy} />}
++        {tab === "mine" && <MyTools tools={myTools} contract={contract} transact={transact} busy={busy} />}
++        {tab === "loans" && <Loans loans={myLoans} requests={rankedRequests} tools={tools} reps={reps} account={account} contract={contract} transact={transact} busy={busy} />}
++        {tab === "admin" && isAdmin && <Admin contract={contract} transact={transact} />}
++      </>}
++    </main>
++  </div>;
++}
++
++function Landing({ connect, notice }) { return <div className="landing"><div className="landing-copy"><div className="eyebrow">A library built by neighbors</div><h1>Good tools deserve<br/><em>more than one job.</em></h1><p>Borrow what you need. Share what you have. Build trust one project at a time.</p><button className="primary" onClick={connect}>Connect wallet <span>→</span></button>{notice && <p className="error">{notice}</p>}<small>USDC deposits · Transparent history · Member-run</small></div><div className="hero-art"><div className="sun"/><div className="shed"><div className="roof"/><div className="door">TOOLS<br/><b>FOR ALL</b></div></div><div className="ground"/></div></div> }
++
++function Browse({ tools, account, request, busy }) { const [days, setDays] = useState({}); const available = tools.filter(t => t.active); return <><section className="page-title"><div><div className="eyebrow">THE COMMUNITY COLLECTION</div><h2>Find your next tool</h2><p>{available.filter(t=>t.available).length} tools ready to borrow from neighbors.</p></div></section><div className="tool-grid">{available.map(t => <article className="tool-card" key={String(t.id)}><div className="photo">{t.photoURI ? <img src={t.photoURI} alt={t.name}/> : <span>🛠️</span>}<b className={t.available ? "available" : "unavailable"}>{t.available ? "Available" : "On loan"}</b></div><div className="card-body"><h3>{t.name}</h3><p>{t.condition || "No condition notes"}</p><div className="owner">From <strong>{short(t.owner)}</strong></div><div className="terms"><span><small>DEPOSIT</small>{money(t.deposit)}</span><span><small>LATE / DAY</small>{money(t.dailyLateFee)}</span></div>{t.owner.toLowerCase() !== account.toLowerCase() && t.available && <div className="borrow"><input type="number" min="1" max="30" value={days[t.id] || 3} onChange={e=>setDays({...days,[t.id]:e.target.value})}/><button disabled={busy} onClick={()=>request(t, Number(days[t.id] || 3))}>Request</button></div>}</div></article>)}</div>{!available.length && <Empty text="No tools have been listed yet."/>}</> }
++
++function MyTools({ tools, contract, transact, busy }) { const [open,setOpen]=useState(false); const submit=e=>{e.preventDefault(); const f=new FormData(e.currentTarget); transact("Listing tool",()=>contract.listTool(f.get("name"),f.get("photo"),f.get("condition"),parseUnits(f.get("deposit"),6),parseUnits(f.get("fee"),6))).then(()=>setOpen(false));}; return <><section className="page-title row"><div><div className="eyebrow">YOUR TOOLBOX</div><h2>Tools you share</h2></div><button className="primary compact" onClick={()=>setOpen(!open)}>+ List a tool</button></section>{open&&<form className="panel form" onSubmit={submit}><label>Tool name<input required name="name" placeholder="Cordless drill"/></label><label>Photo URL<input name="photo" placeholder="https://…"/></label><label className="wide">Condition notes<textarea name="condition" required placeholder="Good condition; includes two batteries"/></label><label>Deposit (USDC)<input required name="deposit" type="number" min="0.01" step="0.01"/></label><label>Late fee / day<input required name="fee" type="number" min="0" step="0.01"/></label><button className="primary compact" disabled={busy}>Publish listing</button></form>}<div className="list">{tools.map(t=><div className="list-row" key={String(t.id)}><div className="thumb">{t.photoURI?<img src={t.photoURI}/>:"🛠️"}</div><div><h3>{t.name}</h3><p>{t.condition}</p></div><div className="push"><b>{t.available?"Available":"In use"}</b><small>{money(t.deposit)} deposit</small></div></div>)}</div>{!tools.length&&!open&&<Empty text="List a tool and help a neighbor finish their next project."/>}</> }
++
++function Loans({ loans, requests, tools, reps, account, contract, transact, busy }) { const tool=id=>tools.find(t=>t.id===id); const action=(l,owner)=>{if(l.status===1n)return owner?<><button onClick={()=>transact("Accepting",()=>contract.acceptLoan(l.id))}>Accept</button><button className="ghost" onClick={()=>transact("Declining",()=>contract.rejectLoan(l.id))}>Decline</button></>:<button className="ghost" onClick={()=>transact("Cancelling",()=>contract.cancelRequest(l.id))}>Cancel</button>; if(l.status===2n&&!owner)return <button onClick={()=>transact("Marking returned",()=>contract.markReturned(l.id))}>Mark returned</button>; if(l.status===3n&&owner)return <button onClick={()=>transact("Confirming return",()=>contract.confirmReturned(l.id))}>Confirm & settle</button>; if(l.status===3n&&!owner)return <button className="ghost" onClick={()=>transact("Finalizing",()=>contract.finalizeUnconfirmedReturn(l.id))}>Finalize after 3 days</button>;}; const rows=(items,owner)=>items.map(l=>{const t=tool(l.toolId);const rep=reps[l.borrower.toLowerCase()]||[0n,0n];return <div className="loan-row" key={`${owner}-${l.id}`}><div><small>{owner?"BORROWER":"TOOL"}</small><h3>{owner?short(l.borrower):(t?.name||`Tool #${l.toolId}`)}</h3><p>{owner?`${rep[0]} completed · ${rep[1]} late`:`${l.durationDays} days · due ${date(l.dueAt)}`}</p></div><span className={`status s${l.status}`}>{STATUS[Number(l.status)]}</span><div className="actions">{action(l,owner)}</div></div>}); return <><section className="page-title"><div className="eyebrow">LOANS & REQUESTS</div><h2>Keep every handoff clear</h2><p>Borrower requests are ranked by lowest late-return rate, then experience.</p></section><h3 className="section-label">Borrowing</h3><div className="panel">{loans.length?rows(loans,false):<Empty text="You have no borrowing activity."/>}</div><h3 className="section-label">Requests for your tools</h3><div className="panel">{requests.length?rows(requests,true):<Empty text="No one has requested your tools yet."/>}</div></> }
++
++function Membership({isAdmin,contract,transact}) { const [address,setAddress]=useState(""); return <div className="panel membership"><h2>This wallet is not a member</h2><p>Toolshed is private to the association. Ask the administrator to add your wallet.</p>{isAdmin&&<><input value={address} onChange={e=>setAddress(e.target.value)} placeholder="Member wallet address"/><button onClick={()=>transact("Adding member",()=>contract.setMember(address,true))}>Add member</button></>}</div> }
++function Admin({contract,transact}) { const [address,setAddress]=useState(""); return <><section className="page-title"><div className="eyebrow">ASSOCIATION ADMIN</div><h2>Manage members</h2><p>Add or remove wallets from this private lending circle.</p></section><div className="panel membership"><input value={address} onChange={e=>setAddress(e.target.value)} placeholder="0x member wallet address"/><div className="actions"><button onClick={()=>transact("Adding member",()=>contract.setMember(address,true))}>Add member</button><button className="ghost" onClick={()=>transact("Removing member",()=>contract.setMember(address,false))}>Remove member</button></div></div></> }
++function Empty({text}) { return <div className="empty"><span>⌂</span><p>{text}</p></div> }
++
++createRoot(document.getElementById("root")).render(<React.StrictMode><App /></React.StrictMode>);
+diff --git a/src/styles.css b/src/styles.css
+new file mode 100644
+index 0000000..4660c0e
+--- /dev/null
++++ b/src/styles.css
+@@ -0,0 +1,2 @@
++@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Fraunces:ital,wght@0,700;1,700&display=swap');
++:root{font-family:'DM Sans',sans-serif;color:#193b32;background:#f8f5ed;font-synthesis:none}*{box-sizing:border-box}body{margin:0}button,input,textarea{font:inherit}button{cursor:pointer}.app{min-height:100vh}header{height:76px;padding:0 max(5vw,24px);display:flex;align-items:center;border-bottom:1px solid #dcd8ca;background:#fffdf7;position:sticky;top:0;z-index:10}.brand{border:0;background:none;font-family:Fraunces;font-size:24px;font-weight:700;color:#173f35}.brand span{display:inline-grid;place-items:center;background:#e1ae44;color:#173f35;width:36px;height:36px;border-radius:50%;margin-right:8px}nav{display:flex;gap:30px;margin:auto}nav button{border:0;background:none;color:#64766f;padding:27px 2px 23px}nav .active{color:#173f35;border-bottom:3px solid #dd9e27;font-weight:700}.wallet{background:#edf1eb;padding:9px 13px;border-radius:30px;font-size:13px}.wallet i{display:inline-block;width:8px;height:8px;border-radius:50%;background:#3a9b68;margin-right:7px}main{max-width:1180px;margin:0 auto;padding:54px 24px 80px}.page-title{margin-bottom:34px}.page-title.row{display:flex;justify-content:space-between;align-items:center}.eyebrow{color:#b47617;font-size:12px;font-weight:700;letter-spacing:2px;margin-bottom:9px}h1,h2{font-family:Fraunces,serif;margin:0;line-height:1.05}h2{font-size:43px}h3{margin:0 0 6px}.page-title p{color:#718079;margin:10px 0 0}.tool-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:25px}.tool-card{background:#fff;border:1px solid #dedbcf;border-radius:8px;overflow:hidden;box-shadow:0 3px 12px #244e4010}.photo{height:210px;background:#d9e2d8;position:relative;display:grid;place-items:center}.photo img{width:100%;height:100%;object-fit:cover}.photo>span{font-size:64px}.photo b{position:absolute;top:14px;left:14px;font-size:11px;padding:6px 10px;border-radius:20px}.available{background:#e0f3e7;color:#217148}.unavailable{background:#eee9de;color:#6d675c}.card-body{padding:20px}.card-body>p,.list-row p,.loan-row p{font-size:13px;color:#73817c;margin:0}.owner{font-size:12px;margin:15px 0;color:#7c8782}.terms{border-top:1px solid #e6e2d8;padding-top:14px;display:flex;gap:35px}.terms span{font-weight:700}.terms small,.loan-row small,.push small{display:block;font-size:9px;letter-spacing:1px;color:#849089;margin-bottom:3px}.borrow{display:flex;gap:8px;margin-top:15px}.borrow input{width:58px}.borrow button,.loan-row button,.membership button{flex:1;background:#173f35;color:white;border:0;border-radius:4px;padding:10px;font-weight:700}.primary{border:0;border-radius:4px;background:#e4a533;color:#173f35;padding:15px 22px;font-weight:700}.primary span{margin-left:25px}.compact{padding:11px 17px}.notice{position:fixed;right:20px;top:90px;z-index:20;background:#173f35;color:white;border:0;border-radius:5px;padding:13px 18px;max-width:420px}.panel{background:#fff;border:1px solid #dedbcf;border-radius:7px;padding:20px;margin-bottom:32px}.form{display:grid;grid-template-columns:1fr 1fr;gap:18px}.form label{font-size:12px;font-weight:700}.form .wide{grid-column:1/-1}.form input,.form textarea,.membership input{display:block;width:100%;margin-top:6px;border:1px solid #cbc9c0;border-radius:4px;padding:11px;background:#fffdf9}.form textarea{height:72px;resize:vertical}.list-row{display:flex;align-items:center;gap:18px;padding:17px 0;border-bottom:1px solid #dfddd5}.thumb{width:65px;height:65px;background:#dde5dc;border-radius:5px;display:grid;place-items:center;font-size:24px;overflow:hidden}.thumb img{width:100%;height:100%;object-fit:cover}.push{margin-left:auto;text-align:right}.push>*{display:block}.section-label{margin:25px 0 12px}.loan-row{display:grid;grid-template-columns:1fr 130px 220px;gap:20px;align-items:center;padding:17px 0;border-bottom:1px solid #e3e0d6}.loan-row:last-child,.list-row:last-child{border:0}.status{font-size:12px;padding:6px 9px;border-radius:20px;background:#edeae1;text-align:center}.s1{background:#fff0ce;color:#8b6217}.s2{background:#dcece3;color:#286549}.s4{background:#e2eee6;color:#26704c}.actions{display:flex;gap:7px}.actions .ghost{background:white;color:#173f35;border:1px solid #aeb8b2}.empty{text-align:center;color:#75847d;padding:40px}.empty span{font-size:30px}.membership{max-width:560px;margin:60px auto;text-align:center}.membership p{color:#6f7d77}.membership button{margin-top:12px}.landing{height:100vh;min-height:650px;display:grid;grid-template-columns:1.05fr .95fr;background:#173f35;color:#fff;overflow:hidden}.landing-copy{padding:14vh 4vw 5vh max(7vw,30px);position:relative;z-index:2}.landing h1{font-size:clamp(55px,6.5vw,96px);letter-spacing:-3px}.landing h1 em{color:#e3ad45}.landing-copy>p{font-size:18px;line-height:1.7;color:#ccd8d2;max-width:520px;margin:30px 0}.landing .primary{font-size:16px}.landing small{display:block;margin-top:28px;color:#8eaaa0}.landing .error{color:#ffcda9;font-size:14px;margin:16px 0}.hero-art{position:relative;background:#dce6d6;overflow:hidden}.sun{position:absolute;width:260px;height:260px;border-radius:50%;background:#e8b24d;right:-50px;top:-40px}.ground{position:absolute;bottom:-20%;left:-15%;width:140%;height:55%;background:#9bad87;border-radius:50% 50% 0 0}.shed{position:absolute;z-index:2;left:17%;bottom:20%;width:65%;height:45%;background:#c96f46;box-shadow:15px 18px 0 #173f3530}.roof{position:absolute;left:-12%;top:-35%;width:124%;height:40%;background:#254b3f;clip-path:polygon(50% 0,100% 100%,0 100%)}.door{position:absolute;left:30%;bottom:0;width:40%;height:75%;background:#eed9ac;color:#173f35;display:grid;place-items:center;text-align:center;font-family:Fraunces;font-size:28px;border:8px solid #a95738}.door b{font-size:17px;margin-top:-55px}@media(max-width:850px){.tool-grid{grid-template-columns:repeat(2,1fr)}.landing{grid-template-columns:1fr}.hero-art{display:none}.loan-row{grid-template-columns:1fr 110px}.actions{grid-column:1/-1}nav{gap:10px}}@media(max-width:580px){header{padding:0 12px}.wallet{display:none}nav{margin-left:auto}.brand{font-size:0}.brand span{font-size:20px}.tool-grid{grid-template-columns:1fr}.form{grid-template-columns:1fr}.form .wide{grid-column:auto}h2{font-size:34px}.page-title.row{align-items:flex-end}.landing-copy{padding-top:12vh}.landing h1{font-size:52px}.loan-row{grid-template-columns:1fr}.status{width:max-content}.actions{grid-column:auto}}
+diff --git a/test/Toolshed.t.sol b/test/Toolshed.t.sol
+new file mode 100644
+index 0000000..a24ffb9
+--- /dev/null
++++ b/test/Toolshed.t.sol
+@@ -0,0 +1,98 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.20;
++
++import "../contracts/Toolshed.sol";
++import "../contracts/MockUSDC.sol";
++
++interface Vm {
++    function prank(address) external;
++    function warp(uint256) external;
++}
++
++contract ToolshedTest {
++    Vm constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
++    Toolshed shed;
++    MockUSDC usdc;
++    address owner = address(0xA11CE);
++    address borrower = address(0xB0B);
++
++    function setUp() public {
++        usdc = new MockUSDC();
++        shed = new Toolshed(address(usdc));
++        shed.setMember(owner, true);
++        shed.setMember(borrower, true);
++        usdc.mint(borrower, 500e6);
++        vm.prank(owner);
++        shed.listTool("Drill", "ipfs://photo", "Good", 100e6, 5e6);
++        vm.prank(borrower);
++        usdc.approve(address(shed), 500e6);
++    }
++
++    function testOnTimeLoanReturnsFullDepositAndBuildsReputation() public {
++        vm.prank(borrower);
++        uint256 loan = shed.requestLoan(1, 3);
++        vm.prank(owner);
++        shed.acceptLoan(loan);
++        vm.warp(block.timestamp + 2 days);
++        vm.prank(borrower);
++        shed.markReturned(loan);
++        vm.prank(owner);
++        shed.confirmReturned(loan);
++        require(usdc.balanceOf(borrower) == 500e6, "full refund");
++        (uint32 completed, uint32 late) = shed.reputation(borrower);
++        require(completed == 1 && late == 0, "reputation");
++        (,,,,,,, bool available,) = shed.tools(1);
++        require(available, "available again");
++    }
++
++    function testLateFeeRoundsUpAndPaysOwner() public {
++        vm.prank(borrower);
++        uint256 loan = shed.requestLoan(1, 2);
++        vm.prank(owner);
++        shed.acceptLoan(loan);
++        vm.warp(block.timestamp + 3 days + 1);
++        vm.prank(borrower);
++        shed.markReturned(loan);
++        vm.prank(owner);
++        shed.confirmReturned(loan);
++        require(usdc.balanceOf(owner) == 10e6, "two late days paid");
++        require(usdc.balanceOf(borrower) == 490e6, "fee deducted");
++        (uint32 completed, uint32 late) = shed.reputation(borrower);
++        require(completed == 1 && late == 1, "late recorded");
++    }
++
++    function testRejectedRequestRefundsDeposit() public {
++        vm.prank(borrower);
++        uint256 loan = shed.requestLoan(1, 2);
++        vm.prank(owner);
++        shed.rejectLoan(loan);
++        require(usdc.balanceOf(borrower) == 500e6, "refunded");
++    }
++
++    function testBorrowerCanFinalizeAfterOwnerTimeout() public {
++        vm.prank(borrower);
++        uint256 loan = shed.requestLoan(1, 1);
++        vm.prank(owner);
++        shed.acceptLoan(loan);
++        vm.prank(borrower);
++        shed.markReturned(loan);
++        vm.warp(block.timestamp + 3 days);
++        vm.prank(borrower);
++        shed.finalizeUnconfirmedReturn(loan);
++        require(usdc.balanceOf(borrower) == 500e6, "not held hostage");
++    }
++
++    function testLateFeeCannotExceedDeposit() public {
++        vm.prank(borrower);
++        uint256 loan = shed.requestLoan(1, 1);
++        vm.prank(owner);
++        shed.acceptLoan(loan);
++        vm.warp(block.timestamp + 40 days);
++        vm.prank(borrower);
++        shed.markReturned(loan);
++        vm.prank(owner);
++        shed.confirmReturned(loan);
++        require(usdc.balanceOf(owner) == 100e6, "fee capped at deposit");
++        require(usdc.balanceOf(borrower) == 400e6, "no overcharge");
++    }
++}
+diff --git a/vite.config.js b/vite.config.js
+new file mode 100644
+index 0000000..9175e67
+--- /dev/null
++++ b/vite.config.js
+@@ -0,0 +1,4 @@
++import { defineConfig } from "vite";
++import react from "@vitejs/plugin-react";
++
++export default defineConfig({ plugins: [react()] });
+
+# Untracked files and status
+ A .env.example
+ A .gitignore
+ A README.md
+ A contracts/MockUSDC.sol
+ A contracts/Toolshed.sol
+ A foundry.toml
+ A index.html
+ A package-lock.json
+ A package.json
+ A script/Deploy.s.sol
+ A src/contracts.js
+ A src/main.jsx
+ A src/styles.css
+ A test/Toolshed.t.sol
+ A vite.config.js

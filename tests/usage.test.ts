@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildUsage, parseUsageRecord } from "../lib/usage.js";
+import { buildUsage, parseTranscriptStats, parseUsageRecord } from "../lib/usage.js";
 
 // One line of claude's stream-json, trimmed to the fields the harness reads. The real
 // event carries a dozen more; anything not read here is the transcript's business. The
@@ -145,4 +145,57 @@ test("a usage block missing a field reads as absent, not as zero", () => {
     output_tokens: null,
     total_tokens: null,
   });
+});
+
+// The two shapes a committed transcript records its run in. 147 of the 970 in artifacts/
+// predate the "## run stats" footer and carry the raw result event under a "## result"
+// heading instead — same numbers, different labels — and a cost table that could only read
+// the footer reported them as unmeasured while their cost sat in the file.
+const footerTranscript = [
+  "## assistant\n\nwriting the answer",
+  "## run stats\n- turns: 8\n- duration: 418s\n- cost: $1.371153\n- tokens in/out: 250762/31748\n- of which cache write/read: 47453/203297",
+].join("\n\n");
+
+// Shape taken from artifacts/l2s-quiz-001/2026-08-24T201805Z-claude-with-skill-1.
+const resultBlockTranscript = [
+  "## assistant\n\nwriting the answer",
+  `## result\nsubtype: success\nduration_ms: 524679\nnum_turns: 24\ntotal_cost_usd: 1.675763\nusage: ${JSON.stringify({
+    input_tokens: 46,
+    cache_creation_input_tokens: 48_009,
+    cache_read_input_tokens: 871_832,
+    output_tokens: 30_332,
+  })}`,
+  "### final message\n\nWritten to answer.md. duration_ms: 999999 appears here too.",
+].join("\n\n");
+
+test("the run stats footer is read when a transcript has one", () => {
+  const stats = parseTranscriptStats(footerTranscript);
+
+  assert.equal(stats?.turns, 8);
+  assert.equal(stats?.duration_s, 418);
+  assert.equal(stats?.cost_usd, 1.371153);
+  assert.equal(stats?.total_tokens, 250_762 + 31_748);
+});
+
+test("a pre-footer transcript is read from its result block", () => {
+  const stats = parseTranscriptStats(resultBlockTranscript);
+
+  assert.equal(stats?.turns, 24);
+  // duration_ms, in seconds — the unit the footer prints and the table compares in.
+  assert.equal(stats?.duration_s, 525);
+  assert.equal(stats?.cost_usd, 1.675763);
+  // The three-way input sum plus output, never input_tokens alone.
+  assert.equal(stats?.total_tokens, 46 + 48_009 + 871_832 + 30_332);
+});
+
+test("a transcript with neither shape reports nothing rather than zeros", () => {
+  assert.equal(parseTranscriptStats("## assistant\n\nno stats here"), null);
+});
+
+// A malformed usage line loses the token fields and keeps the rest: absent, not zero.
+test("an unparseable usage line leaves tokens absent", () => {
+  const stats = parseTranscriptStats("## result\nduration_ms: 1000\nusage: {broken");
+
+  assert.equal(stats?.duration_s, 1);
+  assert.equal(stats?.total_tokens, null);
 });

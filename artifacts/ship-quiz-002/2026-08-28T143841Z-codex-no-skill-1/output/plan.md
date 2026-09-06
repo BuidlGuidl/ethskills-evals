@@ -1,0 +1,113 @@
+# Translator Marketplace Architecture
+
+## Design goal
+
+Use the chain as a durable, independently verifiable record of job settlement and credential ownership, not as the marketplace database or search engine. Keep biographies, samples, private feedback, availability, response metrics, and ranking logic off-chain so the product can change without contract migrations.
+
+The system has four main parts:
+
+1. **Marketplace contracts** hold USDC escrow and emit canonical job and credential facts.
+2. **Content storage and the application database** hold profiles, encrypted/private data, and operational state.
+3. **An indexer and ranking service** turn contract events and application data into search documents and ranked results.
+4. **A proof view/export** lets a translator demonstrate their on-chain job history and credential attestations without relying on the search API.
+
+Wallet addresses are the durable identity anchor. A translator may link additional wallets by signing an EIP-712 linkage statement; the application can group linked wallets for display, while every underlying fact remains attributable to the wallet recorded by its contract.
+
+## What is stored in contracts
+
+### Job escrow contract
+
+Each job receives an immutable ID and records only the data needed to control and verify settlement:
+
+- client address and translator address;
+- USDC token address, funded amount, and amount released or refunded;
+- job state: funded, submitted, accepted, cancelled, or disputed/resolved;
+- timestamps or block numbers for important transitions;
+- optional hashes of the job terms and accepted deliverable (`bytes32 termsHash`, `bytes32 deliverableHash`), with no plaintext translation;
+- dispute outcome, if any, expressed as a small stable enum or payout amounts.
+
+The contract transfers USDC and emits events such as `JobFunded`, `TranslatorAssigned`, `WorkSubmitted`, `JobAccepted`, and `DisputeResolved`. The accepted event binds the job ID, translator, client, payout, and relevant content hashes. These events are the canonical source for completed-job claims.
+
+Do not put titles, source text, translations, biographies, samples, messages, subjective reviews, response-time calculations, or ranking scores on-chain. They are private, large, mutable, or product-specific. A content hash proves that a later-presented document is the same one committed at settlement without publishing that document.
+
+For efficient wallet-native discovery, accepted jobs can also be recorded in a minimal append-only mapping such as `completedJobIds[translator]`, or exposed through indexed events alone. Events are sufficient for independent verification and cheaper; a small per-translator counter can support simple on-chain totals. The contract must never store a precomputed search rank.
+
+### Credential attestation contract
+
+Credentials use an attestation registry rather than fields embedded in a translator profile. Each attestation contains:
+
+- a stable schema/type ID, such as language proficiency or certification;
+- subject wallet (the translator), issuer wallet, issuance time, and optional expiry;
+- a hash or URI commitment to the evidence;
+- revocation status or a revocation event;
+- optional compact, schema-defined claims such as language code and level.
+
+Only approved issuers may issue marketplace-trusted credentials, but any verifier can inspect who issued a claim and decide whether to trust that issuer. The registry is append-only apart from explicit revocation. New credential types are introduced through new schema IDs, not contract migrations. If an established attestation protocol is used, the application stores its attestation UID and treats that protocol as the canonical registry.
+
+### Contract evolution and safety
+
+Contract interfaces should be narrow and stable. Escrow and attestation schemas are versioned; new deployments can coexist with old ones, and the indexer reads all recognized versions. Administrative controls may update operational allowlists or pause escrow, but cannot rewrite settlement history or silently alter credential claims. USDC transfers use safe-transfer handling, checks-effects-interactions, reentrancy protection, and explicit authorization for acceptance, cancellation, and dispute resolution.
+
+## What remains off-chain
+
+The application database stores:
+
+- biographies, display names, service languages, rates, availability, and profile preferences;
+- work samples and their access policy; blobs may live in object storage or content-addressed storage, with references in the database;
+- job briefs, source material, deliverables, messages, and other confidential client content;
+- raw client feedback, visible only to authorized marketplace services and the relevant translator where policy permits;
+- response events, derived response-time statistics, moderation state, fraud/risk flags, and search eligibility;
+- wallet-link records and signed linkage statements;
+- denormalized blockchain facts indexed from finalized contract events.
+
+Private feedback is encrypted at rest and never placed in public storage or in transaction calldata. Search receives only authorized aggregates or features derived from it, not review text or client identity. Access checks are enforced at the source service, rather than relying on the UI to hide data.
+
+## What the search screen reads
+
+The browser calls a search API; it does not scan contracts during normal search. The API queries a search index containing one document per translator with:
+
+- public profile fields and sample previews;
+- supported language pairs and credential summaries;
+- indexed/derived counts for completed jobs and disputes;
+- response-time features;
+- privacy-safe feedback aggregates;
+- availability and marketplace eligibility;
+- the current ranking score or the features required to compute it;
+- provenance fields: source block, index timestamp, ranking-model version, and relevant attestation/job IDs.
+
+The response returns paginated translator cards, feature explanations allowed by product policy, and freshness metadata. Profile detail can then load richer public data from the profile service. Private feedback is never returned to clients unless an explicit policy grants access; normally only a coarse aggregate contributes to ranking.
+
+An event indexer consumes finalized logs from every supported escrow and attestation contract, handles chain reorganizations by block hash/checkpoints, and materializes canonical job and credential tables. It joins those tables with application data to build search documents. Idempotent event keys `(chainId, transactionHash, logIndex)` prevent duplicate ingestion. A reconciliation worker periodically compares indexed state with chain logs.
+
+## How ranking is produced
+
+Ranking is an off-chain, versioned function. A feature pipeline creates normalized features such as:
+
+- accepted/completed job count, with optional recency and language-pair relevance;
+- dispute rate and outcome, using minimum-sample safeguards;
+- median or percentile response time over a documented window;
+- valid, unexpired credentials weighted by issuer trust and query relevance;
+- a privacy-safe feedback score with Bayesian smoothing so a few ratings do not dominate;
+- text/query relevance, availability, and any policy-based eligibility gates.
+
+The ranking service applies a configuration such as weights, transforms, caps, and tie-breakers. Every deployed configuration has an immutable `rankingVersion` and effective timestamp stored in a model/config registry and deployment history. Weekly tuning publishes a new configuration and rebuilds or re-scores the index; it does not call or migrate a contract.
+
+For reproducibility and diagnosis, the service logs the ranking version, feature snapshot/version, query context, and resulting score for each served result, subject to retention and privacy rules. The UI may show human-readable reasons such as “verified credential” or “12 accepted jobs,” but should not expose private feedback or security-sensitive anti-abuse features. The ranking output is a product recommendation, not an on-chain truth claim.
+
+## Independent verification when search is unavailable
+
+A translator's wallet is sufficient to discover and verify durable public claims:
+
+1. Read accepted-job events from the known escrow contract addresses, filtered by translator address. For each claim, verify the transaction receipt/log, contract address and version, job state, translator address, payout, and finality. If mappings/counters are provided, they are convenient cross-checks, not a substitute for event provenance.
+2. Read attestation events or registry records where the translator is the subject. Verify the issuer signature/transaction, schema ID, approved/trusted issuer status for the desired context, issuance and expiry, and absence of revocation.
+3. If evidence or a deliverable is voluntarily disclosed, hash it using the specified canonical encoding and compare it with the on-chain commitment.
+
+The product should provide a client-side “verification bundle” generator. It exports chain ID, wallet, contract addresses and versions, job IDs, attestation UIDs, transaction hashes/log indexes, block numbers, schemas, content hashes, and optional disclosed evidence. A standalone verifier can validate this bundle against any compatible RPC endpoint. The bundle contains references and proofs, not an assertion signed only by the marketplace.
+
+This still works if the search API and application database are unavailable because the decisive records are in contract state and logs. What cannot be independently recovered is deliberately clear: biography text, private feedback, work samples that were not disclosed, response-time metrics, and historical search rank. Those are product data, not identity proofs.
+
+## Why this supports iteration without weakening verification
+
+The verifiable layer records stable facts: who was assigned, whether and how a funded job settled, which wallet a credential names, who issued it, and whether it was revoked. The product layer decides how those facts affect discovery today. Search can add features, change weights, alter smoothing, introduce new credential schemas, or redesign profiles without rewriting historical contracts.
+
+Versioning at each boundary keeps the two layers auditable: contract addresses and schema versions identify fact formats; indexed source blocks identify data freshness; ranking versions identify the formula used. Thus a translator can prove ownership of completed jobs and attestations, while neither translators nor clients mistake a mutable marketplace rank or private review aggregate for an immutable on-chain claim.

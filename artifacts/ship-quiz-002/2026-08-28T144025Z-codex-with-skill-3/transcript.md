@@ -1,0 +1,960 @@
+OpenAI Codex v0.150.1
+--------
+workdir: /ssd/workspace/buidlguidl/ethskills-evals-test/artifacts/ship-quiz-002/2026-08-28T144025Z-codex-with-skill-3/workspace
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR] (network access enabled)
+reasoning effort: none
+reasoning summaries: none
+session id: 01a048d0-9bc3-7a52-9a8c-7687d98988f3
+--------
+user
+We're building a freelance marketplace for independent translators. Clients
+fund jobs in USDC and release payment when a translation is accepted.
+Translators have biographies, work samples, language credentials, and private
+client feedback. Search results rank them using completed jobs, disputes,
+response time, credentials, and feedback. We expect to tune that formula
+weekly, but a translator must be able to prove which completed jobs and
+credential attestations belong to them even if our search API is unavailable.
+
+Write the architecture to plan.md in this directory. Explain what is stored
+in contracts, what the search screen reads, how the ranking is produced, and
+how the design provides useful verification without making product iteration
+require contract migrations.
+
+2026-08-28T14:40:26.289199Z ERROR codex_core::shell_snapshot: Shell snapshot validation failed: Snapshot command exited with status exit status: 2: /home/damu/.codex/shell_snapshots/01a048d0-9bc3-7a52-9a8c-7687d98988f3.tmp-1787928026059297795: line 2547: syntax error near unexpected token `('
+
+codex
+I’m using the ship skill because this request hinges on choosing the onchain boundary and minimal contract surface before implementation. I’ll inspect its guidance, then write the architecture directly to `plan.md`.
+exec
+/bin/bash -lc "sed -n '1,240p' .agents/skills/ship/SKILL.md" in /ssd/workspace/buidlguidl/ethskills-evals-test/artifacts/ship-quiz-002/2026-08-28T144025Z-codex-with-skill-3/workspace
+ succeeded in 3ms:
+codex
+The key boundary is clear: escrow and portable proof facts belong onchain; biographies, private feedback, search indexes, and the weekly ranking formula stay offchain. I’m checking the workspace for an existing plan so I can preserve anything already there.
+exec
+/bin/bash -lc "rg --files -g 'plan.md' -g 'README*' -g 'AGENTS.md' ." in /ssd/workspace/buidlguidl/ethskills-evals-test/artifacts/ship-quiz-002/2026-08-28T144025Z-codex-with-skill-3/workspace
+ exited 1 in 0ms:
+stty: 'standard input': Inappropriate ioctl for device
+
+apply patch
+patch: completed
+/ssd/workspace/buidlguidl/ethskills-evals-test/artifacts/ship-quiz-002/2026-08-28T144025Z-codex-with-skill-3/workspace/plan.md
+diff --git a/plan.md b/plan.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..9ef1f2ec2729249ec1dc9b27c4fef1b7fc1a8b0e
+--- /dev/null
++++ b/plan.md
+@@ -0,0 +1,214 @@
++# Translator Marketplace Architecture
++
++## Product boundary
++
++Launch on **Base** and settle jobs in native USDC. Base is a practical first
++chain because the product needs inexpensive per-job escrow transactions and has
++an established USDC and wallet ecosystem. Deployment must use the verified
++USDC and attestation-registry addresses from their official documentation; no
++address is inferred or copied from an unofficial list.
++
++The design deliberately separates durable facts from product views:
++
++- Contracts hold funds and publish facts that a translator may need to prove
++  without the marketplace.
++- The application database holds mutable, private, large, or presentation-heavy
++  data.
++- An indexer turns contract events and credential attestations into queryable
++  records.
++- The search service computes rankings from those records. No rank or reputation
++  score is stored in a contract.
++
++This gives users independent verification of payment history and credentials
++while allowing the marketplace to change search, profiles, and moderation
++without migrating contracts.
++
++## Onchain components
++
++### 1. `JobEscrow` (one custom contract)
++
++Each job has a stable `jobId`, client address, translator address, USDC amount,
++deadlines, and a small status enum. The contract pulls the exact USDC amount
++from the client when the job is funded. It supports acceptance and payout,
++cancellation/refund before work begins, timeout paths, and dispute resolution.
++
++The contract stores only fields needed to enforce settlement. The job brief,
++messages, translation files, biography, and feedback never enter contract
++storage. A job may include a `termsHash` (for example, a hash of a canonical
++JSON document containing deliverables and deadlines) so either party can prove
++which offchain terms governed that escrow without publishing the documents.
++
++On successful settlement it emits a canonical event such as:
++
++```solidity
++JobCompleted(
++  bytes32 indexed jobId,
++  address indexed client,
++  address indexed translator,
++  uint256 amount,
++  bytes32 termsHash
++)
++```
++
++The translator address in this event is the portable proof of who completed the
++job. Amount and client are facts, not a marketplace-defined reputation score.
++Dispute opening and resolution are also emitted so an independent observer can
++derive dispute history. The contract may keep minimal counters only if needed
++for settlement; browse-oriented counters are derived by the indexer.
++
++The first release uses a platform-configured resolver for contested jobs,
++controlled by a multisig. That is an explicit adjudication trust assumption,
++not presented as trustless arbitration. Resolutions are public events. A later
++resolver can be introduced behind an intentionally narrow resolver interface;
++existing escrows keep the resolver selected when they were created.
++
++### 2. Credential attestations (existing protocol)
++
++Use an established attestation registry on Base rather than a second custom
++credential contract. A credential issuer attests to the translator's wallet
++under a versioned schema containing the language pair, credential type, issuer
++reference or evidence hash, issuance time, expiry, and revocation capability.
++Only allowlisted issuers count in marketplace ranking, but any observer can
++still inspect the raw attestation, issuer, subject, expiry, and revocation state.
++
++Issuer allowlists and scoring weights are marketplace policy kept offchain.
++Changing which credentials influence search therefore does not alter the
++attestation or require a contract migration. Credential issuers sign or submit
++attestations; the marketplace does not claim that the registry proves the
++truthfulness of an issuer, only who attested to what and whether it remains
++valid.
++
++### Identity and proof semantics
++
++The wallet is the durable identity anchor. A translator proves control by
++signing a fresh challenge, then points a verifier to `JobCompleted` events and
++credential attestations whose subject is that wallet. This proves that those
++onchain records belong to the wallet controller; it does not prove a legal
++identity unless a credential issuer separately performed that check.
++
++Account rotation is handled with a signed, timestamped wallet-link record. Both
++old and new wallets sign it, and the application indexes both identities. For
++the strongest independent portability, that link can be published as an
++attestation. Historical events are never rewritten.
++
++## Offchain data
++
++The primary application database stores:
++
++- biographies, availability, rates, profile settings, and language claims;
++- work-sample metadata and object-storage URIs (with hashes when authorship or
++  integrity needs to be checked);
++- job briefs, files, delivery versions, messages, and the canonical JSON whose
++  hash may be committed in the escrow;
++- private client feedback, moderation state, abuse signals, and access policy;
++- indexed job/attestation facts, response-time measurements, and precomputed
++  search features;
++- ranking configuration versions and experiment assignments.
++
++Translation files and samples live in private object storage with short-lived
++access URLs. Sensitive content and private feedback are neither emitted in
++events nor placed in public content-addressed storage. Database encryption,
++access logging, retention, deletion, and aggregate privacy thresholds protect
++private feedback. Only authorized marketplace services read raw feedback.
++
++## What the search screen reads
++
++The screen calls a search API, not the blockchain. The API reads a search index
++whose document for each translator combines:
++
++1. profile fields and approved work-sample metadata from the application DB;
++2. completed-job and dispute features derived from `JobEscrow` events;
++3. current, non-revoked credential features derived from the attestation
++   registry;
++4. measured response-time features from marketplace messages/offers; and
++5. privacy-safe feedback aggregates computed from private feedback.
++
++The response includes display data, a final score or ordering, and reason codes
++such as “12 completed jobs” or “verified Spanish credential.” It must not return
++raw private feedback, hidden moderation features, or weights. Indexed onchain
++data carries block number/hash and transaction/attestation identifiers so the
++UI can link proof-bearing claims to a chain explorer or an independent verifier.
++
++The indexer waits for a configured confirmation depth, is idempotent, and can
++replay from genesis/deployment block. It handles chain reorganizations by
++rolling back orphaned events. Search may be stale during an indexing outage,
++but escrow settlement and independent verification remain available.
++
++## Ranking production
++
++Ranking is a versioned offchain pipeline. A feature job produces normalized
++features such as completed-job count and value bands, dispute rate with a
++minimum-sample/Bayesian adjustment, response-time percentiles, accepted
++credential categories, and privacy-thresholded feedback aggregates. A ranking
++service applies the active configuration, filters by query constraints, and
++sorts candidates. Eligibility rules, weights, caps, decay, cold-start handling,
++and experiments are all configuration or application code.
++
++Every search response is logged with `rankingVersion`, feature snapshot time,
++and experiment ID. This makes weekly tuning reproducible and auditable without
++pretending that a mutable commercial ranking is a permanent consensus fact.
++Before promotion, a new version is evaluated for relevance, gaming resistance,
++small-sample behavior, and unintended language/region bias; rollout uses a
++canary and has an immediate configuration rollback.
++
++Private feedback affects ranking only through authorized aggregate features.
++The product should disclose that it is an input while withholding individual
++comments and identities. Disputes are not treated as guilt by default: the
++feature distinguishes opened, translator-won, client-won, and unresolved cases.
++
++## State transitions and liveness
++
++| Transition | Caller | Why they pay gas | If nobody calls |
++| --- | --- | --- | --- |
++| Fund/create job | Client | Starts the commissioned work and escrows USDC | No job exists and no funds move |
++| Accept/decline assignment | Translator | Gains the paid engagement or releases it | Client can refund after the acceptance deadline |
++| Submit delivery commitment | Translator | Establishes that delivery occurred under the agreed job | Client can use the missed-delivery timeout |
++| Accept delivery/release | Client | Receives/finalizes the work | Translator can claim after the review window if no dispute was opened |
++| Claim timed-out payout | Translator | Receives earned USDC | Funds remain safely claimable in escrow |
++| Open dispute | Client or translator | Protects their economic interest before a deadline | Normal acceptance/timeout paths remain available |
++| Resolve dispute | Selected resolver multisig | Performs the paid platform adjudication duty | Funds remain locked; operational alerts and an escalation SLA apply |
++| Claim cancellation/timeout refund | Client | Recovers funds when the engagement did not start or delivery was missed | Funds remain safely refundable in escrow |
++
++Use pull-based claims where practical and checks-effects-interactions plus a
++reentrancy guard for token transfers. USDC transfers use a safe ERC-20 wrapper;
++fee-on-transfer or arbitrary token behavior is out of scope because the token is
++fixed. Emergency pause may stop creation of new jobs but must not block already
++earned withdrawals or valid refunds.
++
++## Verification when marketplace services are down
++
++A small static verification page (and documented RPC procedure) accepts a
++wallet address and reads Base directly through any RPC provider. It enumerates
++`JobCompleted` events from the known escrow contract and active credential
++attestations from the registry, verifies contract/schema identifiers, checks
++credential revocation and expiry, and asks the translator to sign a nonce. This
++page can be hosted independently or run locally because it needs neither the
++search API nor the private database.
++
++Consequently, the independently verifiable claims are deliberately narrow:
++which wallet completed which escrowed jobs, the settlement facts emitted for
++those jobs, and which issuers made active credential attestations about that
++wallet. Biography text, sample quality, response time, private feedback, and
++search rank remain marketplace claims and cannot be reconstructed fully during
++an outage. This is useful verification without leaking private data or freezing
++the product's ranking policy into consensus.
++
++## Build and release checklist
++
++- Unit and invariant tests cover escrow conservation, authorization, every
++  timeout boundary, double claims, dispute outcomes, pauses, and malicious token
++  callbacks; fork tests exercise the official Base USDC integration.
++- Indexer tests replay events, duplicate deliveries, and simulated reorgs.
++- Attestation tests cover wrong schemas, unapproved issuers, expiry, revocation,
++  and wallet linking.
++- Deploy `JobEscrow` once, verify its source, set the production resolver/admin
++  to the intended multisig, and record the deployment block, chain ID, USDC
++  address, registry address, schema IDs, and bytecode hash in the repository.
++- The release runbook must contain exact deployment/verification commands and
++  required environment variables once the contract toolchain is selected; it
++  must never embed deployer keys.
++- Run an end-to-end smoke test: fund a minimal-value job, accept it, submit,
++  release and claim USDC, observe the indexed completion, issue/revoke a test
++  credential, and verify both through the independent page.
++- Obtain an independent security review before mainnet funding is enabled.
++
+
+diff --git a/plan.md b/plan.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..9ef1f2ec2729249ec1dc9b27c4fef1b7fc1a8b0e
+--- /dev/null
++++ b/plan.md
+@@ -0,0 +1,214 @@
++# Translator Marketplace Architecture
++
++## Product boundary
++
++Launch on **Base** and settle jobs in native USDC. Base is a practical first
++chain because the product needs inexpensive per-job escrow transactions and has
++an established USDC and wallet ecosystem. Deployment must use the verified
++USDC and attestation-registry addresses from their official documentation; no
++address is inferred or copied from an unofficial list.
++
++The design deliberately separates durable facts from product views:
++
++- Contracts hold funds and publish facts that a translator may need to prove
++  without the marketplace.
++- The application database holds mutable, private, large, or presentation-heavy
++  data.
++- An indexer turns contract events and credential attestations into queryable
++  records.
++- The search service computes rankings from those records. No rank or reputation
++  score is stored in a contract.
++
++This gives users independent verification of payment history and credentials
++while allowing the marketplace to change search, profiles, and moderation
++without migrating contracts.
++
++## Onchain components
++
++### 1. `JobEscrow` (one custom contract)
++
++Each job has a stable `jobId`, client address, translator address, USDC amount,
++deadlines, and a small status enum. The contract pulls the exact USDC amount
++from the client when the job is funded. It supports acceptance and payout,
++cancellation/refund before work begins, timeout paths, and dispute resolution.
++
++The contract stores only fields needed to enforce settlement. The job brief,
++messages, translation files, biography, and feedback never enter contract
++storage. A job may include a `termsHash` (for example, a hash of a canonical
++JSON document containing deliverables and deadlines) so either party can prove
++which offchain terms governed that escrow without publishing the documents.
++
++On successful settlement it emits a canonical event such as:
++
++```solidity
++JobCompleted(
++  bytes32 indexed jobId,
++  address indexed client,
++  address indexed translator,
++  uint256 amount,
++  bytes32 termsHash
++)
++```
++
++The translator address in this event is the portable proof of who completed the
++job. Amount and client are facts, not a marketplace-defined reputation score.
++Dispute opening and resolution are also emitted so an independent observer can
++derive dispute history. The contract may keep minimal counters only if needed
++for settlement; browse-oriented counters are derived by the indexer.
++
++The first release uses a platform-configured resolver for contested jobs,
++controlled by a multisig. That is an explicit adjudication trust assumption,
++not presented as trustless arbitration. Resolutions are public events. A later
++resolver can be introduced behind an intentionally narrow resolver interface;
++existing escrows keep the resolver selected when they were created.
++
++### 2. Credential attestations (existing protocol)
++
++Use an established attestation registry on Base rather than a second custom
++credential contract. A credential issuer attests to the translator's wallet
++under a versioned schema containing the language pair, credential type, issuer
++reference or evidence hash, issuance time, expiry, and revocation capability.
++Only allowlisted issuers count in marketplace ranking, but any observer can
++still inspect the raw attestation, issuer, subject, expiry, and revocation state.
++
++Issuer allowlists and scoring weights are marketplace policy kept offchain.
++Changing which credentials influence search therefore does not alter the
++attestation or require a contract migration. Credential issuers sign or submit
++attestations; the marketplace does not claim that the registry proves the
++truthfulness of an issuer, only who attested to what and whether it remains
++valid.
++
++### Identity and proof semantics
++
++The wallet is the durable identity anchor. A translator proves control by
++signing a fresh challenge, then points a verifier to `JobCompleted` events and
++credential attestations whose subject is that wallet. This proves that those
++onchain records belong to the wallet controller; it does not prove a legal
++identity unless a credential issuer separately performed that check.
++
++Account rotation is handled with a signed, timestamped wallet-link record. Both
++old and new wallets sign it, and the application indexes both identities. For
++the strongest independent portability, that link can be published as an
++attestation. Historical events are never rewritten.
++
++## Offchain data
++
++The primary application database stores:
++
++- biographies, availability, rates, profile settings, and language claims;
++- work-sample metadata and object-storage URIs (with hashes when authorship or
++  integrity needs to be checked);
++- job briefs, files, delivery versions, messages, and the canonical JSON whose
++  hash may be committed in the escrow;
++- private client feedback, moderation state, abuse signals, and access policy;
++- indexed job/attestation facts, response-time measurements, and precomputed
++  search features;
++- ranking configuration versions and experiment assignments.
++
++Translation files and samples live in private object storage with short-lived
++access URLs. Sensitive content and private feedback are neither emitted in
++events nor placed in public content-addressed storage. Database encryption,
++access logging, retention, deletion, and aggregate privacy thresholds protect
++private feedback. Only authorized marketplace services read raw feedback.
++
++## What the search screen reads
++
++The screen calls a search API, not the blockchain. The API reads a search index
++whose document for each translator combines:
++
++1. profile fields and approved work-sample metadata from the application DB;
++2. completed-job and dispute features derived from `JobEscrow` events;
++3. current, non-revoked credential features derived from the attestation
++   registry;
++4. measured response-time features from marketplace messages/offers; and
++5. privacy-safe feedback aggregates computed from private feedback.
++
++The response includes display data, a final score or ordering, and reason codes
++such as “12 completed jobs” or “verified Spanish credential.” It must not return
++raw private feedback, hidden moderation features, or weights. Indexed onchain
++data carries block number/hash and transaction/attestation identifiers so the
++UI can link proof-bearing claims to a chain explorer or an independent verifier.
++
++The indexer waits for a configured confirmation depth, is idempotent, and can
++replay from genesis/deployment block. It handles chain reorganizations by
++rolling back orphaned events. Search may be stale during an indexing outage,
++but escrow settlement and independent verification remain available.
++
++## Ranking production
++
++Ranking is a versioned offchain pipeline. A feature job produces normalized
++features such as completed-job count and value bands, dispute rate with a
++minimum-sample/Bayesian adjustment, response-time percentiles, accepted
++credential categories, and privacy-thresholded feedback aggregates. A ranking
++service applies the active configuration, filters by query constraints, and
++sorts candidates. Eligibility rules, weights, caps, decay, cold-start handling,
++and experiments are all configuration or application code.
++
++Every search response is logged with `rankingVersion`, feature snapshot time,
++and experiment ID. This makes weekly tuning reproducible and auditable without
++pretending that a mutable commercial ranking is a permanent consensus fact.
++Before promotion, a new version is evaluated for relevance, gaming resistance,
++small-sample behavior, and unintended language/region bias; rollout uses a
++canary and has an immediate configuration rollback.
++
++Private feedback affects ranking only through authorized aggregate features.
++The product should disclose that it is an input while withholding individual
++comments and identities. Disputes are not treated as guilt by default: the
++feature distinguishes opened, translator-won, client-won, and unresolved cases.
++
++## State transitions and liveness
++
++| Transition | Caller | Why they pay gas | If nobody calls |
++| --- | --- | --- | --- |
++| Fund/create job | Client | Starts the commissioned work and escrows USDC | No job exists and no funds move |
++| Accept/decline assignment | Translator | Gains the paid engagement or releases it | Client can refund after the acceptance deadline |
++| Submit delivery commitment | Translator | Establishes that delivery occurred under the agreed job | Client can use the missed-delivery timeout |
++| Accept delivery/release | Client | Receives/finalizes the work | Translator can claim after the review window if no dispute was opened |
++| Claim timed-out payout | Translator | Receives earned USDC | Funds remain safely claimable in escrow |
++| Open dispute | Client or translator | Protects their economic interest before a deadline | Normal acceptance/timeout paths remain available |
++| Resolve dispute | Selected resolver multisig | Performs the paid platform adjudication duty | Funds remain locked; operational alerts and an escalation SLA apply |
++| Claim cancellation/timeout refund | Client | Recovers funds when the engagement did not start or delivery was missed | Funds remain safely refundable in escrow |
++
++Use pull-based claims where practical and checks-effects-interactions plus a
++reentrancy guard for token transfers. USDC transfers use a safe ERC-20 wrapper;
++fee-on-transfer or arbitrary token behavior is out of scope because the token is
++fixed. Emergency pause may stop creation of new jobs but must not block already
++earned withdrawals or valid refunds.
++
++## Verification when marketplace services are down
++
++A small static verification page (and documented RPC procedure) accepts a
++wallet address and reads Base directly through any RPC provider. It enumerates
++`JobCompleted` events from the known escrow contract and active credential
++attestations from the registry, verifies contract/schema identifiers, checks
++credential revocation and expiry, and asks the translator to sign a nonce. This
++page can be hosted independently or run locally because it needs neither the
++search API nor the private database.
++
++Consequently, the independently verifiable claims are deliberately narrow:
++which wallet completed which escrowed jobs, the settlement facts emitted for
++those jobs, and which issuers made active credential attestations about that
++wallet. Biography text, sample quality, response time, private feedback, and
++search rank remain marketplace claims and cannot be reconstructed fully during
++an outage. This is useful verification without leaking private data or freezing
++the product's ranking policy into consensus.
++
++## Build and release checklist
++
++- Unit and invariant tests cover escrow conservation, authorization, every
++  timeout boundary, double claims, dispute outcomes, pauses, and malicious token
++  callbacks; fork tests exercise the official Base USDC integration.
++- Indexer tests replay events, duplicate deliveries, and simulated reorgs.
++- Attestation tests cover wrong schemas, unapproved issuers, expiry, revocation,
++  and wallet linking.
++- Deploy `JobEscrow` once, verify its source, set the production resolver/admin
++  to the intended multisig, and record the deployment block, chain ID, USDC
++  address, registry address, schema IDs, and bytecode hash in the repository.
++- The release runbook must contain exact deployment/verification commands and
++  required environment variables once the contract toolchain is selected; it
++  must never embed deployer keys.
++- Run an end-to-end smoke test: fund a minimal-value job, accept it, submit,
++  release and claim USDC, observe the indexed completion, issue/revoke a test
++  credential, and verify both through the independent page.
++- Obtain an independent security review before mainnet funding is enabled.
++
+
+codex
+`plan.md` now captures the full split, including the subtle privacy point: independent verification covers completed-job and credential facts, while private feedback remains an offchain input and is never exposed merely to make rankings portable. I’m doing a final consistency check on the written file.
+exec
+/bin/bash -lc "wc -l plan.md && git diff --check && git status --short && sed -n '1,32p' plan.md" in /ssd/workspace/buidlguidl/ethskills-evals-test/artifacts/ship-quiz-002/2026-08-28T144025Z-codex-with-skill-3/workspace
+ succeeded in 2ms:
+diff --git a/plan.md b/plan.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..9ef1f2ec2729249ec1dc9b27c4fef1b7fc1a8b0e
+--- /dev/null
++++ b/plan.md
+@@ -0,0 +1,214 @@
++# Translator Marketplace Architecture
++
++## Product boundary
++
++Launch on **Base** and settle jobs in native USDC. Base is a practical first
++chain because the product needs inexpensive per-job escrow transactions and has
++an established USDC and wallet ecosystem. Deployment must use the verified
++USDC and attestation-registry addresses from their official documentation; no
++address is inferred or copied from an unofficial list.
++
++The design deliberately separates durable facts from product views:
++
++- Contracts hold funds and publish facts that a translator may need to prove
++  without the marketplace.
++- The application database holds mutable, private, large, or presentation-heavy
++  data.
++- An indexer turns contract events and credential attestations into queryable
++  records.
++- The search service computes rankings from those records. No rank or reputation
++  score is stored in a contract.
++
++This gives users independent verification of payment history and credentials
++while allowing the marketplace to change search, profiles, and moderation
++without migrating contracts.
++
++## Onchain components
++
++### 1. `JobEscrow` (one custom contract)
++
++Each job has a stable `jobId`, client address, translator address, USDC amount,
++deadlines, and a small status enum. The contract pulls the exact USDC amount
++from the client when the job is funded. It supports acceptance and payout,
++cancellation/refund before work begins, timeout paths, and dispute resolution.
++
++The contract stores only fields needed to enforce settlement. The job brief,
++messages, translation files, biography, and feedback never enter contract
++storage. A job may include a `termsHash` (for example, a hash of a canonical
++JSON document containing deliverables and deadlines) so either party can prove
++which offchain terms governed that escrow without publishing the documents.
++
++On successful settlement it emits a canonical event such as:
++
++```solidity
++JobCompleted(
++  bytes32 indexed jobId,
++  address indexed client,
++  address indexed translator,
++  uint256 amount,
++  bytes32 termsHash
++)
++```
++
++The translator address in this event is the portable proof of who completed the
++job. Amount and client are facts, not a marketplace-defined reputation score.
++Dispute opening and resolution are also emitted so an independent observer can
++derive dispute history. The contract may keep minimal counters only if needed
++for settlement; browse-oriented counters are derived by the indexer.
++
++The first release uses a platform-configured resolver for contested jobs,
++controlled by a multisig. That is an explicit adjudication trust assumption,
++not presented as trustless arbitration. Resolutions are public events. A later
++resolver can be introduced behind an intentionally narrow resolver interface;
++existing escrows keep the resolver selected when they were created.
++
++### 2. Credential attestations (existing protocol)
++
++Use an established attestation registry on Base rather than a second custom
++credential contract. A credential issuer attests to the translator's wallet
++under a versioned schema containing the language pair, credential type, issuer
++reference or evidence hash, issuance time, expiry, and revocation capability.
++Only allowlisted issuers count in marketplace ranking, but any observer can
++still inspect the raw attestation, issuer, subject, expiry, and revocation state.
++
++Issuer allowlists and scoring weights are marketplace policy kept offchain.
++Changing which credentials influence search therefore does not alter the
++attestation or require a contract migration. Credential issuers sign or submit
++attestations; the marketplace does not claim that the registry proves the
++truthfulness of an issuer, only who attested to what and whether it remains
++valid.
++
++### Identity and proof semantics
++
++The wallet is the durable identity anchor. A translator proves control by
++signing a fresh challenge, then points a verifier to `JobCompleted` events and
++credential attestations whose subject is that wallet. This proves that those
++onchain records belong to the wallet controller; it does not prove a legal
++identity unless a credential issuer separately performed that check.
++
++Account rotation is handled with a signed, timestamped wallet-link record. Both
++old and new wallets sign it, and the application indexes both identities. For
++the strongest independent portability, that link can be published as an
++attestation. Historical events are never rewritten.
++
++## Offchain data
++
++The primary application database stores:
++
++- biographies, availability, rates, profile settings, and language claims;
++- work-sample metadata and object-storage URIs (with hashes when authorship or
++  integrity needs to be checked);
++- job briefs, files, delivery versions, messages, and the canonical JSON whose
++  hash may be committed in the escrow;
++- private client feedback, moderation state, abuse signals, and access policy;
++- indexed job/attestation facts, response-time measurements, and precomputed
++  search features;
++- ranking configuration versions and experiment assignments.
++
++Translation files and samples live in private object storage with short-lived
++access URLs. Sensitive content and private feedback are neither emitted in
++events nor placed in public content-addressed storage. Database encryption,
++access logging, retention, deletion, and aggregate privacy thresholds protect
++private feedback. Only authorized marketplace services read raw feedback.
++
++## What the search screen reads
++
++The screen calls a search API, not the blockchain. The API reads a search index
++whose document for each translator combines:
++
++1. profile fields and approved work-sample metadata from the application DB;
++2. completed-job and dispute features derived from `JobEscrow` events;
++3. current, non-revoked credential features derived from the attestation
++   registry;
++4. measured response-time features from marketplace messages/offers; and
++5. privacy-safe feedback aggregates computed from private feedback.
++
++The response includes display data, a final score or ordering, and reason codes
++such as “12 completed jobs” or “verified Spanish credential.” It must not return
++raw private feedback, hidden moderation features, or weights. Indexed onchain
++data carries block number/hash and transaction/attestation identifiers so the
++UI can link proof-bearing claims to a chain explorer or an independent verifier.
++
++The indexer waits for a configured confirmation depth, is idempotent, and can
++replay from genesis/deployment block. It handles chain reorganizations by
++rolling back orphaned events. Search may be stale during an indexing outage,
++but escrow settlement and independent verification remain available.
++
++## Ranking production
++
++Ranking is a versioned offchain pipeline. A feature job produces normalized
++features such as completed-job count and value bands, dispute rate with a
++minimum-sample/Bayesian adjustment, response-time percentiles, accepted
++credential categories, and privacy-thresholded feedback aggregates. A ranking
++service applies the active configuration, filters by query constraints, and
++sorts candidates. Eligibility rules, weights, caps, decay, cold-start handling,
++and experiments are all configuration or application code.
++
++Every search response is logged with `rankingVersion`, feature snapshot time,
++and experiment ID. This makes weekly tuning reproducible and auditable without
++pretending that a mutable commercial ranking is a permanent consensus fact.
++Before promotion, a new version is evaluated for relevance, gaming resistance,
++small-sample behavior, and unintended language/region bias; rollout uses a
++canary and has an immediate configuration rollback.
++
++Private feedback affects ranking only through authorized aggregate features.
++The product should disclose that it is an input while withholding individual
++comments and identities. Disputes are not treated as guilt by default: the
++feature distinguishes opened, translator-won, client-won, and unresolved cases.
++
++## State transitions and liveness
++
++| Transition | Caller | Why they pay gas | If nobody calls |
++| --- | --- | --- | --- |
++| Fund/create job | Client | Starts the commissioned work and escrows USDC | No job exists and no funds move |
++| Accept/decline assignment | Translator | Gains the paid engagement or releases it | Client can refund after the acceptance deadline |
++| Submit delivery commitment | Translator | Establishes that delivery occurred under the agreed job | Client can use the missed-delivery timeout |
++| Accept delivery/release | Client | Receives/finalizes the work | Translator can claim after the review window if no dispute was opened |
++| Claim timed-out payout | Translator | Receives earned USDC | Funds remain safely claimable in escrow |
++| Open dispute | Client or translator | Protects their economic interest before a deadline | Normal acceptance/timeout paths remain available |
++| Resolve dispute | Selected resolver multisig | Performs the paid platform adjudication duty | Funds remain locked; operational alerts and an escalation SLA apply |
++| Claim cancellation/timeout refund | Client | Recovers funds when the engagement did not start or delivery was missed | Funds remain safely refundable in escrow |
++
++Use pull-based claims where practical and checks-effects-interactions plus a
++reentrancy guard for token transfers. USDC transfers use a safe ERC-20 wrapper;
++fee-on-transfer or arbitrary token behavior is out of scope because the token is
++fixed. Emergency pause may stop creation of new jobs but must not block already
++earned withdrawals or valid refunds.
++
++## Verification when marketplace services are down
++
++A small static verification page (and documented RPC procedure) accepts a
++wallet address and reads Base directly through any RPC provider. It enumerates
++`JobCompleted` events from the known escrow contract and active credential
++attestations from the registry, verifies contract/schema identifiers, checks
++credential revocation and expiry, and asks the translator to sign a nonce. This
++page can be hosted independently or run locally because it needs neither the
++search API nor the private database.
++
++Consequently, the independently verifiable claims are deliberately narrow:
++which wallet completed which escrowed jobs, the settlement facts emitted for
++those jobs, and which issuers made active credential attestations about that
++wallet. Biography text, sample quality, response time, private feedback, and
++search rank remain marketplace claims and cannot be reconstructed fully during
++an outage. This is useful verification without leaking private data or freezing
++the product's ranking policy into consensus.
++
++## Build and release checklist
++
++- Unit and invariant tests cover escrow conservation, authorization, every
++  timeout boundary, double claims, dispute outcomes, pauses, and malicious token
++  callbacks; fork tests exercise the official Base USDC integration.
++- Indexer tests replay events, duplicate deliveries, and simulated reorgs.
++- Attestation tests cover wrong schemas, unapproved issuers, expiry, revocation,
++  and wallet linking.
++- Deploy `JobEscrow` once, verify its source, set the production resolver/admin
++  to the intended multisig, and record the deployment block, chain ID, USDC
++  address, registry address, schema IDs, and bytecode hash in the repository.
++- The release runbook must contain exact deployment/verification commands and
++  required environment variables once the contract toolchain is selected; it
++  must never embed deployer keys.
++- Run an end-to-end smoke test: fund a minimal-value job, accept it, submit,
++  release and claim USDC, observe the indexed completion, issue/revoke a test
++  credential, and verify both through the independent page.
++- Obtain an independent security review before mainnet funding is enabled.
++
+
+codex
+Created [plan.md](/ssd/workspace/buidlguidl/ethskills-evals-test/artifacts/ship-quiz-002/2026-08-28T144025Z-codex-with-skill-3/workspace/plan.md).
+
+It covers:
+
+- USDC escrow and credential attestations onchain
+- Profiles, samples, private feedback, and ranking offchain
+- Search indexing and weekly versioned ranking
+- Independent proof of completed jobs and credentials
+- Disputes, timeouts, callers, and liveness
+- Base deployment and release verification
+- Privacy and contract-migration tradeoffs
+
+`git diff --check` passes.
+diff --git a/plan.md b/plan.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..9ef1f2ec2729249ec1dc9b27c4fef1b7fc1a8b0e
+--- /dev/null
++++ b/plan.md
+@@ -0,0 +1,214 @@
++# Translator Marketplace Architecture
++
++## Product boundary
++
++Launch on **Base** and settle jobs in native USDC. Base is a practical first
++chain because the product needs inexpensive per-job escrow transactions and has
++an established USDC and wallet ecosystem. Deployment must use the verified
++USDC and attestation-registry addresses from their official documentation; no
++address is inferred or copied from an unofficial list.
++
++The design deliberately separates durable facts from product views:
++
++- Contracts hold funds and publish facts that a translator may need to prove
++  without the marketplace.
++- The application database holds mutable, private, large, or presentation-heavy
++  data.
++- An indexer turns contract events and credential attestations into queryable
++  records.
++- The search service computes rankings from those records. No rank or reputation
++  score is stored in a contract.
++
++This gives users independent verification of payment history and credentials
++while allowing the marketplace to change search, profiles, and moderation
++without migrating contracts.
++
++## Onchain components
++
++### 1. `JobEscrow` (one custom contract)
++
++Each job has a stable `jobId`, client address, translator address, USDC amount,
++deadlines, and a small status enum. The contract pulls the exact USDC amount
++from the client when the job is funded. It supports acceptance and payout,
++cancellation/refund before work begins, timeout paths, and dispute resolution.
++
++The contract stores only fields needed to enforce settlement. The job brief,
++messages, translation files, biography, and feedback never enter contract
++storage. A job may include a `termsHash` (for example, a hash of a canonical
++JSON document containing deliverables and deadlines) so either party can prove
++which offchain terms governed that escrow without publishing the documents.
++
++On successful settlement it emits a canonical event such as:
++
++```solidity
++JobCompleted(
++  bytes32 indexed jobId,
++  address indexed client,
++  address indexed translator,
++  uint256 amount,
++  bytes32 termsHash
++)
++```
++
++The translator address in this event is the portable proof of who completed the
++job. Amount and client are facts, not a marketplace-defined reputation score.
++Dispute opening and resolution are also emitted so an independent observer can
++derive dispute history. The contract may keep minimal counters only if needed
++for settlement; browse-oriented counters are derived by the indexer.
++
++The first release uses a platform-configured resolver for contested jobs,
++controlled by a multisig. That is an explicit adjudication trust assumption,
++not presented as trustless arbitration. Resolutions are public events. A later
++resolver can be introduced behind an intentionally narrow resolver interface;
++existing escrows keep the resolver selected when they were created.
++
++### 2. Credential attestations (existing protocol)
++
++Use an established attestation registry on Base rather than a second custom
++credential contract. A credential issuer attests to the translator's wallet
++under a versioned schema containing the language pair, credential type, issuer
++reference or evidence hash, issuance time, expiry, and revocation capability.
++Only allowlisted issuers count in marketplace ranking, but any observer can
++still inspect the raw attestation, issuer, subject, expiry, and revocation state.
++
++Issuer allowlists and scoring weights are marketplace policy kept offchain.
++Changing which credentials influence search therefore does not alter the
++attestation or require a contract migration. Credential issuers sign or submit
++attestations; the marketplace does not claim that the registry proves the
++truthfulness of an issuer, only who attested to what and whether it remains
++valid.
++
++### Identity and proof semantics
++
++The wallet is the durable identity anchor. A translator proves control by
++signing a fresh challenge, then points a verifier to `JobCompleted` events and
++credential attestations whose subject is that wallet. This proves that those
++onchain records belong to the wallet controller; it does not prove a legal
++identity unless a credential issuer separately performed that check.
++
++Account rotation is handled with a signed, timestamped wallet-link record. Both
++old and new wallets sign it, and the application indexes both identities. For
++the strongest independent portability, that link can be published as an
++attestation. Historical events are never rewritten.
++
++## Offchain data
++
++The primary application database stores:
++
++- biographies, availability, rates, profile settings, and language claims;
++- work-sample metadata and object-storage URIs (with hashes when authorship or
++  integrity needs to be checked);
++- job briefs, files, delivery versions, messages, and the canonical JSON whose
++  hash may be committed in the escrow;
++- private client feedback, moderation state, abuse signals, and access policy;
++- indexed job/attestation facts, response-time measurements, and precomputed
++  search features;
++- ranking configuration versions and experiment assignments.
++
++Translation files and samples live in private object storage with short-lived
++access URLs. Sensitive content and private feedback are neither emitted in
++events nor placed in public content-addressed storage. Database encryption,
++access logging, retention, deletion, and aggregate privacy thresholds protect
++private feedback. Only authorized marketplace services read raw feedback.
++
++## What the search screen reads
++
++The screen calls a search API, not the blockchain. The API reads a search index
++whose document for each translator combines:
++
++1. profile fields and approved work-sample metadata from the application DB;
++2. completed-job and dispute features derived from `JobEscrow` events;
++3. current, non-revoked credential features derived from the attestation
++   registry;
++4. measured response-time features from marketplace messages/offers; and
++5. privacy-safe feedback aggregates computed from private feedback.
++
++The response includes display data, a final score or ordering, and reason codes
++such as “12 completed jobs” or “verified Spanish credential.” It must not return
++raw private feedback, hidden moderation features, or weights. Indexed onchain
++data carries block number/hash and transaction/attestation identifiers so the
++UI can link proof-bearing claims to a chain explorer or an independent verifier.
++
++The indexer waits for a configured confirmation depth, is idempotent, and can
++replay from genesis/deployment block. It handles chain reorganizations by
++rolling back orphaned events. Search may be stale during an indexing outage,
++but escrow settlement and independent verification remain available.
++
++## Ranking production
++
++Ranking is a versioned offchain pipeline. A feature job produces normalized
++features such as completed-job count and value bands, dispute rate with a
++minimum-sample/Bayesian adjustment, response-time percentiles, accepted
++credential categories, and privacy-thresholded feedback aggregates. A ranking
++service applies the active configuration, filters by query constraints, and
++sorts candidates. Eligibility rules, weights, caps, decay, cold-start handling,
++and experiments are all configuration or application code.
++
++Every search response is logged with `rankingVersion`, feature snapshot time,
++and experiment ID. This makes weekly tuning reproducible and auditable without
++pretending that a mutable commercial ranking is a permanent consensus fact.
++Before promotion, a new version is evaluated for relevance, gaming resistance,
++small-sample behavior, and unintended language/region bias; rollout uses a
++canary and has an immediate configuration rollback.
++
++Private feedback affects ranking only through authorized aggregate features.
++The product should disclose that it is an input while withholding individual
++comments and identities. Disputes are not treated as guilt by default: the
++feature distinguishes opened, translator-won, client-won, and unresolved cases.
++
++## State transitions and liveness
++
++| Transition | Caller | Why they pay gas | If nobody calls |
++| --- | --- | --- | --- |
++| Fund/create job | Client | Starts the commissioned work and escrows USDC | No job exists and no funds move |
++| Accept/decline assignment | Translator | Gains the paid engagement or releases it | Client can refund after the acceptance deadline |
++| Submit delivery commitment | Translator | Establishes that delivery occurred under the agreed job | Client can use the missed-delivery timeout |
++| Accept delivery/release | Client | Receives/finalizes the work | Translator can claim after the review window if no dispute was opened |
++| Claim timed-out payout | Translator | Receives earned USDC | Funds remain safely claimable in escrow |
++| Open dispute | Client or translator | Protects their economic interest before a deadline | Normal acceptance/timeout paths remain available |
++| Resolve dispute | Selected resolver multisig | Performs the paid platform adjudication duty | Funds remain locked; operational alerts and an escalation SLA apply |
++| Claim cancellation/timeout refund | Client | Recovers funds when the engagement did not start or delivery was missed | Funds remain safely refundable in escrow |
++
++Use pull-based claims where practical and checks-effects-interactions plus a
++reentrancy guard for token transfers. USDC transfers use a safe ERC-20 wrapper;
++fee-on-transfer or arbitrary token behavior is out of scope because the token is
++fixed. Emergency pause may stop creation of new jobs but must not block already
++earned withdrawals or valid refunds.
++
++## Verification when marketplace services are down
++
++A small static verification page (and documented RPC procedure) accepts a
++wallet address and reads Base directly through any RPC provider. It enumerates
++`JobCompleted` events from the known escrow contract and active credential
++attestations from the registry, verifies contract/schema identifiers, checks
++credential revocation and expiry, and asks the translator to sign a nonce. This
++page can be hosted independently or run locally because it needs neither the
++search API nor the private database.
++
++Consequently, the independently verifiable claims are deliberately narrow:
++which wallet completed which escrowed jobs, the settlement facts emitted for
++those jobs, and which issuers made active credential attestations about that
++wallet. Biography text, sample quality, response time, private feedback, and
++search rank remain marketplace claims and cannot be reconstructed fully during
++an outage. This is useful verification without leaking private data or freezing
++the product's ranking policy into consensus.
++
++## Build and release checklist
++
++- Unit and invariant tests cover escrow conservation, authorization, every
++  timeout boundary, double claims, dispute outcomes, pauses, and malicious token
++  callbacks; fork tests exercise the official Base USDC integration.
++- Indexer tests replay events, duplicate deliveries, and simulated reorgs.
++- Attestation tests cover wrong schemas, unapproved issuers, expiry, revocation,
++  and wallet linking.
++- Deploy `JobEscrow` once, verify its source, set the production resolver/admin
++  to the intended multisig, and record the deployment block, chain ID, USDC
++  address, registry address, schema IDs, and bytecode hash in the repository.
++- The release runbook must contain exact deployment/verification commands and
++  required environment variables once the contract toolchain is selected; it
++  must never embed deployer keys.
++- Run an end-to-end smoke test: fund a minimal-value job, accept it, submit,
++  release and claim USDC, observe the indexed completion, issue/revoke a test
++  credential, and verify both through the independent page.
++- Obtain an independent security review before mainnet funding is enabled.
++
+
+tokens used
+21,477
+Created [plan.md](/ssd/workspace/buidlguidl/ethskills-evals-test/artifacts/ship-quiz-002/2026-08-28T144025Z-codex-with-skill-3/workspace/plan.md).
+
+It covers:
+
+- USDC escrow and credential attestations onchain
+- Profiles, samples, private feedback, and ranking offchain
+- Search indexing and weekly versioned ranking
+- Independent proof of completed jobs and credentials
+- Disputes, timeouts, callers, and liveness
+- Base deployment and release verification
+- Privacy and contract-migration tradeoffs
+
+`git diff --check` passes.
