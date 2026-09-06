@@ -143,7 +143,7 @@ distinct causes, each read before clearing:
 - *`create-eth` boilerplate* — every goal-002 run that actually scaffolds emits
   `output/AGENTS.md:238`, `**Skills** (read `.agents/skills/<name>/SKILL.md` before
   implementing):`. This is generator output: the identical line sits at line 238 of
-  both committed templates, and the list it heads names openzeppelin, erc-721,
+  all three committed templates that carry it (se-2, se-2-foundry, qa-target), and the list it heads names openzeppelin, erc-721,
   eip-5792, ponder, siwe, x402, drizzle-neon and subgraph. `frontend-playbook` is
   named nowhere in any evidence file.
 - *indexer citations in prose* — some goal-001 runs recommend moving the tip feed to
@@ -157,6 +157,16 @@ Worth stating plainly: the boilerplate case lands almost entirely on `with_skill
 runs, because only runs that scaffolded have an AGENTS.md and the `no_skill` runs
 mostly hand-rolled. The override permits grading; it does not change what the judge
 is asked or shown.
+
+**The long arm's commit was briefly lost.** `468e990` stopped being reachable when an
+npm access token — captured into one transcript by an executor that ran `cat ~/.npmrc`
+while debugging the Node 25 crash — was redacted out of this branch. The redaction
+reset past the long-arm commit and rebuilt only the two commits above it. The
+reachability check had been run before the reset and was not repeated after, so 24
+runs pointed at a sha the repository no longer contained. Caught in review and
+restored as a reachable ancestor without restamping any record; the shipped tree is
+unchanged. The token never reached the remote — push protection blocked it — but it
+was written to disk and has to be treated as compromised.
 
 **Runs lost to session usage limits.** Two limit windows killed runs mid-flight.
 Those run dirs were deleted and re-run from scratch, never graded — no partial work
@@ -192,9 +202,14 @@ but the project then cannot build on Node 25 at all.
 
 This was left alone rather than fixed mid-benchmark — AGENTS.md is explicit that a
 reworded expect means **regrade, never re-run**, and a regrade has to cover every run
-of the task. It needs deciding before the next pass: does pinning Node count as
-handling the crash? Part of any expect_10 gap between arms currently measures the
-rubric's enumeration rather than the skill.
+of the task.
+
+**Settled in review on #56: pinning does not count, and expect_10 does not need
+rewording.** `node25-localstorage-fix-wrong-layer` already files "pinning CI back to
+Node 24" as the failure mode, so the rubric and the mistake record already agree; the
+expect line simply does not say it out loud. The grade stands as recorded, no regrade
+is needed, and the pin should be named as insufficient whenever that line is next
+reworded for other reasons.
 
 ## Verdict
 
