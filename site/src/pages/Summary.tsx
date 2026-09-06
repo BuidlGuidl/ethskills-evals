@@ -37,11 +37,13 @@ const Summary = () => {
         </li>
         <li>
           <strong>A blind judge.</strong> A separate call grades every run against the task's <code>expect:</code>{" "}
-          lines without knowing which variant produced it. It is usually the same model as the executor —{" "}
-          {selfJudged} of {graded.length} graded runs are self-judged that way, and each record says so. That is a
-          caveat on the numbers, not a defect in them. The headline is the raw pass count.
+          lines without knowing which variant produced it. The headline is the raw pass count.
         </li>
       </ol>
+      <p className="copy">
+        The judge is a separate call, but usually the same model as the executor: {selfJudged} of {graded.length}{" "}
+        graded runs are self-judged, and each record says so. That is a caveat on the numbers, not a defect in them.
+      </p>
       <p className="copy">
         Every rewrite of a skill goes back through the same tasks, so a skill has a before and an after. The loop is
         short: benchmark, read what the failing runs got wrong, patch the skill where they point, run again, until the
