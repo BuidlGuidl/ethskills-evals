@@ -155,6 +155,16 @@ test("the CLI selects the committed showcase after resolution and leaves the der
     assert.ok(full.skills.length > index.skills.length);
     assert.ok(full.runs.some(run => run.superseded_by !== null));
 
+    const versions = spawnSync(process.execPath, [...args, "--versions"], { encoding: "utf8" });
+    assert.equal(versions.status, 0);
+    assert.match(versions.stderr, /Skill\tVersion id\tLines\tRuns/);
+    for (const skill of full.skills) {
+      for (const version of skill.versions) {
+        assert.ok(versions.stderr.includes(`${skill.name}\t${version.id}\t${version.lines}\t${version.runs}\n`));
+      }
+    }
+    assert.equal(readFileSync(cache, "utf8"), original);
+
     const manifest = path.join(dir, "bad.json");
     writeFileSync(manifest, JSON.stringify({ entries: [{ ...index.showcase![0], after: "unknown" }] }));
     const failed = spawnSync(process.execPath, [...args, "--showcase", manifest], { encoding: "utf8" });

@@ -39,7 +39,7 @@ import { expectSha, isRecord, loadTaskSpec, loadYamlFile, parseArgs, requireStri
 
 const ROOT = process.cwd();
 const REPO = "BuidlGuidl/ethskills-evals";
-const INDEX_ARGS = new Set(["out", "cache", "no-prs", "no-git", "strict", "showcase"]);
+const INDEX_ARGS = new Set(["out", "cache", "no-prs", "no-git", "strict", "showcase", "versions"]);
 const DEFAULT_OUT = path.join("site", "public", "index.json");
 const DEFAULT_CACHE = path.join("site", "derived.json");
 
@@ -760,6 +760,16 @@ const main = async () => {
   if (changed) {
     await mkdir(path.dirname(cachePath), { recursive: true });
     await writeFile(cachePath, `${JSON.stringify(merged, null, 2)}\n`, "utf8");
+  }
+
+  if (args.versions !== undefined) {
+    process.stderr.write("Known skill versions (before showcase selection; runs include all models and task statuses):\n");
+    process.stderr.write("Skill\tVersion id\tLines\tRuns\n");
+    for (const skill of skills) {
+      for (const version of skill.versions) {
+        process.stderr.write(`${skill.name}\t${version.id}\t${version.lines}\t${version.runs}\n`);
+      }
+    }
   }
 
   // Filter only after all facts have been resolved and cached, including excluded runs.

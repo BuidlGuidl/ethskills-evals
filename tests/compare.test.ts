@@ -166,7 +166,7 @@ test("changed checks leave visible cells out of totals, with no fallback when no
   assert.equal(kept.reason, null);
   assert.deepEqual(comparison.coverage, { counted: 1, total: 2 });
   assert.deepEqual(comparison.totals, { noSkill: kept.noSkill, before: kept.before, after: kept.after });
-  assert.match(comparison.explanations[0], /Checks for 1 task differ/);
+  assert.equal(comparison.explanations[0], "Checks for 1 task were rewritten between the two benchmarks; that row is shown but not totalled.");
   const none = compareEntry(entry, { ...index, tasks: [tasks[0]] });
   assert.deepEqual(none.totals, { noSkill: null, before: null, after: null });
   assert.deepEqual(none.coverage, { counted: 0, total: 1 });
@@ -179,6 +179,19 @@ test("every selected baseline remains visible, including checks outside the afte
   assert.equal(result.usage.noSkill.runs, 3);
 });
 
+test("explanations describe multiple excluded tasks and unknown checks", () => {
+  const rewritten = compareEntry(entry, { ...index, runs: runs.map(run => run.skill_content === "big" ? { ...run, rubric: "old" } : run) });
+  assert.deepEqual(rewritten.explanations, ["Checks for 2 tasks were rewritten between the two benchmarks; those rows are shown but not totalled."]);
+  const missing = compareEntry(entry, { ...index, runs: runs.filter(run => run.skill_content !== "big") });
+  assert.deepEqual(missing.explanations, ["2 tasks were added after the first benchmark, so they have no before column and are not totalled."]);
+  for (const selected of [[tasks[0]], tasks]) {
+    const unknown = compareEntry(entry, { ...index, tasks: selected, runs: runs.map(run => ({ ...run, rubric: null })) });
+    assert.deepEqual(unknown.explanations, [selected.length === 1
+      ? "We could not establish which checks were used for 1 task; that row is shown but not totalled."
+      : "We could not establish which checks were used for 2 tasks; those rows are shown but not totalled."]);
+  }
+});
+
 test("missing columns are explained, and retired tasks disappear from rows, usage and coverage", () => {
   for (const column of ["noSkill", "before", "after"] as const) {
     const content = { noSkill: null, before: entry.before, after: entry.after }[column];
@@ -189,7 +202,9 @@ test("missing columns are explained, and retired tasks disappear from rows, usag
     assert.equal(result.usage[column].runs, 0);
     assert.equal(result.usage[column].tokens, null);
     assert.equal(result.usage[column].cost_usd, null);
-    assert.match(result.explanations[0], /1 task has no/);
+    assert.equal(result.explanations[0], column === "before"
+      ? "1 task was added after the first benchmark, so it has no before column and is not totalled."
+      : `1 task has no ${column === "noSkill" ? "without skill" : "after"} runs; that row is shown but not totalled.`);
   }
   const result = compareEntry(entry, { ...index, tasks: [tasks[0], { ...tasks[1], status: "retired" }] });
   assert.equal(result.rows.length, 1);

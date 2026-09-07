@@ -87,9 +87,17 @@ Repeat per variant and run count, then compare `result.yaml`s and write the repo
 
 ## The results site
 
-`site/` renders what the runs produced: pass counts per skill and task, the reduced skill
-against the original side by side, and every report and eval PR write-up. It is a separate
-yarn project, so `yarn install` at the root stays four packages wide.
+`site/` shows the comparisons listed in `site/showcase.json`, with pass counts, usage, skill diffs, tasks, and linked reports and PRs.
+Each entry selects one skill and model, plus the vendored (`before`) and rewritten (`after`) skill versions.
+It is a separate yarn project, so `yarn install` at the root stays four packages wide.
+
+After a benchmark, add or update its `{ skill, model, before, after }` entry in `site/showcase.json`.
+Use the 12-character skill content hashes for `before` and `after`, not repository commit hashes.
+Run `yarn build-index --versions --no-prs` to list known skills, version ids, line counts, and run counts on stderr.
+The list includes versions outside the manifest; its run counts span all models and task statuses.
+Keep one entry per skill and model, with runs on both sides.
+Then run `yarn build-index` and commit the manifest and `site/derived.json` if it changed.
+If the manifest is absent, the index includes all results.
 
 ```bash
 yarn build-index          # writes site/public/index.json from artifacts/, tasks/, skills/, reports/ and the eval PRs

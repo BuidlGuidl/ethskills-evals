@@ -128,18 +128,20 @@ export const compareEntry = (entry: Entry, index: Index) => {
   const explanations: string[] = [];
   const rewritten = rows.filter(row => row.reason === "checks-rewritten").length;
   if (rewritten > 0) {
-    explanations.push(`Checks for ${rewritten} ${rewritten === 1 ? "task differ" : "tasks differ"} across the benchmark columns; those rows are shown but not totalled.`);
+    explanations.push(`Checks for ${rewritten} ${rewritten === 1 ? "task" : "tasks"} were rewritten between the two benchmarks; ${rewritten === 1 ? "that row is" : "those rows are"} shown but not totalled.`);
   }
   const labels = { noSkill: "without skill", before: "before", after: "after" };
   for (const column of COLUMNS) {
     const missing = rows.filter(row => row.missing.includes(column)).length;
     if (missing > 0) {
-      explanations.push(`${missing} ${missing === 1 ? "task has" : "tasks have"} no ${labels[column]} runs; those rows are shown but not totalled.`);
+      explanations.push(column === "before"
+        ? `${missing} ${missing === 1 ? "task was" : "tasks were"} added after the first benchmark, so ${missing === 1 ? "it has" : "they have"} no before column and ${missing === 1 ? "is" : "are"} not totalled.`
+        : `${missing} ${missing === 1 ? "task has" : "tasks have"} no ${labels[column]} runs; ${missing === 1 ? "that row is" : "those rows are"} shown but not totalled.`);
     }
   }
   const unknown = rows.filter(row => row.reason === "checks-unknown").length;
   if (unknown > 0) {
-    explanations.push(`The check revision is unknown for ${unknown} ${unknown === 1 ? "task" : "tasks"}; those rows are shown but not totalled.`);
+    explanations.push(`We could not establish which checks were used for ${unknown} ${unknown === 1 ? "task" : "tasks"}; ${unknown === 1 ? "that row is" : "those rows are"} shown but not totalled.`);
   }
   const skill = index.skills.find(skill => skill.name === entry.skill);
 

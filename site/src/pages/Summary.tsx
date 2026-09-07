@@ -60,7 +60,7 @@ const Summary = () => {
           </tr>))}</tbody>
         </table>
       </div>
-      <p className="footnote">Counts show passed / total runs for tasks with the same checks in all three columns. Skill pages show every task and explain exclusions. Tokens are medians per run; a dash means one or both versions lack records.</p>
+      <p className="footnote">Pass counts include only tasks with matching checks in all three columns; tokens are medians per run, and a dash means records are missing.</p>
     </section>
   </>);
 };

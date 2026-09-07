@@ -63,12 +63,11 @@ const Task = () => {
               <th scope="col">Transcript</th>
             </tr>
           </thead>
-          <tbody>{runs.map((run, position) => {
+          <tbody>{runs.map(run => {
             const entry = index.showcase?.find(entry => entry.skill === task.skill && entry.model === run.model);
             const version = run.variant !== "with_skill" ? "—" : run.skill_content === entry?.before ? "before" : run.skill_content === entry?.after ? "after" : "—";
-            // A short row label keeps archive bookkeeping out of the reading view; the link identifies the source.
             return <tr key={run.run}>
-              <th scope="row" className="run-label">{String(position + 1).padStart(2, "0")}<span className="cell-detail">{run.created?.slice(0, 10) ?? "date not recorded"}</span>
+              <th scope="row" className="run-label"><span className="run-id">{run.run}</span><span className="cell-detail">{run.created?.slice(0, 10) ?? "date not recorded"}</span>
               </th>
               <td>{run.variant === "with_skill" ? "with skill" : "without skill"}</td>
               <td>{version}</td>
@@ -79,7 +78,7 @@ const Task = () => {
               </td>
               <td className="num">{tokens(run.usage.tokens)}</td>
               <td className="num">{duration(run.usage.duration_s)}</td>
-              <td>{run.transcript_url ? <a href={run.transcript_url} aria-label={`Open transcript for run ${position + 1}`}>Read ↗</a> : "—"}</td>
+              <td>{run.transcript_url ? <a href={run.transcript_url} aria-label={`Open transcript for ${run.run}`}>Read ↗</a> : "—"}</td>
             </tr>;
           })}</tbody>
         </table>

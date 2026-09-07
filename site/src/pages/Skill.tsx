@@ -56,6 +56,7 @@ const EntryResults = ({ entry }: {
           <tbody>{rows.map(row => <tr key={row.task}>
             <th scope="row">
               <Link to={`/task/${row.task}`}>{row.task}</Link>
+              {!row.counted && <span className="total-detail">not totalled</span>}
             </th>
             <td className="muted">{row.kind}</td>
             <td className="num">
@@ -89,7 +90,7 @@ const EntryResults = ({ entry }: {
               <tr>
                 <th scope="col">Variant</th>
                 <th scope="col" className="num">Tokens</th>
-                <th scope="col" className="num">Time</th>
+                <th scope="col" className="num">Duration</th>
                 <th scope="col" className="num">Cost</th>
               </tr>
             </thead>

@@ -296,3 +296,15 @@ Commit messages: imperative, prefixed `site:` like the branch's history (`git lo
 - Do not reintroduce a versions table, a status column, or a "measured once" state: a skill
   is on the site when it has an entry, and not before.
 - Do not guess a model. `claude-unknown` is the honest answer when D4 has nothing.
+
+## 10. What was built
+
+`site/showcase.json` selects seven skill comparisons, each on one model, through `lib/showcase.ts` and `scripts/build-index.ts`.
+`site/src/lib/compare.ts` computes matching-check totals and usage medians for the summary, skill, task list, and task pages.
+Skill pages label rows excluded from totals and show the text diff; task pages show full run ids and transcript links.
+The shared `site/src/styles.css` supports light and dark themes, wrapping text, and tables that scroll within the page.
+
+After a benchmark, add or update `{ skill, model, before, after }` in `site/showcase.json`.
+Find the skill content version ids with `yarn build-index --versions --no-prs`, which prints skills, ids, lines, and runs on stderr.
+Run `yarn build-index`, then commit the manifest and `site/derived.json` if it changed.
+The indexer still resolves and caches all facts before selecting showcase entries; `--strict` still rejects unresolved facts.
