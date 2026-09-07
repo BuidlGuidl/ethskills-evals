@@ -7,7 +7,9 @@ The numbers below are **not** blended with #29's; #29 appears only as the bar to
 cut also rewrote two claims — it added an `externalContracts.ts` migration recipe and
 replaced the hand-rolled `approveCooldown` timer with `isMining`. Did the cut cost anything?
 
-**Answer:** No, and on this stack it paid. `with_skill` went **3/3 on goal-001 and 3/3 on
+**Answer:** No, and on this stack it paid. (Review of this PR found two wrong lines in the
+benchmarked text and both are fixed in this branch, 832 → 867 words — see "Skill edits";
+neither changed a result, and everything below describes the benchmarked `f93bfab3`.) `with_skill` went **3/3 on goal-001 and 3/3 on
 goal-002**, against #29's 3/3 and **0/3** — the compressed skill clears the bar on the review
 task and beats it on the fix task, sweeping every expect line in all six runs (54/54 and
 42/42). Both of #29's `with_skill` residuals closed: goal-002 e5 (`externalContracts`
@@ -37,8 +39,8 @@ All 12 runs came back `self_judged: true` (judge and executor are both claude). 
 expected on a single-stack benchmark and is a caveat on the numbers, not a defect in them;
 #29 was graded the same way.
 
-`expect_sha` is uniform within each task across all six of its runs (`a33ab27244e7` for
-goal-001, `fccf283c89a9` for goal-002), so every run of a task was graded against one rubric.
+`expect_sha` is uniform within each task across all six of its runs (`fccf283c89a9` for
+goal-001, `a33ab27244e7` for goal-002), so every run of a task was graded against one rubric.
 No expect line, no `input:` line, and no file under `skills/qa/` was edited while runs
 existed. No regrades were needed.
 
@@ -187,12 +189,19 @@ covers it — and #29's own runs wrote *"USDC ≈ $1 so this is low-stakes"* whi
 a USDC-denominated payouts app the finding is close to worthless. On an ETH- or
 volatile-token app it would not be, and the rewrite has no line that would produce it.
 
-**The OG-image section is not a real loss, despite looking like one.** `with_skill` went 3/3
-→ 0/3 on mentioning it, which reads alarming until the #29 text is opened: two of its three
-runs *checked the claim and passed it* — "builds an **absolute** URL from `metadataBase` … so
-it's not a bare relative path ✅". The full skill's OG section produced a verified non-finding
-on this template, not a catch. Meanwhile `no_skill` here flags the OG image 3/3, under
-branding, as the leftover SE-2 `/thumbnail.jpg`. Dropping the section cost a checkbox.
+**The OG-image section cost nothing, and there is no variant contrast in it at all.** What
+the compression removed is the narrow *absolute-URL / `metadataBase`* rule, and that rule
+appears in **zero of the six** 2026-09-06 goal-001 diffs — neither arm states it. In #29 it
+was stated 3/3 by `with_skill`, and two of those three runs *checked the claim and passed it*
+— "builds an **absolute** URL from `metadataBase` … so it's not a bare relative path ✅". The
+full skill's OG section produced a verified non-finding on this template, not a catch.
+
+Meanwhile the stock OG asset is flagged **6/6 here, in both arms**, under branding: every
+`no_skill` run names the SE-2 `/thumbnail.jpg` and so does every `with_skill` run
+(with-skill-1 "the thumbnail is what renders when someone shares a payout link";
+with-skill-3 "the thumbnail is the OG share image"). The minimal skill's "check all five"
+branding line carries that half. So dropping the section cost one checkbox on a rule nobody
+now states, and cost no coverage of the asset itself.
 
 **One quality cost inside a check that still passes.** goal-001 e17 lands 3/3 on prose alone —
 with-skill-1 and with-skill-3 write the finding without code, and with-skill-3 reproduces all
@@ -280,6 +289,50 @@ compared against #29's absolute numbers.
   → 3/3 in the same round. Separating them needs the recipe removed and re-run, which no
   question in issue #1 currently asks for.
 
+## Skill edits — both applied in this PR
+
+**The committed skill is no longer the benchmarked one.** Review of this PR turned up two
+wrong lines in `f93bfab3`, and they are fixed in this branch (832 → 867 words). Everything
+above describes `f93bfab3`. Both are scored against the 12 runs below; neither changed an
+outcome, and neither is compression damage — one is a claim the rewrite introduced, the other
+a snippet it inherited and shortened.
+
+**1. `isMining` locks only the async write path.** The benchmarked line read "Lock the button
+on `isMining`, **not** the `isPending` it passes through from wagmi." `useScaffoldWriteContract`
+exposes one `isMining`, but only `sendContractWriteAsyncTx` sets it
+(`useScaffoldWriteContract.ts:109`, cleared at `:144`); the synchronous `sendContractWriteTx`
+path (`:148-183`) calls `wagmiContractWrite.writeContract(...)` and never touches the flag. A
+reviewer following the bullet onto a component that uses the sync write gates the button on a
+flag that is permanently `false` — the exact double-submit the bullet exists to prevent.
+
+**Scored against the runs: 0/12 affected, and the failure mode could not have fired.** All six
+goal-002 runs destructure `writeContractAsync` (5 call sites each) and zero call the
+synchronous `writeContract`; all six derive the lock the same way —
+`const { writeContractAsync: writeUsdcAsync, isMining: isApproving } = useScaffoldWriteContract(...)`
+then `const isBusy = isApproving || isPaying`. That shape is identical in `no_skill`, which
+gets it from SE-2's bundled AGENTS.md. The line is latent on this template and wrong in
+general. **Applied:** the bullet now names `writeContractAsync` and states that the
+synchronous path never sets the flag.
+
+**2. The `externalContracts.ts` snippet is headed as a whole file but omits its import.** The
+block is labelled `// packages/nextjs/contracts/externalContracts.ts` and ends
+`export default externalContracts satisfies GenericContractsDeclaration;` without
+`import { GenericContractsDeclaration } from "~~/utils/scaffold-eth/contract";`. A model
+reading the path comment as "this is the file" and writing it out gets `Cannot find name
+'GenericContractsDeclaration'` from the very `yarn next:check-types` the next sentence tells
+it to run.
+
+**Scored against the runs: 0/12 affected, for a reason that does not generalise.** The
+template already ships `externalContracts.ts` with that import on line 1, so all six goal-002
+runs *edited* the existing file rather than creating it — the import never appears as an added
+line in any `run.diff` because it was never missing. The snippet's defect needs a workspace
+where the file does not exist yet, which `templates/qa-target` is not. **Applied:** the import
+is in the block.
+
+This is the same handling as noir #80: the fixes land in the branch rather than as issues
+against a skill this PR is introducing, and each is scored against the runs so a reader can
+see it changed no result.
+
 ## Final table
 
 | Question | Answer |
@@ -289,12 +342,12 @@ compared against #29's absolute numbers.
 | Did it create negative deltas? | One, ungraded: the deleted USD-values section, `with_skill` 3/3 → 0/3 (`qa-usd-context-omitted`). One quality cost inside a passing check: the single deep-link code sketch written by any run is a generic `wc://` with no delay, which the deleted `openWallet` block would have prevented. No graded check dropped anywhere. |
 | What mistakes repeated without the skill? | `qa-daisyui-theme-cosmetics` (now only the `--radius-field` facet, 0/3 both tasks), `qa-phantom-and-address-display` (0/3 both facets, unmoved on either model), `qa-deeplink-delay-magnitude` (review facet 3/3 unflagged), `qa-connect-button-not-text` (5/6), `qa-branding-left-default` (narrowed to the footer, favicon and the README-as-a-fix, 4/12). |
 | What mistakes remained with the skill? | None graded — `with_skill` is 0 failures in 12 runs. `qa-usd-context-omitted` is new and ungraded, and is a consequence of the cut rather than of the model. |
-| What should change in the skill? | **Nothing on this evidence.** If the USD claim is wanted back, it is one bullet under "Theme and loading states" or a new "Values" line — but it was ungraded and self-described as low-stakes by the runs that made it, so re-adding it trades 832 words against a finding worth little on this template. Do **not** restore the `openWallet` block, the `wc@2:` read or the 2s figure: zero of 12 runs reached for them and the prose lands e17 3/3. |
+| What should change in the skill? | **Two wrong lines, both applied in this PR** (832 → 867 words), neither of which changed an outcome: `isMining` scoped to the `writeContractAsync` path it actually tracks, and the missing `GenericContractsDeclaration` import in the `externalContracts.ts` block. Both scored 0/12 against the runs — see "Skill edits". Nothing else. If the USD claim is wanted back it is one bullet, but it was ungraded and self-described as low-stakes by the runs that made it. Do **not** restore the `openWallet` block, the `wc@2:` read or the 2s figure: zero of 12 runs reached for them and the prose lands e17 3/3. |
 | What should change in the eval? | **Split goal-002 e7** — its Address-component half now passes 6/6 in both variants and measures nothing; the contract-address half carries the entire 0/3 vs 3/3 delta. **Retire or rewrite goal-001 e7 (AddressInput)** — 3/3 in both variants on both models, taught by the template's own AGENTS.md, and it has never discriminated. **Grade the USD and OG items or drop them from the notes** — the only measurable cost of the compression sits on items no expect covers, which is how it nearly went unnoticed. **Reconsider the all-N pass bar**: goal-002 went 0/3 → 3/3 on a bar that hid a 39/42 in #29, and the per-expect rows are still where the story is. |
 
 ## Verdict
 
-**Keep `skills/qa` at 832 words.** The 70% cut clears #29's bar on the review task, beats it
+**Keep `skills/qa` minimal.** The 70% cut clears #29's bar on the review task, beats it
 on the fix task, closes both of the residuals #29 identified, holds every compressed check at
 3/3, and costs roughly half as much to run. Nothing in 12 runs reached for the deleted
 recipes. The one real loss is a low-stakes ungraded finding on a stablecoin app.

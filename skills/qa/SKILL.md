@@ -13,7 +13,7 @@ Read the code, then click through every flow — with no wallet, with a wallet o
 - Wrong network turns the **primary CTA itself** into a "Switch to [chain]" button. The header's `WrongNetworkDropdown` is not enough — without a branch in the action slot, the user clicks Approve on the wrong chain and eats a silent wagmi error.
 - One primary action at a time: Connect → Switch → Approve → Action. Approve and Action are never both live; which one renders is driven by the current allowance.
 - Writes go through `useScaffoldWriteContract`. Raw wagmi `useWriteContract` outside scaffold internals resolves at the wallet signature, not at confirmation.
-- Lock the button on `isMining`, **not** the `isPending` it passes through from wagmi. `isMining` is held across `waitForTransactionReceipt` and clears in the hook's `finally` on both confirmation and rejection; `isPending` drops when the wallet returns the hash, re-enabling the button mid-flight. If the allowance or balance refetch needs its own hold after confirmation, keep it in local state and clear it in `finally` too — never on a fixed timer.
+- Lock the button on `isMining` — the flag `useScaffoldWriteContract` sets around `writeContractAsync`, **not** the `isPending` it passes through from wagmi. (`isMining` tracks the async path only; the hook's synchronous `writeContract` never sets it, so a button gated on it there never locks.) `isMining` is held across `waitForTransactionReceipt` and clears in the hook's `finally` on both confirmation and rejection; `isPending` drops when the wallet returns the hash, re-enabling the button mid-flight. If the allowance or balance refetch needs its own hold after confirmation, keep it in local state and clear it in `finally` too — never on a fixed timer.
 - Failed and rejected transactions surface a human-readable message next to the action (`notification` + `getParsedError`). A `catch` that only calls `console.error` is a silent failure.
 
 ## Contracts and addresses
@@ -22,6 +22,8 @@ Read the code, then click through every flow — with no wallet, with a wallet o
 
   ```typescript
   // packages/nextjs/contracts/externalContracts.ts
+  import { GenericContractsDeclaration } from "~~/utils/scaffold-eth/contract";
+
   const externalContracts = {
     8453: {
       USDC: { address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", abi: [...] },
