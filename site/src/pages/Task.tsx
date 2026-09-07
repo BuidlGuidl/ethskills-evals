@@ -26,7 +26,7 @@ const Task = () => {
     <header className="page-header">
       <Link className="back" to={`/skill/${task.skill}`}>{task.skill}</Link>
       <h1>{task.id}</h1>
-      <p className="muted">{task.kind} · {task.expect.length} checks · {runs.length} runs</p>
+      <p className="muted">{task.kind === "quiz" ? "Quiz: reasoning and calculation" : "Goal: apply advice during a build"} · {task.expect.length} checks · {runs.length} runs</p>
     </header>
     <section aria-labelledby="prompt-heading">
       <div className="section-heading">
@@ -38,6 +38,7 @@ const Task = () => {
     </section>
     <section aria-labelledby="checks-heading">
       <h2 id="checks-heading">Checks</h2>
+      <p className="small muted">A run must meet every condition below to pass.</p>
       <ol className="checks">
         {task.expect.map((line, position) => <li key={position}>{line}</li>)}
       </ol>
@@ -48,24 +49,25 @@ const Task = () => {
         <h2 id="runs-heading">Runs</h2>
         <p className="small muted">Filled dot: pass · hollow dot: fail</p>
       </div>
+      <p className="table-legend">Each row is one attempt. Pass means every check passed. Tokens and time describe that run; a dash means no record.</p>
       <div className="scroll" role="region" aria-label="Task runs" tabIndex={0}>
         <table className="grid runs-table">
           <thead>
             <tr>
               <th scope="col">Run</th>
               <th scope="col">Variant</th>
-              <th scope="col">Version</th>
+              <th scope="col">Skill version</th>
               <th scope="col">Model</th>
               <th scope="col">Result</th>
               <th scope="col">Checks</th>
-              <th scope="col" className="num">Tokens</th>
-              <th scope="col" className="num">Duration</th>
+              <th scope="col" className="num">Tokens used</th>
+              <th scope="col" className="num">Time taken</th>
               <th scope="col">Transcript</th>
             </tr>
           </thead>
           <tbody>{runs.map(run => {
             const entry = index.showcase?.find(entry => entry.skill === task.skill && entry.model === run.model);
-            const version = run.variant !== "with_skill" ? "—" : run.skill_content === entry?.before ? "before" : run.skill_content === entry?.after ? "after" : "—";
+            const version = run.variant !== "with_skill" ? "No skill" : run.skill_content === entry?.before ? "Before rewrite" : run.skill_content === entry?.after ? "After rewrite" : "—";
             return <tr key={run.run}>
               <th scope="row" className="run-label"><span className="run-id">{run.run}</span><span className="cell-detail">{run.created?.slice(0, 10) ?? "date not recorded"}</span>
               </th>

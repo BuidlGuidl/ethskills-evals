@@ -1,12 +1,27 @@
 import { PatchDiff } from "@pierre/diffs/react";
-import { useMemo, useState } from "react";
+import { useMemo, useState, useSyncExternalStore } from "react";
 import { Link, useParams } from "react-router-dom";
-import { PassCount } from "../components/PassCount.js";
-import { compareEntry, formatCell, type UsageMedians } from "../lib/compare.js";
+import { PassCount, passRate, ResultsLegend } from "../components/PassCount.js";
+import { compareEntry, type Row, type Cell, type UsageMedians } from "../lib/compare.js";
 import { useIndex } from "../lib/data.js";
 import { patchBetween } from "../lib/diff.js";
 import { cost, duration, tokens } from "../lib/format.js";
 import type { Entry } from "../lib/types.js";
+const phoneQuery = "(max-width: 699px)";
+const subscribeViewport = (notify: () => void) => {
+  const query = window.matchMedia(phoneQuery);
+  query.addEventListener("change", notify);
+  return () => query.removeEventListener("change", notify);
+};
+const phoneViewport = () => window.matchMedia(phoneQuery).matches;
+const headlineRate = (cell: Cell | null) => cell ? `${passRate(cell)} of runs (${cell.passed} of ${cell.total})` : "no comparable runs";
+const rowReason = (row: Row) => {
+  if (row.reason === "checks-rewritten") return "Checks rewritten between rounds";
+  if (row.reason === "checks-unknown") return "Checks used for these runs are unknown";
+  if (row.missing.length === 1 && row.missing[0] === "before") return "Added after the first round";
+  const labels = { noSkill: "without skill", before: "before rewrite", after: "after rewrite" };
+  return `No runs ${row.missing.map(column => labels[column]).join(" or ")}`;
+};
 const UsageValue = ({ usage, metric, format }: {
   usage: UsageMedians;
   metric: "tokens" | "duration_s" | "cost_usd";
@@ -20,12 +35,13 @@ const EntryResults = ({ entry }: {
 }) => {
   const index = useIndex();
   const comparison = useMemo(() => compareEntry(entry, index), [entry, index]);
+  const phone = useSyncExternalStore(subscribeViewport, phoneViewport);
   const [showDiff, setShowDiff] = useState(true);
   const { before, after, rows, totals, coverage, usage } = comparison;
   const patch = useMemo(() => before && after ? patchBetween(before, after) : null, [before, after]);
   const reports = index.reports.filter(report => report.skill === entry.skill);
   const prs = index.prs.filter(pr => pr.skill === entry.skill);
-  const columns = [{ label: "Without skill", value: usage.noSkill }, { label: "Before", value: usage.before }, { label: "After", value: usage.after }];
+  const columns = [{ label: "Without skill", value: usage.noSkill }, { label: "With skill, before rewrite", value: usage.before }, { label: "With skill, after rewrite", value: usage.after }];
   const hasUsage = (value: UsageMedians) => Object.values(value.recorded).some(count => count > 0);
   const diffId = `diff-${entry.skill}-${entry.model}`;
   return (<article className="entry">
@@ -33,15 +49,17 @@ const EntryResults = ({ entry }: {
       <p className="model">{entry.model}</p>
       <p className="rewrite">Rewritten from {before?.lines ?? "—"} lines to {after?.lines ?? "—"} lines.</p>
       <p className="headline">
-        <strong className="accent">{formatCell(totals.after)} passed after</strong> <span>vs</span> <strong>{formatCell(totals.noSkill)} without skill.</strong>
+        With the rewritten skill, the model passed <strong className="accent">{headlineRate(totals.after)}</strong>.
+        {" "}Without any skill: <strong>{headlineRate(totals.noSkill)}</strong>.
+        {" "}The original skill: <strong>{headlineRate(totals.before)}</strong>.
       </p>
-      <p className="muted">With skill, before → after: <span className="numbers">{formatCell(totals.before)} → {formatCell(totals.after)}</span> passed.</p>
+      <p className="muted small">A run passes only if it passes every check. These rates cover {coverage.counted} of {coverage.total} tasks with matching checks in all three columns.</p>
     </header>
     <section aria-label={`Results on ${entry.model}`}>
       <div className="section-heading">
         <h2>Results</h2>
-        <p className="small muted">Passed / total runs</p>
       </div>
+      <ResultsLegend />
       <div className="scroll" role="region" aria-label={`${entry.model} task results`} tabIndex={0}>
         <table className="grid">
           <thead>
@@ -49,20 +67,20 @@ const EntryResults = ({ entry }: {
               <th scope="col">Task</th>
               <th scope="col">Kind</th>
               <th scope="col" className="num">Without skill</th>
-              <th scope="col" className="num secondary">Before</th>
-              <th scope="col" className="num after">After</th>
+              <th scope="col" className="num secondary">With skill, before rewrite</th>
+              <th scope="col" className="num after">With skill, after rewrite</th>
             </tr>
           </thead>
           <tbody>{rows.map(row => <tr key={row.task}>
             <th scope="row">
               <Link to={`/task/${row.task}`}>{row.task}</Link>
-              {!row.counted && <span className="total-detail">not totalled</span>}
+              {!row.counted && <span className="total-detail">{rowReason(row)}</span>}
             </th>
             <td className="muted">{row.kind}</td>
             <td className="num">
               <PassCount cell={row.noSkill} />
             </td>
-            <td className="num secondary">{formatCell(row.before)}</td>
+            <td className="num secondary"><PassCount cell={row.before} /></td>
             <td className="num after">
               <PassCount cell={row.after} />
             </td>
@@ -71,9 +89,9 @@ const EntryResults = ({ entry }: {
             <tr>
               <th scope="row" colSpan={2}>Total <span className="total-detail">{coverage.counted} of {coverage.total} tasks with matching checks</span>
               </th>
-              <td className="num">{formatCell(totals.noSkill)}</td>
-              <td className="num secondary">{formatCell(totals.before)}</td>
-              <td className="num after">{formatCell(totals.after)}</td>
+              <td className="num"><PassCount cell={totals.noSkill} /></td>
+              <td className="num secondary"><PassCount cell={totals.before} /></td>
+              <td className="num after"><PassCount cell={totals.after} /></td>
             </tr>
           </tfoot>
         </table>
@@ -83,15 +101,15 @@ const EntryResults = ({ entry }: {
     <section aria-label="Tokens, time and cost">
       <h2>Tokens, time & cost</h2>
       {columns.some(column => hasUsage(column.value)) ? <>
-        <p className="muted small">Medians per run, across all tasks shown above. Cost requires a record for every run in its column.</p>
+        <p className="muted small">Medians per run across all tasks above. Tokens measure model usage, including recorded cache use. Cost requires a record for every run in its column.</p>
         <div className="scroll" role="region" aria-label="Usage medians" tabIndex={0}>
           <table className="grid usage-table">
             <thead>
               <tr>
                 <th scope="col">Variant</th>
-                <th scope="col" className="num">Tokens</th>
-                <th scope="col" className="num">Duration</th>
-                <th scope="col" className="num">Cost</th>
+                <th scope="col" className="num">Median tokens / run</th>
+                <th scope="col" className="num">Median time / run</th>
+                <th scope="col" className="num">Median cost / run (USD)</th>
               </tr>
             </thead>
             <tbody>{columns.map(({ label, value }) => <tr key={label}>
@@ -122,22 +140,22 @@ const EntryResults = ({ entry }: {
       </div>
       {showDiff && <div id={diffId}>
         <div className="diff-labels">
-          <span>Before <strong>{before?.lines ?? "—"} lines</strong>
+          <span>Before rewrite <strong>{before?.lines ?? "—"} lines</strong>
           </span>
-          <span>After <strong>{after?.lines ?? "—"} lines</strong>
+          <span>After rewrite <strong>{after?.lines ?? "—"} lines</strong>
           </span>
         </div>
-        <p className="small muted">Word-level changes. Unchanged stretches are collapsed.</p>
+        <p className="small muted">{phone ? "Unified view: deletions precede additions." : "Split view: before on the left, after on the right."} Word-level changes; unchanged stretches are collapsed.</p>
         {patch ? <div className="diff-scroll" role="region" aria-label="Before and after skill text" tabIndex={0}>
           <PatchDiff patch={patch} options={{
-            diffStyle: "split",
+            diffStyle: phone ? "unified" : "split",
             lineDiffType: "word",
-            overflow: "scroll",
+            overflow: "wrap",
             disableFileHeader: true,
             expandUnchanged: false,
             theme: { light: "github-light", dark: "github-dark" },
             onPostRender: node => {
-              // The library's split panes scroll independently inside its shadow root.
+              // Name each pane for keyboard and screen-reader navigation.
               for (const pane of node.shadowRoot?.querySelectorAll<HTMLElement>("code[data-deletions], code[data-additions]") ?? []) {
                 pane.tabIndex = 0;
                 pane.setAttribute("role", "region");

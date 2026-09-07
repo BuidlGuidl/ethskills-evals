@@ -308,3 +308,79 @@ After a benchmark, add or update `{ skill, model, before, after }` in `site/show
 Find the skill content version ids with `yarn build-index --versions --no-prs`, which prints skills, ids, lines, and runs on stderr.
 Run `yarn build-index`, then commit the manifest and `site/derived.json` if it changed.
 The indexer still resolves and caches all facts before selecting showcase entries; `--strict` still rejects unresolved facts.
+
+## 11. Review round 1 (Shiv, 2026-09-07) — make it readable for someone with no context
+
+The test for every page: a newcomer who has never seen this repo should understand what they
+are looking at from the layout and a few words, without reading a paragraph. Less text,
+more structure; where a number needs a definition, put the definition next to the number.
+
+### Front page
+
+- The heading is not a slogan. Drop "Less to read. Put to the same test." Use a plain title,
+  e.g. **Skill evals** (or "ethskills evals"), with one line under it: what is benchmarked —
+  *7 skills from ethskills.com, each measured before and after a rewrite, on one model.*
+- Replace the two paragraphs with **pointers** (a short list), roughly:
+  - Two kinds of task per skill: a **quiz** (questions that need derivation, not lookup —
+    "what does a 100k USDC flash loan on Aave V3 cost all-in?", not "what is the fee?") and
+    a **goal** (a build where the skill's key claim is one decision along the way, never
+    named in the prompt).
+  - Each task runs several times **with** the skill and several times **without**, each run
+    in a fresh workspace on its own branch.
+  - A separate, **blind judge** grades every run against the task's checks without knowing
+    which variant it was.
+  - Then the skill is rewritten — usually much shorter — and the same tasks run again on the
+    same model. Before and after sit side by side.
+- Put the longer explanation of quizzes and goals (why derivation, why unprompted — see
+  GitHub issue #1 "The type of tasks") in a **collapsible** `<details>` under the list, closed
+  by default. Drop the sentence "Measure the skill, read the mistakes, rewrite it, then
+  repeat…" entirely.
+
+### The table needs to explain itself
+
+Today a cell says `12/12` and a newcomer asks "12 of what?", and sees `12/12` beside `6/6`
+and asks why the counts differ. Facts to design around:
+
+- A cell is *runs that passed every check / runs*. The denominator differs between columns
+  because (a) the unaided arm was run in both benchmark rounds, so **without skill pools
+  both rounds** (3 + 3 per task) while before and after have 3 each; (b) a few tasks were
+  set to more runs later (`concepts-goal-001` has 5 after-runs, `wallets-goal-004` has 7).
+- The comparison that matters is the **pass rate**, not the raw count.
+
+So: make the **pass rate the primary value** in every cell (e.g. `100%` with the bar), and
+the fraction the secondary, smaller (`12 of 12 runs`). Keep both — the fraction is the
+honesty. Put a one-line legend directly above the table, not a footnote below it:
+*"Each cell: share of runs that passed every check. Without skill pools the unaided runs of
+both rounds, so it has more runs."* Column headers should read as sentences a newcomer
+gets: **Without skill · With skill, before rewrite · With skill, after rewrite** (a group
+header "With skill" over the two is fine). Consider whether a different arrangement reads
+better than one wide table — e.g. one compact card per skill with the three rates and the
+line count — and pick whichever a first-time reader parses faster; the table is acceptable
+if the legend and headers do the work.
+
+### Skill page
+
+- The headline "12/12 passed after vs 12/12 without skill" does not explain itself. Restate
+  it as a sentence with the definitions inline, e.g. **"With the rewritten skill, the model
+  passed 100% of runs (12 of 12). Without any skill: 100% (12 of 12). The original skill:
+  92% (11 of 12)."** Or a three-tile strip — *Without skill · Before rewrite · After
+  rewrite* — each tile showing the rate large, the fraction small, and the line count under
+  the two skill tiles. Either way: the three numbers, labelled in words, no "vs".
+- "not totalled" under a task name says nothing to a newcomer. Label the row with the
+  **reason in words**: *checks rewritten between rounds* or *added after the first round*,
+  and keep the explanatory sentence under the table. Consider muting the whole row.
+- The results table gets the same legend line and the same primary-rate / secondary-fraction
+  cells as the front page.
+
+### The diff
+
+Long lines force horizontal scrolling. Use `@pierre/diffs`' `overflow: "wrap"` option so
+lines fold, and check the split view still reads on a phone (fall back to unified view
+below ~700px if split with wrapping is unreadable).
+
+### Everywhere
+
+Words over symbols, definitions next to numbers, no paragraph where a list will do. Keep
+the vocabulary rules from the design brief. Re-check every page at 375px for sideways
+scroll after the changes (use a real viewport — `agent-browser set viewport 375 812`, then
+`eval 'document.documentElement.scrollWidth'` — not headless Chrome's window size).
