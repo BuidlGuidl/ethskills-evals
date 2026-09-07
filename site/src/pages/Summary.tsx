@@ -9,20 +9,20 @@ const Summary = () => {
   return (<>
     <header className="page-header intro">
       <h1>Skill evals</h1>
-      <p className="lede">{index.skills.length} skills from <a href="https://ethskills.com">ethskills.com</a>, each measured before and after a rewrite, on the same model.</p>
+      <p className="lede">{index.skills.length} skills from <a href="https://ethskills.com">ethskills.com</a>, each tested before and after a rewrite on the same model.</p>
       <ul className="intro-pointers">
-        <li>Two kinds of task: a <strong>quiz</strong> needs reasoning and calculation; a <strong>goal</strong> tests a skill’s advice during a build, without prompting it.</li>
-        <li>Each task runs several times <strong>with the skill</strong> and <strong>without it</strong>. Each run starts in a fresh workspace on its own branch.</li>
-        <li>A separate, <strong>blind judge</strong> grades every run against the task’s checks without knowing whether it used the skill.</li>
-        <li>We rewrite the skill, usually much shorter, then run the same tasks again on the same model.</li>
+        <li>A <strong>quiz</strong> asks the model to reason and calculate. A <strong>goal</strong> tests whether it uses the skill's advice during a build without a reminder.</li>
+        <li>We run each task several times <strong>with the skill</strong> and <strong>without it</strong>. Each run gets a fresh workspace and its own branch.</li>
+        <li>A separate model checks every run. This <strong>blind judge</strong> sees the task's checks but does not know whether the model had the skill.</li>
+        <li>We rewrite the skill, often cutting its length. Then we repeat the tasks on the same model.</li>
       </ul>
       <details className="task-detail">
-        <summary>Why quizzes and goals test different things</summary>
+        <summary>Why we use quizzes and goals</summary>
         <ul>
-          <li><strong>Quizzes test whether the model can use a fact.</strong> “What does a 100k USDC flash loan on Aave V3 cost all-in?” requires a calculation. Asking for the fee alone only tests recall or lookup.</li>
-          <li><strong>Goals test whether the model applies advice unprompted.</strong> The build requires a decision that the skill covers, but the prompt never names it. This tests whether the advice reaches the work when needed.</li>
+          <li><strong>Quizzes test whether the model can use a fact.</strong> "What does a 100k USDC flash loan on Aave V3 cost all-in?" needs a calculation. Asking for the fee alone tests recall or lookup.</li>
+          <li><strong>Goals test whether the model uses advice without a reminder.</strong> The build needs a decision covered by the skill. The prompt never names that decision.</li>
         </ul>
-        <a className="small" href={`https://github.com/${index.generated.repo}/issues/1`}>Read the task design discussion</a>
+        <a className="small" href={`https://github.com/${index.generated.repo}/issues/1`}>Read why we chose these tasks</a>
       </details>
     </header>
     <section aria-labelledby="results-heading">
@@ -43,8 +43,8 @@ const Summary = () => {
               <th scope="col" className="num">Without skill</th>
               <th scope="col" className="num secondary">With skill, before rewrite</th>
               <th scope="col" className="num after">With skill, after rewrite</th>
-              <th scope="col" className="num">Lines<span className="cell-detail">Before → after rewrite</span></th>
-              <th scope="col" className="num">Median tokens / run<span className="cell-detail">Before → after rewrite</span></th>
+              <th scope="col" className="num">Lines<span className="cell-detail">Before and after rewrite</span></th>
+              <th scope="col" className="num">Median tokens per run<span className="cell-detail">Before and after rewrite</span></th>
             </tr>
           </thead>
           <tbody>{rows.map(row => (<tr key={`${row.skill}/${row.model}`}>
@@ -68,7 +68,7 @@ const Summary = () => {
           </tr>))}</tbody>
         </table>
       </div>
-      <p className="footnote">Token counts measure model usage, including recorded cache use. Compare them within one model; models count tokens differently.</p>
+      <p className="footnote">Token counts include recorded cache use. Compare counts only within the same model, since models count tokens differently.</p>
     </section>
   </>);
 };

@@ -45,12 +45,12 @@ const App = () => {
         <Route path="/task/:id" element={<Task key={pathname} />} />
         <Route path="/report/:file" element={<Doc kind="report" />} />
         <Route path="/pr/:number" element={<Doc kind="pr" />} />
-        <Route path="*" element={<h1>Not found</h1>} />
+        <Route path="*" element={<h1>Page not found</h1>} />
       </Routes>
     </main>
     <footer className="wrap site-footer">
       <span>ethskills evals</span>
-      <a href={`https://github.com/${index.generated.repo}#readme`}>How to run a benchmark ↗</a>
+      <a href={`https://github.com/${index.generated.repo}#readme`}>Run an ethskills benchmark ↗</a>
     </footer>
   </>;
 };

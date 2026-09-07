@@ -9,7 +9,7 @@ const Task = () => {
   const [copyStatus, setCopyStatus] = useState("");
   const task = index.tasks.find(entry => entry.id === id);
   if (!task) {
-    return <h1>No such task</h1>;
+    return <h1>Task not found</h1>;
   }
 
   const runs = index.runs.filter(run => run.task === task.id).sort((a, b) => (a.created ?? "").localeCompare(b.created ?? "") || a.run.localeCompare(b.run));
@@ -38,24 +38,24 @@ const Task = () => {
     </section>
     <section aria-labelledby="checks-heading">
       <h2 id="checks-heading">Checks</h2>
-      <p className="small muted">A run must meet every condition below to pass.</p>
+      <p className="small muted">The model must pass every check below for the run to pass.</p>
       <ol className="checks">
         {task.expect.map((line, position) => <li key={position}>{line}</li>)}
       </ol>
-      {earlier && <p className="footnote">Some runs used an earlier revision of these checks; their dots show the checks used for that run.</p>}
+      {earlier && <p className="footnote">Some runs used earlier checks. Each run's dots show the checks used then.</p>}
     </section>
     <section aria-labelledby="runs-heading">
       <div className="section-heading">
         <h2 id="runs-heading">Runs</h2>
         <p className="small muted">Filled dot: pass · hollow dot: fail</p>
       </div>
-      <p className="table-legend">Each row is one attempt. Pass means every check passed. Tokens and time describe that run; a dash means no record.</p>
+      <p className="table-legend">Each row is one run. A pass means the model passed every check. "Not recorded" means the run has no record for that value.</p>
       <div className="scroll" role="region" aria-label="Task runs" tabIndex={0}>
         <table className="grid runs-table">
           <thead>
             <tr>
               <th scope="col">Run</th>
-              <th scope="col">Variant</th>
+              <th scope="col">Skill used</th>
               <th scope="col">Skill version</th>
               <th scope="col">Model</th>
               <th scope="col">Result</th>
@@ -67,20 +67,20 @@ const Task = () => {
           </thead>
           <tbody>{runs.map(run => {
             const entry = index.showcase?.find(entry => entry.skill === task.skill && entry.model === run.model);
-            const version = run.variant !== "with_skill" ? "No skill" : run.skill_content === entry?.before ? "Before rewrite" : run.skill_content === entry?.after ? "After rewrite" : "—";
+            const version = run.variant !== "with_skill" ? "No skill" : run.skill_content === entry?.before ? "Before rewrite" : run.skill_content === entry?.after ? "After rewrite" : "Not recorded";
             return <tr key={run.run}>
               <th scope="row" className="run-label"><span className="run-id">{run.run}</span><span className="cell-detail">{run.created?.slice(0, 10) ?? "date not recorded"}</span>
               </th>
               <td>{run.variant === "with_skill" ? "with skill" : "without skill"}</td>
               <td>{version}</td>
               <td className="model">{run.model}</td>
-              <td className={run.pass ? "good" : "bad"}>{run.pass === null ? "—" : run.pass ? "pass" : "fail"}</td>
+              <td className={run.pass ? "good" : "bad"}>{run.pass === null ? "Not recorded" : run.pass ? "pass" : "fail"}</td>
               <td>
-                <span className="dots">{run.expects ? Object.entries(run.expects).sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true })).map(([check, status]) => <span key={check} className={`dot ${status}`} role="img" aria-label={`Check ${check.replace("expect_", "")}: ${status}`} title={`Check ${check.replace("expect_", "")}: ${status}`} />) : "—"}</span>
+                <span className="dots">{run.expects ? Object.entries(run.expects).sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true })).map(([check, status]) => <span key={check} className={`dot ${status}`} role="img" aria-label={`Check ${check.replace("expect_", "")}: ${status}`} title={`Check ${check.replace("expect_", "")}: ${status}`} />) : "Not recorded"}</span>
               </td>
               <td className="num">{tokens(run.usage.tokens)}</td>
               <td className="num">{duration(run.usage.duration_s)}</td>
-              <td>{run.transcript_url ? <a href={run.transcript_url} aria-label={`Open transcript for ${run.run}`}>Read ↗</a> : "—"}</td>
+              <td>{run.transcript_url ? <a href={run.transcript_url} aria-label={`Open transcript for ${run.run}`}>Read transcript ↗</a> : "Not recorded"}</td>
             </tr>;
           })}</tbody>
         </table>

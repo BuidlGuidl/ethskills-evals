@@ -17,10 +17,10 @@ export const loadIndex = async (): Promise<Index> => {
   const response = await fetch(`${import.meta.env.BASE_URL}index.json`);
 
   if (!response.ok) {
-    throw new Error(`index.json responded ${response.status} — run \`yarn build-index\` at the repo root`);
+    throw new Error(`index.json responded ${response.status}. Run \`yarn build-index\` at the repo root`);
   }
 
   return (await response.json()) as Index;
 };
 
-export const shortDate = (value: string | null) => (value === null ? "—" : value.slice(0, 10));
+export const shortDate = (value: string | null) => (value === null ? "Not recorded" : value.slice(0, 10));

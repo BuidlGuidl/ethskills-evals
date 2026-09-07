@@ -14,14 +14,14 @@ const subscribeViewport = (notify: () => void) => {
   return () => query.removeEventListener("change", notify);
 };
 const phoneViewport = () => window.matchMedia(phoneQuery).matches;
-const headlineRate = (cell: Cell | null) => cell ? `${passRate(cell)} (${cell.passed} of ${cell.total})` : "no comparable runs";
+const headlineRate = (cell: Cell | null) => cell ? `${passRate(cell)}, with ${cell.passed} of ${cell.total} runs passing` : "no runs to compare";
 const UsageValue = ({ usage, metric, format }: {
   usage: UsageMedians;
   metric: "tokens" | "duration_s" | "cost_usd";
   format: (value: number | null) => string;
 }) => (<td className="num">
   <span>{format(usage[metric])}</span>
-  <span className="cell-detail">{usage[metric] === null ? `${usage.recorded[metric]} of ${usage.runs} runs recorded` : `over ${usage.recorded[metric]} of ${usage.runs} runs`}</span>
+  <span className="cell-detail">{usage[metric] === null ? `${usage.recorded[metric]} of ${usage.runs} runs recorded` : `Based on ${usage.recorded[metric]} of ${usage.runs} runs`}</span>
 </td>);
 const EntryResults = ({ entry }: {
   entry: Entry;
@@ -40,13 +40,12 @@ const EntryResults = ({ entry }: {
   return (<article className="entry">
     <header className="entry-header">
       <p className="model">{entry.model}</p>
-      <p className="rewrite">Rewritten from {before?.lines ?? "—"} lines to {after?.lines ?? "—"} lines.</p>
+      <p className="rewrite">{before && after ? `We rewrote the skill from ${before.lines} lines to ${after.lines} lines.` : "Skill length not recorded."}</p>
       <p className="headline">
-        With the rewritten skill the model's pass rate was <strong className="accent">{totals.after ? `${passRate(totals.after)} (${totals.after.passed} of ${totals.after.total} runs)` : "no comparable runs"}</strong>.
-        {" "}Without any skill: <strong>{headlineRate(totals.noSkill)}</strong>.
-        {" "}With the original skill: <strong>{headlineRate(totals.before)}</strong>.
+        With the rewritten skill, the model's pass rate was <strong className="accent">{totals.after ? headlineRate(totals.after) : "no runs to compare"}</strong>.
+        {" "}Without the skill, it was <strong>{headlineRate(totals.noSkill)}</strong>.
+        {" "}With the original skill, it was <strong>{headlineRate(totals.before)}</strong>.
       </p>
-      <p className="muted small">A run passes only if it passes every check.</p>
     </header>
     <section aria-label={`Results on ${entry.model}`}>
       <div className="section-heading">
@@ -90,17 +89,17 @@ const EntryResults = ({ entry }: {
       </div>
     </section>
     <section aria-label="Tokens, time and cost">
-      <h2>Tokens, time & cost</h2>
+      <h2>Tokens, time and cost</h2>
       {columns.some(column => hasUsage(column.value)) ? <>
-        <p className="muted small">Medians per run across all tasks above. Tokens measure model usage, including recorded cache use. Cost requires a record for every run in its column.</p>
+        <p className="muted small">Each value is the median per run for the tasks above. Token counts include recorded cache use. We show cost only when every run in that row has a cost record.</p>
         <div className="scroll" role="region" aria-label="Usage medians" tabIndex={0}>
           <table className="grid usage-table">
             <thead>
               <tr>
-                <th scope="col">Variant</th>
-                <th scope="col" className="num">Median tokens / run</th>
-                <th scope="col" className="num">Median time / run</th>
-                <th scope="col" className="num">Median cost / run (USD)</th>
+                <th scope="col">Skill used</th>
+                <th scope="col" className="num">Median tokens per run</th>
+                <th scope="col" className="num">Median time per run</th>
+                <th scope="col" className="num">Median cost per run, USD</th>
               </tr>
             </thead>
             <tbody>{columns.map(({ label, value }) => <tr key={label}>
@@ -108,13 +107,13 @@ const EntryResults = ({ entry }: {
                 <UsageValue usage={value} metric="tokens" format={tokens} />
                 <UsageValue usage={value} metric="duration_s" format={duration} />
                 <UsageValue usage={value} metric="cost_usd" format={cost} />
-              </> : <td colSpan={3} className="muted">not recorded</td>}</tr>)}</tbody>
+              </> : <td colSpan={3} className="muted">Not recorded</td>}</tr>)}</tbody>
           </table>
         </div>
-      </> : <p className="muted">Tokens, time and cost were not recorded for these runs.</p>}
+      </> : <p className="muted">These runs have no token, time or cost records.</p>}
     </section>
-    <section aria-label="Why it changed">
-      <h2>Why it changed</h2>
+    <section aria-label="Why we rewrote it">
+      <h2>Why we rewrote it</h2>
       <ul className="docs">{reports.map(report => <li key={report.file}>
         <Link to={`/report/${report.file}`}>{report.title}</Link>
         <span className="small muted">Report · {report.date ?? "date not recorded"}</span>
@@ -122,7 +121,7 @@ const EntryResults = ({ entry }: {
         <Link to={`/pr/${pr.number}`}>{pr.title}</Link>
         <span className="small muted">Pull request #{pr.number}</span>
       </li>)}</ul>
-      {reports.length === 0 && prs.length === 0 && <p className="muted">No reports or pull requests are linked yet.</p>}
+      {reports.length === 0 && prs.length === 0 && <p className="muted">No reports or pull requests linked for this skill.</p>}
     </section>
     <section aria-label="Skill diff">
       <div className="section-heading">
@@ -131,12 +130,12 @@ const EntryResults = ({ entry }: {
       </div>
       {showDiff && <div id={diffId}>
         <div className="diff-labels">
-          <span>Before rewrite <strong>{before?.lines ?? "—"} lines</strong>
+          <span>Before rewrite <strong>{before ? `${before.lines} lines` : "Length not recorded"}</strong>
           </span>
-          <span>After rewrite <strong>{after?.lines ?? "—"} lines</strong>
+          <span>After rewrite <strong>{after ? `${after.lines} lines` : "Length not recorded"}</strong>
           </span>
         </div>
-        <p className="small muted">{phone ? "Unified view: deletions precede additions." : "Split view: before on the left, after on the right."} Word-level changes; unchanged stretches are collapsed.</p>
+        <p className="small muted">{phone ? "Removed text comes before added text." : "The original is on the left. The rewrite is on the right."} Changed words are marked. Unchanged text is folded away.</p>
         {patch ? <div className="diff-scroll" role="region" aria-label="Before and after skill text" tabIndex={0}>
           <PatchDiff patch={patch} options={{
             diffStyle: phone ? "unified" : "split",
@@ -154,7 +153,7 @@ const EntryResults = ({ entry }: {
               }
             },
           }} />
-        </div> : <p className="muted">Version text unavailable.</p>}
+        </div> : <p className="muted">Skill text unavailable.</p>}
       </div>}
     </section>
   </article>);
@@ -164,7 +163,7 @@ const Skill = () => {
   const { name } = useParams();
   const entries = index.showcase?.filter(entry => entry.skill === name) ?? [];
   if (entries.length === 0)
-    return <h1>No such skill</h1>;
+    return <h1>Skill not found</h1>;
   return <>
     <header className="skill-title">
       <Link className="back" to="/">All skills</Link>

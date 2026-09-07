@@ -424,3 +424,14 @@ Wording:
   tasks" line under it (every task counts now); keep "A run passes only if it passes every
   check."
 - Anywhere else the word "pools"/"pooled" appears, replace it with plain words.
+
+## 13. Copy pass — apply `site/UNSLOP.md` to every user-facing string
+
+Read `site/UNSLOP.md` and apply it to all site copy: page intros, the four pointers, the
+collapsible, legends, headings, column headers, the skill headline sentence, the usage
+block copy, footnotes, empty states ("No runs", "not recorded"), button labels, the
+footer. Do not change any number, any vocabulary rule from the design brief, or the
+meaning of a legend. Curly quotes become straight quotes everywhere in JSX text.
+Headings in sentence case. No em dashes; the "→" between two numbers in a cell stays.
+Where a sentence could sit unchanged on any benchmark site, make it specific to this one
+or delete it.

@@ -12,7 +12,7 @@ const Doc = ({ kind }: { kind: "report" | "pr" }) => {
       : index.prs.find(pr => String(pr.number) === number);
 
   if (found === undefined) {
-    return <h1>Not found</h1>;
+    return <h1>{kind === "report" ? "Report not found" : "Pull request not found"}</h1>;
   }
 
   const title = "title" in found ? found.title : "";

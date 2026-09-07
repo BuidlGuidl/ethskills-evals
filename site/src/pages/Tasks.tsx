@@ -7,8 +7,8 @@ const Tasks = () => {
   return <>
     <header className="page-header">
       <h1>Tasks</h1>
-      <p className="lede">{index.tasks.length} tasks across {index.skills.length} skills. Quizzes require reasoning and calculation; goals test advice during a build without prompting it. Open a task for its prompt, checks and run transcripts.</p>
-      <p className="muted">Run counts include all three versions: without skill, before rewrite and after rewrite. Checks are the conditions a run must meet.</p>
+      <p className="lede">{index.tasks.length} tasks across {index.skills.length} skills. Quizzes ask the model to reason and calculate. Goals test whether it uses skill advice during a build without a reminder. Each task links to its prompt, checks and transcripts.</p>
+      <p className="muted">Run counts include both skill versions and runs without the skill. A run passes only if the model passes every check.</p>
     </header>
     {index.skills.map(skill => <section key={skill.name} id={skill.name} className="anchored">
       <h2>
