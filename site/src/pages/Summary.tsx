@@ -1,86 +1,67 @@
 import { Link } from "react-router-dom";
+import { PassCount } from "../components/PassCount.js";
 import { formatCell, summarize } from "../lib/compare.js";
 import { useIndex } from "../lib/data.js";
-
+import { tokens } from "../lib/format.js";
 const Summary = () => {
   const index = useIndex();
   const rows = summarize(index);
-  return (
-    <>
-      <h1 className="hero">Skill benchmarks</h1>
-      <p className="lede">
-        Results for every skill in the <a href="https://ethskills.com">ethskills</a> library. A skill earns its place
-        only if a model does the job better with it than without it, so that is what is measured: the same task, once
-        with the skill installed and once without, graded by a judge that never learns which is which.
-      </p>
-
-      <h2>How a skill is measured</h2>
-      <ol className="steps">
-        <li>
-          <strong>A task.</strong> Each skill gets tasks of two kinds. A <em>quiz</em> asks the skill's question
-          outright and checks whether the model already knows the answer. A <em>goal</em> asks for something to be built
-          and checks whether the skill's discipline shows up unprompted. Goals are the harder test, and usually the
-          reason a skill exists.
-        </li>
-        <li>
-          <strong>Two variants.</strong> The task runs several times with the skill and several times without, each in a
-          fresh workspace with a fresh agent. The agent sees the task and nothing else: an agent that knows how it is
-          graded starts acting smart.
-        </li>
-        <li>
-          <strong>A blind judge.</strong> A separate call grades every run against the task's <code>expect:</code>{" "}
-          lines without knowing which variant produced it. The headline is the raw pass count.
-        </li>
-      </ol>
-      <p className="copy">
-        Every rewrite of a skill goes back through the same tasks, so a skill has a before and an after. The loop is
-        short: benchmark, read what the failing runs got wrong, patch the skill where they point, run again, until the
-        skill is crisp or it turns out not to be worth its place. How to run it yourself is in the{" "}
-        <a href={`https://github.com/${index.generated.repo}#readme`}>repo README</a>.
-      </p>
-
-      <h2>Results</h2>
-      <div className="scroll">
-        <table className="grid">
+  return (<>
+    <header className="page-header intro">
+      <p className="eyebrow">Ethereum skills · measured and rewritten</p>
+      <h1>Less to read.<br />Put to the same test.</h1>
+      <p className="lede">Benchmarks for {index.skills.length} skills from <a href="https://ethskills.com">ethskills</a>. Quizzes test what a model knows; goals test what it builds. Each task runs with and without the skill in fresh workspaces. A separate, blind judge checks the work without knowing the variant.</p>
+      <p className="intro-detail">Measure the skill, read the mistakes, rewrite it, then repeat the same tasks on the same model. Compare the rewrite with no skill first, then with the version we vendored.</p>
+    </header>
+    <section aria-labelledby="results-heading">
+      <div className="section-heading">
+        <h2 id="results-heading">Results</h2>
+        <p className="muted small">{index.tasks.length} tasks · {index.runs.length} runs</p>
+      </div>
+      <div className="scroll" role="region" aria-label="Skill results" tabIndex={0}>
+        <table className="grid summary-table">
+          <caption className="sr-only">Pass counts by skill and model. After is the rewritten skill; before is the vendored version.</caption>
           <thead>
             <tr className="group">
-              <th colSpan={4} />
-              <th colSpan={2} className="span">
-                with skill
-              </th>
+              <th colSpan={5} />
+              <th colSpan={2} scope="colgroup">With skill</th>
+              <th colSpan={2} scope="colgroup">Before → after</th>
             </tr>
             <tr>
-              <th>skill</th>
-              <th className="num">tasks</th>
-              <th className="num">runs</th>
-              <th className="num">without skill</th>
-              <th className="num">before</th>
-              <th className="num">after</th>
+              <th scope="col">Skill</th>
+              <th scope="col">Model</th>
+              <th scope="col" className="num">Tasks</th>
+              <th scope="col" className="num">Runs</th>
+              <th scope="col" className="num">Without skill</th>
+              <th scope="col" className="num secondary">Before</th>
+              <th scope="col" className="num after">After</th>
+              <th scope="col" className="num">Lines</th>
+              <th scope="col" className="num">Tokens / run</th>
             </tr>
           </thead>
-          <tbody>
-            {rows.map(row => (
-              <tr key={`${row.skill}/${row.model}`}>
-                <th scope="row">
-                  <Link to={`/skill/${row.skill}`}>{row.skill}</Link>
-                </th>
-                <td className="num">
-                  <Link to={`/tasks#${row.skill}`}>{row.tasks}</Link>
-                </td>
-                <td className="num">{row.runs}</td>
-                <td className="num">{formatCell(row.noSkill)}</td>
-                <td className="num">{formatCell(row.before)}</td>
-                <td className="num">
-                  {formatCell(row.after)}
-                </td>
-              </tr>
-            ))}
-          </tbody>
+          <tbody>{rows.map(row => (<tr key={`${row.skill}/${row.model}`}>
+            <th scope="row">
+              <Link to={`/skill/${row.skill}`}>{row.skill}</Link>
+            </th>
+            <td className="model">{row.model}</td>
+            <td className="num">
+              <Link to={`/tasks#${row.skill}`}>{row.tasks}</Link>
+            </td>
+            <td className="num">{row.runs}</td>
+            <td className="num">
+              <PassCount cell={row.noSkill} />
+            </td>
+            <td className="num secondary">{formatCell(row.before)}</td>
+            <td className="num after">
+              <PassCount cell={row.after} />
+            </td>
+            <td className="num compact">{row.beforeVersion && row.afterVersion ? `${row.beforeVersion.lines} → ${row.afterVersion.lines}` : "—"}</td>
+            <td className="num compact">{row.usage.before.tokens !== null && row.usage.after.tokens !== null ? `${tokens(row.usage.before.tokens)} → ${tokens(row.usage.after.tokens)}` : "—"}</td>
+          </tr>))}</tbody>
         </table>
       </div>
-
-    </>
-  );
+      <p className="footnote">Counts show passed / total runs for tasks with the same checks in all three columns. Skill pages show every task and explain exclusions. Tokens are medians per run; a dash means one or both versions lack records.</p>
+    </section>
+  </>);
 };
-
 export default Summary;

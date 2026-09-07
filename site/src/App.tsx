@@ -1,71 +1,57 @@
-import { Suspense, lazy } from "react";
-import { Link, Route, Routes } from "react-router-dom";
-import { countRuns } from "./lib/compare.js";
+import { Suspense, lazy, useEffect } from "react";
+import { Link, NavLink, Route, Routes, useLocation } from "react-router-dom";
 import { useIndex } from "./lib/data.js";
 import Doc from "./pages/Doc.js";
-
 import Summary from "./pages/Summary.js";
-
-// The diff engine and its syntax highlighting are the heaviest thing on the site and only the
-// skill page uses them, so they load when someone opens one rather than on the first paint.
-const Skill = lazy(() => import("./pages/Skill.js"));
 import Task from "./pages/Task.js";
 import Tasks from "./pages/Tasks.js";
-import Writeups from "./pages/Writeups.js";
+
+// Keep the diff engine off the front page's initial bundle.
+const Skill = lazy(() => import("./pages/Skill.js"));
 
 const App = () => {
   const index = useIndex();
-
-  return (
-    <>
-      <header className="topbar">
-        <nav className="wrap bar">
-          <Link className="brand" to="/">
-            ethskills evals
-          </Link>
-          <Link to="/tasks">tasks</Link>
-          <Link to="/writeups">write-ups</Link>
-          <a href={`https://github.com/${index.generated.repo}`}>repo</a>
-          <span className="grow" />
-          <span className="muted small">
-            {countRuns(index.runs)} runs · {index.generated.commit ? index.generated.commit.slice(0, 7) : "unknown"} ·{" "}
-            {index.generated.at.slice(0, 10)}
-          </span>
-        </nav>
-      </header>
-
-      <main className="wrap">
-        <Routes>
-          <Route path="/" element={<Summary />} />
-          <Route
-            path="/skill/:name"
-            element={
-              <Suspense fallback={<p className="muted">Loading the diff…</p>}>
-                <Skill />
-              </Suspense>
-            }
-          />
-          <Route path="/tasks" element={<Tasks />} />
-          <Route path="/task/:id" element={<Task />} />
-          <Route path="/writeups" element={<Writeups />} />
-          <Route path="/report/:file" element={<Doc kind="report" />} />
-          <Route path="/pr/:number" element={<Doc kind="pr" />} />
-          <Route path="*" element={<h1>Not found</h1>} />
-        </Routes>
-      </main>
-
-      {index.warnings.length > 0 && (
-        <footer className="wrap warn">
-          <strong>{index.warnings.length} warnings while building the index.</strong>
-          <ul>
-            {index.warnings.slice(0, 20).map(warning => (
-              <li key={warning}>{warning}</li>
-            ))}
-          </ul>
-        </footer>
-      )}
-    </>
-  );
+  const { pathname, hash } = useLocation();
+  useEffect(() => {
+    if (hash) {
+      try {
+        document.getElementById(decodeURIComponent(hash.slice(1)))?.scrollIntoView();
+      } catch { /* An invalid hash has no target. */ }
+    } else {
+      window.scrollTo(0, 0);
+    }
+    document.title = `${pathname === "/" ? "Skill benchmarks" : pathname.split("/").pop()} · ethskills evals`;
+  }, [pathname, hash]);
+  return <>
+    <a className="skip-link" href="#main">Skip to content</a>
+    <header className="topbar">
+      <nav className="wrap bar" aria-label="Main navigation">
+        <Link className="brand" to="/">ethskills <span>evals</span>
+        </Link>
+        <NavLink to="/tasks">tasks</NavLink>
+        <a href={`https://github.com/${index.generated.repo}`}>repo ↗</a>
+        <span className="build-meta">{index.generated.commit ? <a href={`https://github.com/${index.generated.repo}/commit/${index.generated.commit}`}>{index.generated.commit.slice(0, 7)}</a> : "unknown commit"}<span> · </span>
+          <time dateTime={index.generated.at}>{index.generated.at.slice(0, 10)}</time>
+        </span>
+      </nav>
+    </header>
+    <main className="wrap" id="main">
+      <Routes>
+        <Route path="/" element={<Summary />} />
+        <Route path="/skill/:name" element={<Suspense fallback={<p className="muted">Loading skill…</p>}>
+          <Skill />
+        </Suspense>} />
+        <Route path="/tasks" element={<Tasks />} />
+        <Route path="/task/:id" element={<Task key={pathname} />} />
+        <Route path="/report/:file" element={<Doc kind="report" />} />
+        <Route path="/pr/:number" element={<Doc kind="pr" />} />
+        <Route path="*" element={<h1>Not found</h1>} />
+      </Routes>
+    </main>
+    <footer className="wrap site-footer">
+      <span>ethskills evals</span>
+      <a href={`https://github.com/${index.generated.repo}#readme`}>How to run a benchmark ↗</a>
+    </footer>
+  </>;
 };
-
 export default App;
