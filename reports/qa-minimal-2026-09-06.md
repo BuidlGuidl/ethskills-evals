@@ -194,12 +194,15 @@ volatile-token app it would not be, and the rewrite has no line that would produ
 **The OG-image section cost nothing, and there is no variant contrast in it at all.** What
 the compression removed is the narrow *absolute-URL / `metadataBase`* rule, and that rule
 appears in **zero of the six** 2026-09-06 goal-001 diffs — neither arm states it. In #29 it
-was stated 3/3 by `with_skill`, and two of those three runs *checked the claim and passed it*
-— "builds an **absolute** URL from `metadataBase` … so it's not a bare relative path ✅". The
+was stated 3/3 by `with_skill`, and all three of those runs *checked the claim and passed
+it* — "builds an **absolute** URL from `metadataBase` … so it's not a bare relative path ✅",
+and `with-skill-3` "built from `VERCEL_PROJECT_PRODUCTION_URL` (absolute in prod, OK)". The
 full skill's OG section produced a verified non-finding on this template, not a catch.
 
-Meanwhile the stock OG asset is flagged **6/6 here, in both arms**, under branding: every
-`no_skill` run names the SE-2 `/thumbnail.jpg` and so does every `with_skill` run
+Meanwhile the stock OG asset is flagged **6/6 here, in both arms**, under branding — but
+under that predicate and not a tighter one. Naming the file is 5/6: `no-skill-3` never writes
+"thumbnail" anywhere in its diff, flagging "the OG card for every link your users share" and
+fixing "real title/description/OG image in `getMetadata`" instead. The other five name it
 (with-skill-1 "the thumbnail is what renders when someone shares a payout link";
 with-skill-3 "the thumbnail is the OG share image"). The minimal skill's "check all five"
 branding line carries that half. So dropping the section cost one checkbox on a rule nobody
@@ -308,8 +311,10 @@ reviewer following the bullet onto a component that uses the sync write gates th
 flag that is permanently `false` — the exact double-submit the bullet exists to prevent.
 
 **Scored against the runs: 0/12 affected, and the failure mode could not have fired.** All six
-goal-002 runs destructure `writeContractAsync` (5 call sites each) and zero call the
-synchronous `writeContract`, and all six derive the lock the same way — destructuring
+goal-002 runs destructure `writeContractAsync` from two `useScaffoldWriteContract` hooks and
+call it at two sites (`writeUsdcAsync(…)` / `writePayoutsAsync(…)` and their equivalents),
+zero of them call the synchronous `writeContract`, and all six derive the lock the same way —
+destructuring
 `isMining: isApproving` off the hook, then `const isBusy = isApproving || isPaying`. That
 shape is identical in `no_skill`, which
 gets it from SE-2's bundled AGENTS.md. The line is latent on this template and wrong in
