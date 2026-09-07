@@ -14,7 +14,7 @@ const subscribeViewport = (notify: () => void) => {
   return () => query.removeEventListener("change", notify);
 };
 const phoneViewport = () => window.matchMedia(phoneQuery).matches;
-const headlineRate = (cell: Cell | null) => cell ? `${passRate(cell)}, with ${cell.passed} of ${cell.total} runs passing` : "no runs to compare";
+const headlineRate = (cell: Cell | null) => cell ? `${passRate(cell)} (${cell.passed}/${cell.total} runs passing)` : "no runs to compare";
 const UsageValue = ({ usage, metric, format }: {
   usage: UsageMedians;
   metric: "tokens" | "duration_s" | "cost_usd";
@@ -40,12 +40,11 @@ const EntryResults = ({ entry }: {
   return (<article className="entry">
     <header className="entry-header">
       <p className="model">{entry.model}</p>
-      <p className="rewrite">{before && after ? `We rewrote the skill from ${before.lines} lines to ${after.lines} lines.` : "Skill length not recorded."}</p>
-      <p className="headline">
-        With the rewritten skill, the model's pass rate was <strong className="accent">{totals.after ? headlineRate(totals.after) : "no runs to compare"}</strong>.
-        {" "}Without the skill, it was <strong>{headlineRate(totals.noSkill)}</strong>.
-        {" "}With the original skill, it was <strong>{headlineRate(totals.before)}</strong>.
-      </p>
+      <ul className="headline">
+        <li>Without the skill, the model's pass rate was <strong>{headlineRate(totals.noSkill)}</strong>.</li>
+        <li>With the original skill it was <strong>{headlineRate(totals.before)}</strong><span className="lines">{before ? `${before.lines} lines` : "length not recorded"}</span></li>
+        <li>With the rewritten skill it is <strong className="accent">{headlineRate(totals.after)}</strong><span className="lines">{after ? `${after.lines} lines` : "length not recorded"}</span></li>
+      </ul>
     </header>
     <section aria-label={`Results on ${entry.model}`}>
       <div className="section-heading">
