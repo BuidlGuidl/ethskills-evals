@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 import { compareEntry, countRuns, shareRubric, summarize, tally } from "../site/src/lib/compare.js";
 import type { Entry, Index, Run, Skill, Task } from "../site/src/lib/types.js";
@@ -284,7 +287,14 @@ test("summaries follow manifest order, separate models and return versions, tota
 });
 
 test("real showcase entries retain section 5 run counts, excluding retired wallets tasks", () => {
-  const real: Index = JSON.parse(readFileSync("site/public/index.json", "utf8"));
+  // Built here rather than read from site/public/index.json: that file is generated and
+  // gitignored, and CI runs the tests before it builds the index.
+  const dir = mkdtempSync(path.join(tmpdir(), "showcase-compare-"));
+  const out = path.join(dir, "index.json");
+  const cache = path.join(dir, "derived.json");
+  writeFileSync(cache, readFileSync("site/derived.json", "utf8"));
+  execFileSync(process.execPath, ["--import", "tsx", "scripts/build-index.ts", "--no-git", "--no-prs", "--strict", "--out", out, "--cache", cache], { encoding: "utf8" });
+  const real: Index = JSON.parse(readFileSync(out, "utf8"));
   assert.equal(real.showcase?.length, 7);
   const results = real.showcase!.map(entry => compareEntry(entry, real));
   assert.deepEqual(results.map((result, i) => [real.showcase![i].skill, result.usage.before.runs, result.usage.after.runs, result.usage.noSkill.runs]), [
