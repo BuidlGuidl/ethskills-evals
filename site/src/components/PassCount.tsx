@@ -3,8 +3,7 @@ import type { Cell } from "../lib/compare.js";
 export const passRate = (cell: Cell) => `${Math.round(cell.passed / cell.total * 100)}%`;
 
 export const ResultsLegend = () => <p className="table-legend">
-  Each cell: share of runs that passed every check. Without skill pools the unaided runs of both rounds, so it has more runs.
-  {" "}Some tasks have extra runs after the rewrite.
+  Pass rate: the share of runs in which the model passed every check. Without skill has more runs because the no-skill runs from both rounds are counted together.
 </p>;
 
 export const PassCount = ({ cell }: {

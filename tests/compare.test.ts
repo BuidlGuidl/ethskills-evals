@@ -4,7 +4,8 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { compareEntry, countRuns, shareRubric, summarize, tally } from "../site/src/lib/compare.js";
+import { compareEntry, countRuns, sameRubric, shareRubric, summarize, tally } from "../site/src/lib/compare.js";
+import { selectShowcase } from "../lib/showcase.js";
 import type { Entry, Index, Run, Skill, Task } from "../site/src/lib/types.js";
 
 const version = (id: string, lines: number, runs: number) => ({
@@ -158,76 +159,29 @@ test("counting runs drops superseded readings but keeps ungraded runs", () => {
   assert.equal(tally([source, regrade, dead])?.total, 1, "but only the graded reading is tallied");
 });
 
-test("changed checks leave visible cells out of totals, with no fallback when nothing compares", () => {
-  const comparison = compareEntry(entry, index);
-  const [changed, kept] = comparison.rows;
-  assert.equal(changed.reason, "checks-rewritten");
-  assert.equal(changed.counted, false);
-  assert.deepEqual(changed.before, { passed: 1, total: 2, rubrics: ["rubric-old"] });
-  assert.deepEqual(changed.after, { passed: 2, total: 2, rubrics: ["rubric-new"] });
-  assert.equal(kept.counted, true);
-  assert.equal(kept.reason, null);
-  assert.deepEqual(comparison.coverage, { counted: 1, total: 2 });
-  assert.deepEqual(comparison.totals, { noSkill: kept.noSkill, before: kept.before, after: kept.after });
-  assert.equal(comparison.explanations[0], "Checks for 1 task were rewritten between the two benchmarks; that row is shown but not totalled.");
-  const none = compareEntry(entry, { ...index, tasks: [tasks[0]] });
-  assert.deepEqual(none.totals, { noSkill: null, before: null, after: null });
-  assert.deepEqual(none.coverage, { counted: 0, total: 1 });
+test("selection removes changed checks before comparison totals and usage", () => {
+  const selection = selectShowcase(index, [entry]);
+  const selected = { ...index, tasks: index.tasks.filter(task => selection.tasks.includes(task)), runs: index.runs.filter(run => selection.runs.includes(run)) };
+  const result = compareEntry(entry, selected);
+  assert.deepEqual(result.rows.map(row => row.task), [tasks[1].id]);
+  assert.deepEqual(result.totals, { noSkill: result.rows[0].noSkill, before: result.rows[0].before, after: result.rows[0].after });
+  assert.equal(result.usage.before.runs, 1);
+  assert.equal(result.usage.after.runs, 1);
+  assert.equal(result.usage.noSkill.runs, 1);
+  const none = selectShowcase({ ...index, tasks: [tasks[0]] }, [entry]);
+  assert.deepEqual(none.tasks, []);
+  assert.deepEqual(none.runs, []);
 });
 
-test("every selected baseline remains visible, including checks outside the after column", () => {
-  const extra = run(tasks[0].id, null, "rubric-old", false);
-  const result = compareEntry(entry, { ...index, runs: [...runs, extra] });
-  assert.deepEqual(result.rows[0].noSkill, { passed: 1, total: 2, rubrics: ["rubric-new", "rubric-old"] });
-  assert.equal(result.usage.noSkill.runs, 3);
-});
-
-test("explanations describe multiple excluded tasks and unknown checks", () => {
-  const rewritten = compareEntry(entry, { ...index, runs: runs.map(run => run.skill_content === "big" ? { ...run, rubric: "old" } : run) });
-  assert.deepEqual(rewritten.explanations, ["Checks for 2 tasks were rewritten between the two benchmarks; those rows are shown but not totalled."]);
-  const missing = compareEntry(entry, { ...index, runs: runs.filter(run => run.skill_content !== "big") });
-  assert.deepEqual(missing.explanations, ["2 tasks were added after the first benchmark, so they have no before column and are not totalled."]);
-  for (const selected of [[tasks[0]], tasks]) {
-    const unknown = compareEntry(entry, { ...index, tasks: selected, runs: runs.map(run => ({ ...run, rubric: null })) });
-    assert.deepEqual(unknown.explanations, [selected.length === 1
-      ? "We could not establish which checks were used for 1 task; that row is shown but not totalled."
-      : "We could not establish which checks were used for 2 tasks; those rows are shown but not totalled."]);
-  }
-});
-
-test("missing columns are explained, and retired tasks disappear from rows, usage and coverage", () => {
-  for (const column of ["noSkill", "before", "after"] as const) {
-    const content = { noSkill: null, before: entry.before, after: entry.after }[column];
-    const result = compareEntry(entry, { ...index, tasks: [tasks[1]], runs: runs.filter(run => run.skill_content !== content) });
-    assert.equal(result.rows[0].reason, "missing-side");
-    assert.deepEqual(result.rows[0].missing, [column]);
-    assert.equal(result.rows[0].counted, false);
-    assert.equal(result.usage[column].runs, 0);
-    assert.equal(result.usage[column].tokens, null);
-    assert.equal(result.usage[column].cost_usd, null);
-    assert.equal(result.explanations[0], column === "before"
-      ? "1 task was added after the first benchmark, so it has no before column and is not totalled."
-      : `1 task has no ${column === "noSkill" ? "without skill" : "after"} runs; that row is shown but not totalled.`);
-  }
-  const result = compareEntry(entry, { ...index, tasks: [tasks[0], { ...tasks[1], status: "retired" }] });
-  assert.equal(result.rows.length, 1);
-  assert.deepEqual(result.coverage, { counted: 0, total: 1 });
-  assert.equal(result.usage.before.runs, 2);
-});
-
-test("mixed, unknown or disjoint checks cannot enter totals even when some checks overlap", () => {
-  for (const rubric of ["other", null]) {
-    for (const content of [null, "big", "small"]) {
-      const extra = { ...run(tasks[1].id, content, "rubric-kept", true), rubric };
-      const result = compareEntry(entry, { ...index, tasks: [tasks[1]], runs: [...runs, extra] });
-      assert.equal(result.rows[0].counted, false);
-      assert.equal(result.rows[0].reason, rubric === null ? "checks-unknown" : "checks-rewritten");
-      assert.equal(result.totals.after, null);
-      assert.equal(result.explanations.length, 1);
+test("all columns need runs on one known rubric, including every baseline", () => {
+  const columns = [[{ rubric: "kept" }], [{ rubric: "kept" }], [{ rubric: "kept" }]];
+  assert.equal(sameRubric(columns), true);
+  for (let column = 0; column < 3; column++) {
+    for (const replacement of [[], [{ rubric: null }], [{ rubric: "other" }], [{ rubric: "kept" }, { rubric: "other" }], [{ rubric: "kept" }, { rubric: null }]]) {
+      assert.equal(sameRubric(columns.map((runs, i) => i === column ? replacement : runs)), false);
     }
   }
-  const result = compareEntry(entry, { ...index, tasks: [tasks[1]], runs: runs.map(run => run.variant === "no_skill" ? { ...run, rubric: "other" } : run) });
-  assert.equal(result.rows[0].reason, "checks-rewritten");
+  assert.equal(sameRubric([]), false);
 });
 
 test("entry selection uses the named model and versions, ignoring version order and repo state", () => {
@@ -271,7 +225,7 @@ test("usage takes per-run medians across all rows, preserves zeros and requires 
   assert.deepEqual(zero.usage.before, { tokens: 0, duration_s: 0, cost_usd: 0, runs: 1, recorded: { tokens: 1, duration_s: 1, cost_usd: 1 } });
 });
 
-test("summaries follow manifest order, separate models and return versions, totals, coverage and usage", () => {
+test("summaries follow manifest order, separate models and return versions, totals and usage", () => {
   const other = { ...entry, model: "another-model" };
   const summaries = summarize({ ...index, showcase: [other, entry], runs: [...runs, { ...runs[0], model: other.model }] });
   assert.deepEqual(summaries.map(row => [row.skill, row.model, row.runs]), [[skill.name, other.model, 1], [skill.name, entry.model, 8]]);
@@ -280,13 +234,12 @@ test("summaries follow manifest order, separate models and return versions, tota
   assert.equal(summary.tasks, 2);
   assert.equal(summary.beforeVersion?.lines, 547);
   assert.equal(summary.afterVersion?.lines, 39);
-  assert.deepEqual(summary.coverage, comparison.coverage);
   assert.deepEqual(summary.usage, comparison.usage);
   assert.deepEqual([summary.noSkill, summary.before, summary.after], Object.values(comparison.totals));
   assert.deepEqual(summarize({ ...index, showcase: undefined }), []);
 });
 
-test("real showcase entries retain section 5 run counts, excluding retired wallets tasks", () => {
+test("real showcase entries contain only comparable tasks and their runs", () => {
   // Built here rather than read from site/public/index.json: that file is generated and
   // gitignored, and CI runs the tests before it builds the index.
   const dir = mkdtempSync(path.join(tmpdir(), "showcase-compare-"));
@@ -295,18 +248,24 @@ test("real showcase entries retain section 5 run counts, excluding retired walle
   writeFileSync(cache, readFileSync("site/derived.json", "utf8"));
   execFileSync(process.execPath, ["--import", "tsx", "scripts/build-index.ts", "--no-git", "--no-prs", "--strict", "--out", out, "--cache", cache], { encoding: "utf8" });
   const real: Index = JSON.parse(readFileSync(out, "utf8"));
-  assert.equal(real.showcase?.length, 7);
+  assert.equal(real.showcase?.length, 6);
   const results = real.showcase!.map(entry => compareEntry(entry, real));
   assert.deepEqual(results.map((result, i) => [real.showcase![i].skill, result.usage.before.runs, result.usage.after.runs, result.usage.noSkill.runs]), [
-    ["addresses", 18, 18, 24], ["concepts", 9, 11, 9], ["l2s", 15, 15, 15], ["protocol", 6, 6, 12],
-    ["wallets", 15, 25, 40], ["security", 24, 24, 48], ["orchestration", 15, 15, 21],
+    ["addresses", 12, 12, 12], ["l2s", 12, 12, 12], ["protocol", 6, 6, 12],
+    ["wallets", 9, 9, 18], ["security", 18, 18, 36], ["orchestration", 9, 9, 12],
   ]);
-  assert.deepEqual(results.map(result => result.coverage.counted), [4, 1, 4, 2, 3, 6, 3]);
+  assert.deepEqual(results.map(result => result.rows.length), [4, 4, 2, 3, 6, 3]);
+  for (const entry of real.showcase!) {
+    for (const row of compareEntry(entry, real).rows) {
+      const runs = real.runs.filter(run => run.task === row.task && run.model === entry.model);
+      assert.ok(sameRubric([runs.filter(run => run.variant === "no_skill"), runs.filter(run => run.skill_content === entry.before), runs.filter(run => run.skill_content === entry.after)]));
+    }
+  }
   for (const result of results) {
     for (const column of ["noSkill", "before", "after"] as const) {
       assert.equal(result.rows.reduce((sum, row) => sum + (row[column]?.total ?? 0), 0), result.usage[column].runs);
-      assert.equal(result.rows.filter(row => row.counted).reduce((sum, row) => sum + (row[column]?.total ?? 0), 0), result.totals[column]?.total ?? 0);
+      assert.equal(result.rows.reduce((sum, row) => sum + (row[column]?.total ?? 0), 0), result.totals[column]?.total ?? 0);
     }
   }
-  assert.equal(summarize(real).reduce((sum, row) => sum + row.runs, 0), 385);
+  assert.equal(summarize(real).reduce((sum, row) => sum + row.runs, 0), 234);
 });

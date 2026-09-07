@@ -2,7 +2,7 @@ import { PatchDiff } from "@pierre/diffs/react";
 import { useMemo, useState, useSyncExternalStore } from "react";
 import { Link, useParams } from "react-router-dom";
 import { PassCount, passRate, ResultsLegend } from "../components/PassCount.js";
-import { compareEntry, type Row, type Cell, type UsageMedians } from "../lib/compare.js";
+import { compareEntry, type Cell, type UsageMedians } from "../lib/compare.js";
 import { useIndex } from "../lib/data.js";
 import { patchBetween } from "../lib/diff.js";
 import { cost, duration, tokens } from "../lib/format.js";
@@ -14,14 +14,7 @@ const subscribeViewport = (notify: () => void) => {
   return () => query.removeEventListener("change", notify);
 };
 const phoneViewport = () => window.matchMedia(phoneQuery).matches;
-const headlineRate = (cell: Cell | null) => cell ? `${passRate(cell)} of runs (${cell.passed} of ${cell.total})` : "no comparable runs";
-const rowReason = (row: Row) => {
-  if (row.reason === "checks-rewritten") return "Checks rewritten between rounds";
-  if (row.reason === "checks-unknown") return "Checks used for these runs are unknown";
-  if (row.missing.length === 1 && row.missing[0] === "before") return "Added after the first round";
-  const labels = { noSkill: "without skill", before: "before rewrite", after: "after rewrite" };
-  return `No runs ${row.missing.map(column => labels[column]).join(" or ")}`;
-};
+const headlineRate = (cell: Cell | null) => cell ? `${passRate(cell)} (${cell.passed} of ${cell.total})` : "no comparable runs";
 const UsageValue = ({ usage, metric, format }: {
   usage: UsageMedians;
   metric: "tokens" | "duration_s" | "cost_usd";
@@ -37,7 +30,7 @@ const EntryResults = ({ entry }: {
   const comparison = useMemo(() => compareEntry(entry, index), [entry, index]);
   const phone = useSyncExternalStore(subscribeViewport, phoneViewport);
   const [showDiff, setShowDiff] = useState(true);
-  const { before, after, rows, totals, coverage, usage } = comparison;
+  const { before, after, rows, totals, usage } = comparison;
   const patch = useMemo(() => before && after ? patchBetween(before, after) : null, [before, after]);
   const reports = index.reports.filter(report => report.skill === entry.skill);
   const prs = index.prs.filter(pr => pr.skill === entry.skill);
@@ -49,11 +42,11 @@ const EntryResults = ({ entry }: {
       <p className="model">{entry.model}</p>
       <p className="rewrite">Rewritten from {before?.lines ?? "—"} lines to {after?.lines ?? "—"} lines.</p>
       <p className="headline">
-        With the rewritten skill, the model passed <strong className="accent">{headlineRate(totals.after)}</strong>.
+        With the rewritten skill the model's pass rate was <strong className="accent">{totals.after ? `${passRate(totals.after)} (${totals.after.passed} of ${totals.after.total} runs)` : "no comparable runs"}</strong>.
         {" "}Without any skill: <strong>{headlineRate(totals.noSkill)}</strong>.
-        {" "}The original skill: <strong>{headlineRate(totals.before)}</strong>.
+        {" "}With the original skill: <strong>{headlineRate(totals.before)}</strong>.
       </p>
-      <p className="muted small">A run passes only if it passes every check. These rates cover {coverage.counted} of {coverage.total} tasks with matching checks in all three columns.</p>
+      <p className="muted small">A run passes only if it passes every check.</p>
     </header>
     <section aria-label={`Results on ${entry.model}`}>
       <div className="section-heading">
@@ -74,7 +67,6 @@ const EntryResults = ({ entry }: {
           <tbody>{rows.map(row => <tr key={row.task}>
             <th scope="row">
               <Link to={`/task/${row.task}`}>{row.task}</Link>
-              {!row.counted && <span className="total-detail">{rowReason(row)}</span>}
             </th>
             <td className="muted">{row.kind}</td>
             <td className="num">
@@ -87,7 +79,7 @@ const EntryResults = ({ entry }: {
           </tr>)}</tbody>
           <tfoot>
             <tr>
-              <th scope="row" colSpan={2}>Total <span className="total-detail">{coverage.counted} of {coverage.total} tasks with matching checks</span>
+              <th scope="row" colSpan={2}>Total
               </th>
               <td className="num"><PassCount cell={totals.noSkill} /></td>
               <td className="num secondary"><PassCount cell={totals.before} /></td>
@@ -96,7 +88,6 @@ const EntryResults = ({ entry }: {
           </tfoot>
         </table>
       </div>
-      {comparison.explanations.map(text => <p className="footnote" key={text}>{text}</p>)}
     </section>
     <section aria-label="Tokens, time and cost">
       <h2>Tokens, time & cost</h2>

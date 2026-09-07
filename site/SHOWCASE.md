@@ -384,3 +384,43 @@ Words over symbols, definitions next to numbers, no paragraph where a list will 
 the vocabulary rules from the design brief. Re-check every page at 375px for sideways
 scroll after the changes (use a real viewport — `agent-browser set viewport 375 812`, then
 `eval 'document.documentElement.scrollWidth'` — not headless Chrome's window size).
+
+## 12. Review round 2 (Shiv, 2026-09-07) — no messy rows at all, and plainer words
+
+Decision: the site shows **only rows that are a clean comparison**. A task is on the site
+only when its without / before / after cells were all graded on the same checks and every
+side has runs. Tasks that fail that are excluded at index time, the same way retired tasks
+are — not shown, not labelled, not explained. In a real clean re-run nothing is excluded,
+so this rule costs nothing later and removes every "not totalled", every row reason and
+every explanatory sentence today.
+
+- Implement the exclusion in the selection step (`lib/showcase.ts` / `build-index`), using
+  the same rubric logic `compareEntry` uses to decide whether a row is totalled: drop a
+  task from `tasks` (and its runs) when its three cells do not share one rubric or a side
+  has no runs. Print one stderr note per entry listing what was excluded and why
+  (`showcase wallets (claude-opus-5): excluded wallets-quiz-002 (checks rewritten between
+  rounds), wallets-goal-002 (no runs before the rewrite)`). This is a note, not a warning:
+  it must not fail `--strict`.
+- Remove `concepts` from the manifest: it would be left with one task. Six skills remain:
+  addresses (4 tasks), l2s (4), protocol (2), wallets (3), security (6), orchestration (3).
+- With no messy rows possible, delete the row-reason labels, the `explanations` sentences
+  and the "N of M tasks with matching checks" qualifiers from the pages, and the
+  now-unreachable code in `compare.ts` (keep the rubric check itself — it is what the
+  selection uses — and keep tests for it). Totals cover every row shown. Update the
+  real-data test to the new counts.
+
+Wording:
+
+- Define **rate** where it first appears, in words a newcomer gets. Legend above every
+  results table, exactly: *"Pass rate: the share of runs in which the model passed every
+  check. Without skill has more runs because the no-skill runs from both rounds are counted
+  together."* Drop the second legend line ("Rates use tasks with matching checks…") — it no
+  longer applies.
+- Front page lede: *"… each measured before and after a rewrite, on the same model."*
+  ("on one model" → "on the same model".)
+- Skill page headline stays a sentence; make sure it says "pass rate" once, e.g. *"With the
+  rewritten skill the model's pass rate was 100% (9 of 9 runs). Without any skill: 100% (18
+  of 18). With the original skill: 100% (9 of 9)."* Drop the "These rates cover N of M
+  tasks" line under it (every task counts now); keep "A run passes only if it passes every
+  check."
+- Anywhere else the word "pools"/"pooled" appears, replace it with plain words.

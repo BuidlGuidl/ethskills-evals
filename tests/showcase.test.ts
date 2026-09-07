@@ -5,11 +5,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { loadShowcase, runModel, runUsage, selectShowcase } from "../lib/showcase.js";
+import { compareEntry, sameRubric } from "../site/src/lib/compare.js";
 import type { Entry, Index } from "../site/src/lib/types.js";
 
 const entry: Entry = { skill: "addresses", model: "claude-opus-5", before: "big", after: "small" };
 const run = (id: string, content: string | null) => ({
-  task: "addresses-quiz-001", skill: "addresses", run: id, model: entry.model,
+  rubric: "checks" as string | null, task: "addresses-quiz-001", skill: "addresses", run: id, model: entry.model,
   variant: content === null ? "no_skill" : "with_skill", skill_content: content,
   superseded_by: null as string | null, retracted: null as string | null, pass: true as boolean | null,
 });
@@ -68,7 +69,7 @@ test("selection drops old readings, retractions, ungraded runs, retired tasks an
   ];
   const result = selectShowcase({ ...data, runs: [...data.runs, ...excluded] }, [entry]);
   assert.deepEqual(result.runs, data.runs);
-  assert.deepEqual(result.tasks.map(task => task.id), ["addresses-quiz-001", "addresses-quiz-002"]);
+  assert.deepEqual(result.tasks.map(task => task.id), ["addresses-quiz-001"]);
   assert.deepEqual(result.skills, [{ name: "addresses", versions: [{ id: "big", runs: 1, text: "big" }, { id: "small", runs: 1, text: "small" }] }]);
   assert.deepEqual(result.reports, [{ skill: "addresses" }, { skill: "addresses" }]);
   assert.deepEqual(result.prs, [{ skill: "addresses" }]);
@@ -78,11 +79,29 @@ test("selection drops old readings, retractions, ungraded runs, retired tasks an
 
 test("each skill/model entry selects its own versions and retains manifest order without doubling baselines", () => {
   const other = { ...entry, model: "gpt-5.4", before: "other" };
-  const runs = [...data.runs, { ...run("other-before", "other"), model: other.model }, { ...run("other-after", "small"), model: other.model }];
+  const runs = [...data.runs, { ...run("other-before", "other"), model: other.model }, { ...run("other-after", "small"), model: other.model }, { ...run("other-without", null), model: other.model }];
   const result = selectShowcase({ ...data, runs }, [other, entry]);
   assert.deepEqual(result.showcase, [other, entry]);
-  assert.equal(result.runs.length, 5);
+  assert.equal(result.runs.length, 6);
   assert.deepEqual(result.warnings, []);
+});
+
+test("exclusions apply per model and reject missing, mixed and unknown checks without warnings", () => {
+  const other = { ...entry, model: "gpt-5.4" };
+  for (const changed of [
+    data.runs.filter(run => run.variant !== "no_skill"),
+    data.runs.map(run => ({ ...run, rubric: null })),
+    [...data.runs, { ...run("extra", null), rubric: "other" }],
+  ]) {
+    const result = selectShowcase({ ...data, runs: [...changed, ...data.runs.map(run => ({ ...run, model: other.model }))] }, [entry, other]);
+    assert.deepEqual(result.tasks.map(task => task.id), ["addresses-quiz-001"]);
+    assert.equal(result.runs.length, 3);
+    assert.ok(result.runs.every(run => run.model === other.model));
+    assert.deepEqual(result.warnings, []);
+    assert.equal(result.notes.length, 2);
+    assert.match(result.notes[0], /addresses-quiz-001 \((no runs without skill|checks unknown|checks rewritten between rounds)\)/);
+    assert.ok(!result.notes[1].includes("addresses-quiz-001"));
+  }
 });
 
 test("unknown versions, skills and models warn for each empty side", () => {
@@ -119,10 +138,29 @@ test("the CLI selects the committed showcase after resolution and leaves the der
   writeFileSync(cache, original);
   const args = ["--import", "tsx", "scripts/build-index.ts", "--no-git", "--no-prs", "--strict", "--out", out, "--cache", cache];
   try {
-    execFileSync(process.execPath, args, { encoding: "utf8" });
+    const built = spawnSync(process.execPath, args, { encoding: "utf8" });
+    assert.equal(built.status, 0, built.stderr);
+    assert.equal(built.stderr.trim().split("\n").length, 6);
+    assert.doesNotMatch(built.stderr, /warning:/);
+    assert.match(built.stderr, /showcase protocol \(claude-opus-5\): excluded none/);
+    assert.match(built.stderr, /wallets-goal-004 \(no runs before the rewrite\)/);
     const index: Index = JSON.parse(readFileSync(out, "utf8"));
-    assert.equal(index.skills.length, 7);
+    assert.equal(index.skills.length, 6);
     assert.deepEqual(index.showcase, loadShowcase("site/showcase.json"));
+    assert.equal(index.tasks.length, 22);
+    assert.equal(index.runs.length, 234);
+    assert.deepEqual(index.warnings, []);
+    assert.ok(!("notes" in index));
+    for (const entry of index.showcase!) {
+      const comparison = compareEntry(entry, index);
+      for (const row of comparison.rows) {
+        const runs = index.runs.filter(run => run.task === row.task && run.model === entry.model);
+        assert.ok(sameRubric([runs.filter(run => run.variant === "no_skill"), runs.filter(run => run.skill_content === entry.before), runs.filter(run => run.skill_content === entry.after)]));
+      }
+      for (const column of ["noSkill", "before", "after"] as const) {
+        assert.equal(comparison.totals[column]?.total, comparison.rows.reduce((sum, row) => sum + row[column]!.total, 0));
+      }
+    }
     assert.ok(index.tasks.every(task => task.status === "live"));
     assert.ok(index.runs.every(run => typeof run.model === "string" && Object.keys(run.usage).length === 4));
     assert.deepEqual(selectShowcase(index, index.showcase!).runs, index.runs);
@@ -146,11 +184,9 @@ test("the CLI selects the committed showcase after resolution and leaves the der
       const runs = index.runs.filter(run => run.skill === entry.skill && run.model === entry.model);
       return [entry.skill, ...[entry.before, entry.after, null].map(id => runs.filter(run => id === null ? run.variant === "no_skill" : run.variant === "with_skill" && run.skill_content === id).length)];
     });
-    // Section 5 includes six before and six baseline runs on retired wallets quizzes.
-    // Section 6 excludes those tasks, so the live counts are 15 and 40.
     assert.deepEqual(counts, [
-      ["addresses", 18, 18, 24], ["concepts", 9, 11, 9], ["l2s", 15, 15, 15], ["protocol", 6, 6, 12],
-      ["wallets", 15, 25, 40], ["security", 24, 24, 48], ["orchestration", 15, 15, 21],
+      ["addresses", 12, 12, 12], ["l2s", 12, 12, 12], ["protocol", 6, 6, 12],
+      ["wallets", 9, 9, 18], ["security", 18, 18, 36], ["orchestration", 9, 9, 12],
     ]);
     assert.ok(full.skills.length > index.skills.length);
     assert.ok(full.runs.some(run => run.superseded_by !== null));

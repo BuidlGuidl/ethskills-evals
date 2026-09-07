@@ -9,7 +9,7 @@ const Summary = () => {
   return (<>
     <header className="page-header intro">
       <h1>Skill evals</h1>
-      <p className="lede">{index.skills.length} skills from <a href="https://ethskills.com">ethskills.com</a>, each measured before and after a rewrite, on one model.</p>
+      <p className="lede">{index.skills.length} skills from <a href="https://ethskills.com">ethskills.com</a>, each measured before and after a rewrite, on the same model.</p>
       <ul className="intro-pointers">
         <li>Two kinds of task: a <strong>quiz</strong> needs reasoning and calculation; a <strong>goal</strong> tests a skill’s advice during a build, without prompting it.</li>
         <li>Each task runs several times <strong>with the skill</strong> and <strong>without it</strong>. Each run starts in a fresh workspace on its own branch.</li>
@@ -31,7 +31,6 @@ const Summary = () => {
         <p className="muted small">{index.tasks.length} tasks · {index.runs.length} runs</p>
       </div>
       <ResultsLegend />
-      <p className="table-legend">Rates use tasks with matching checks in all three columns. Task and run counts include all shown results.</p>
       <div className="scroll" role="region" aria-label="Skill results" tabIndex={0}>
         <table className="grid summary-table">
           <caption className="sr-only">Pass rates by skill and model, before and after the rewrite.</caption>

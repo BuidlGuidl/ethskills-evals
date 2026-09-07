@@ -781,7 +781,11 @@ const main = async () => {
     warnings.push(...selected.warnings);
   }
 
-  const output = { ...index, ...selected, warnings };
+  const { notes, ...selection } = selected ?? { notes: [] };
+  for (const note of notes) {
+    process.stderr.write(`${note}\n`);
+  }
+  const output = { ...index, ...selection, warnings };
 
   await mkdir(path.dirname(outPath), { recursive: true });
   await writeFile(outPath, `${JSON.stringify(output, null, 2)}\n`, "utf8");
