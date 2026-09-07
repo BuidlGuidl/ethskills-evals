@@ -87,13 +87,14 @@ the past. Concretely:
 
 | # | Decision |
 |---|---|
-| D1 | Only skills with a clean before/after on one model are shown. Today that is 8 skills; the manifest lists them. |
+| D1 | Only skills with a clean before/after on one model are shown. Today that is 7 skills; the manifest lists them. `standards` was in the first cut and dropped: its checks were rewritten for all three tasks between the two benchmarks, so it has no comparable row. |
 | D2 | Selection is by a manifest, `site/showcase.json`, read by `build-index`. Nothing in `artifacts/` moves. If the manifest is absent, `build-index` behaves as it does today (unfiltered). |
 | D3 | A manifest entry is `{ skill, model, before, after }` where `before`/`after` are version ids (the 12-hex `skill_content` hashes). Several entries per skill are allowed, one per model. |
 | D4 | The executor model of a run is `executor_model` when recorded; otherwise, when the record says the judge was the same agent as the executor (`judge.self_judged === true`), the judge's model — every report in `reports/` confirms those were single-model stacks; otherwise `<executor>-unknown`, e.g. `claude-unknown`. |
 | D5 | The words "self-judged" / "self_judged" appear nowhere in the UI. The model name is shown instead. |
 | D6 | "Before" is the skill text as it was **when we vendored it** (the manifest's `before` id). The site never fetches, mentions or compares against ethskills.com's current text. A link to `https://ethskills.com/<skill>/SKILL.md` labelled "upstream" is fine. |
 | D7 | Tokens / duration / cost come from the transcript stats footer via `parseTranscriptStats` in `lib/usage.ts`, with `result.yaml`'s `usage:` block filling gaps, exactly as `scripts/run-stats.ts` merges them. Aggregates are **medians per run**. Cost is shown for a column only when every run in it has a cost (in practice: Claude runs); otherwise "—". Never estimate cost. Codex token totals and Claude token totals are not comparable with each other (see the comment above `buildUsage`); they are only ever compared within one model, between columns. |
+| D7a | The harness only began recording tokens, duration and cost on 2026-08-20 (`ddf3e322`), and the older run folders hold nothing else to recover them from. In today's data only `l2s` and `security` have usage on all three columns; `addresses` and `standards` have none; `concepts`, `protocol`, `wallets`, `orchestration` have it for "after" and (partly) "without" but not "before". A clean re-run will have full coverage, so the UI must **degrade, not hide the feature**: show a column's medians when at least one run in it has them, with the run count they are over (`over 11 of 11 runs`); show "not recorded" for a column with none; when no column of an entry has any, replace the block with one sentence: "Tokens, time and cost were not recorded for these runs." On the front page the tokens before → after cell is "—" unless both sides have data. Never mix Codex and Claude token counts. |
 | D8 | Pages: **Summary** (`/`), **Skill** (`/skill/:name`), **Tasks** (`/tasks`), **Task** (`/task/:id`), plus the existing report/PR document routes so links still work. No "Write-ups" navigation item. |
 | D9 | Headline comparison is **after vs without** ("the skill helps"); secondary is **before → after** ("the rewrite kept it"), and size before → after in lines. |
 | D10 | Task rows whose `expect:` lines were rewritten between the before and after benchmarks (the two cells carry different rubric ids) are **shown** with their numbers, **left out of the totals**, and explained by one plain sentence under the table — no symbols. Same for a task that has runs on only one side. Retired tasks are excluded from the showcase entirely. |
@@ -111,7 +112,6 @@ the past. Concretely:
     { "skill": "concepts",      "model": "claude-opus-5",  "before": "2967d95ba7c0", "after": "6caff76c2ad3" },
     { "skill": "l2s",           "model": "claude-opus-5",  "before": "a3ec5f219e45", "after": "3705d577e3ff" },
     { "skill": "protocol",      "model": "claude-opus-5",  "before": "100b87c78a9e", "after": "76d1dc80c748" },
-    { "skill": "standards",     "model": "claude-opus-5",  "before": "734a0bae863e", "after": "462679cf46ea" },
     { "skill": "wallets",       "model": "claude-opus-5",  "before": "ae147e09a230", "after": "fc965d17a92a" },
     { "skill": "security",      "model": "gpt-5.4",        "before": "dd988d2f4172", "after": "662e68fa0226" },
     { "skill": "orchestration", "model": "gpt-5.6-terra",  "before": "524ef0810e78", "after": "60b3a1402947" }
@@ -128,13 +128,12 @@ retracted, graded):
 | concepts | claude-opus-5 | 230 lines, 9 / 3 | 42 lines, 11 / 3 | 9 |
 | l2s | claude-opus-5 | 187 lines, 15 / 5 | 50 lines, 15 / 5 | 15 |
 | protocol | claude-opus-5 | 267 lines, 6 / 2 | 24 lines, 6 / 2 | 12 |
-| standards | claude-opus-5 | 393 lines, 9 / 3 | 51 lines, 9 / 3 | 18 |
 | wallets | claude-opus-5 | 169 lines, 21 / 7 | 26 lines, 25 / 7 | 46 |
 | security | gpt-5.4 | 487 lines, 24 / 8 | 56 lines, 24 / 8 | 48 |
 | orchestration | gpt-5.6-terra | 225 lines, 15 / 4 of 5 | 34 lines, 15 / 5 | 21 |
 
 Known wrinkles in this data that D10 covers: `orchestration-quiz-004` has no before runs;
-`addresses` (2 tasks), `concepts` (2), `standards` (3), `security` (2) and `wallets` (2)
+`addresses` (2 tasks), `concepts` (2), `security` (2), `wallets` (2) and `l2s` (1)
 have tasks whose expect lines were rewritten between the two benchmarks. `wallets` also has
 3 retired tasks with before-only runs — excluded.
 

@@ -121,7 +121,7 @@ test("the CLI selects the committed showcase after resolution and leaves the der
   try {
     execFileSync(process.execPath, args, { encoding: "utf8" });
     const index: Index = JSON.parse(readFileSync(out, "utf8"));
-    assert.equal(index.skills.length, 8);
+    assert.equal(index.skills.length, 7);
     assert.deepEqual(index.showcase, loadShowcase("site/showcase.json"));
     assert.ok(index.tasks.every(task => task.status === "live"));
     assert.ok(index.runs.every(run => typeof run.model === "string" && Object.keys(run.usage).length === 4));
@@ -150,7 +150,7 @@ test("the CLI selects the committed showcase after resolution and leaves the der
     // Section 6 excludes those tasks, so the live counts are 15 and 40.
     assert.deepEqual(counts, [
       ["addresses", 18, 18, 24], ["concepts", 9, 11, 9], ["l2s", 15, 15, 15], ["protocol", 6, 6, 12],
-      ["standards", 9, 9, 18], ["wallets", 15, 25, 40], ["security", 24, 24, 48], ["orchestration", 15, 15, 21],
+      ["wallets", 15, 25, 40], ["security", 24, 24, 48], ["orchestration", 15, 15, 21],
     ]);
     assert.ok(full.skills.length > index.skills.length);
     assert.ok(full.runs.some(run => run.superseded_by !== null));

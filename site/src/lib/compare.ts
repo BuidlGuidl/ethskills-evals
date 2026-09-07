@@ -1,10 +1,6 @@
-import type { Index, Run, Skill, SkillVersion, Task } from "./types.js";
+import type { Entry, Index, Run, Skill } from "./types.js";
 
-// Where the site decides what may be set next to what. Two pass counts are a comparison
-// only when both were graded against the same expect lines, and those get rewritten between
-// benchmarks — the hand-written reports mark such cells '‡' and tell the reader not to read
-// them. Every cell carries the rubrics it was tallied from so a row can say when they moved.
-
+// Cells retain their check revisions so incompatible grades never enter comparison totals.
 export type Cell = { passed: number; total: number; rubrics: string[] };
 
 // A retracted grade measured the harness, not the model — a killed CLI, a deliverable that
@@ -48,187 +44,134 @@ export const mixed = (cell: Cell | null) => cell !== null && cell.rubrics.length
 export const versionById = (skill: Skill, id: string | null) =>
   id === null ? null : (skill.versions.find(version => version.id === id) ?? null);
 
-export type Row = {
+type Columns<Value> = { noSkill: Value; before: Value; after: Value };
+type Column = keyof Columns<unknown>;
+const COLUMNS: Column[] = ["noSkill", "before", "after"];
+
+export type Row = Columns<Cell | null> & {
   task: string;
   kind: "quiz" | "goal";
-  /** not run again, so a version measured after it was retired has no cell here */
-  retired: boolean;
-  noSkill: Cell | null;
-  before: Cell | null;
-  after: Cell | null;
-  /** the two skilled cells were graded against different expect lines, so they are not a comparison */
-  rubricMoved: boolean;
-  /** no unaided run shares the skilled column's rubric, so noSkill pools every unaided run there is */
-  unaidedOffRubric: boolean;
-  /** in the totals: every cell on the row reads against the others */
   counted: boolean;
+  reason: "checks-rewritten" | "missing-side" | "checks-unknown" | null;
+  missing: Column[];
 };
 
-export type SkillComparison = {
-  /** the first version anyone measured — the vendored file, for every skill so far */
-  before: SkillVersion | null;
-  /** the newest measured version; null when only one was ever benchmarked */
-  after: SkillVersion | null;
-  /** what the repo holds today, which is not always what was measured */
-  current: SkillVersion | null;
-  /** the repo was edited after the benchmark, so `current` carries no numbers of its own */
-  editedAfterBenchmark: boolean;
-  /** measured versions between before and after — real runs that no column shows */
-  between: SkillVersion[];
-  rows: Row[];
-  /**
-   * Totalled over the rows where every cell reads against the others: both versions ran the
-   * task, under the same expect lines, and the unaided runs were graded on those lines too.
-   * A version re-run on one task of six would otherwise show 3/3 beside the older 15/15 and
-   * read as the weaker result; a row whose rubric moved would add two different measurements
-   * into one number. `coverage` says how many rows that leaves.
-   */
-  totals: { noSkill: Cell | null; before: Cell | null; after: Cell | null };
-  coverage: { counted: number; total: number };
-  /** rows with a cell in both skilled columns, whatever their rubrics */
-  sharedRows: number;
-  /** false when no row is a comparison, so the totals are each version's own */
-  comparable: boolean;
+export type UsageMedians = {
+  tokens: number | null;
+  duration_s: number | null;
+  cost_usd: number | null;
+  runs: number;
+  recorded: { tokens: number; duration_s: number; cost_usd: number };
 };
 
-export const compareSkill = (skill: Skill, tasks: Task[], runs: Run[]): SkillComparison => {
-  const mine = runs.filter(run => run.skill === skill.name);
-  const measuredVersions = skill.versions.filter(version => version.runs > 0);
-  const before = measuredVersions[0] ?? null;
-  const current = versionById(skill, skill.current);
+const median = (values: (number | null)[]) => {
+  const sorted = values.filter((value): value is number => value !== null).sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
 
-  const tasksOf = (version: SkillVersion) =>
-    new Set(mine.filter(run => run.skill_content === version.id).map(run => run.task));
+  return sorted.length === 0 ? null : sorted.length % 2 === 0
+    ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle];
+};
 
-  // Which version is the "after" is not simply the newest measured one. skills/standards was
-  // benchmarked on all three of its tasks and then re-run on one, and taking the last would
-  // face the original with a single row; skills/tools has an intermediate version that covers
-  // every task, and taking the widest would put an intermediate in the column while a later
-  // version is what actually shipped. So: the version the repo holds, if a run ever saw it;
-  // otherwise the newest one benchmarked on at least half the older version's work; otherwise
-  // whatever shares the most.
-  const beforeTasks = before === null ? new Set<string>() : tasksOf(before);
-  const candidates = before === null ? [] : measuredVersions.filter(version => version.id !== before.id);
-  const shared = (version: SkillVersion) => [...tasksOf(version)].filter(task => beforeTasks.has(task)).length;
+// Usage describes every displayed run, including rows excluded from pass totals.
+// Missing tokens and duration do not become zeros; cost requires a complete column.
+const usageMedians = (runs: Run[]): UsageMedians => ({
+  tokens: median(runs.map(run => run.usage.tokens)),
+  duration_s: median(runs.map(run => run.usage.duration_s)),
+  cost_usd: runs.every(run => run.usage.cost_usd !== null) ? median(runs.map(run => run.usage.cost_usd)) : null,
+  runs: runs.length,
+  recorded: {
+    tokens: runs.filter(run => run.usage.tokens !== null).length,
+    duration_s: runs.filter(run => run.usage.duration_s !== null).length,
+    cost_usd: runs.filter(run => run.usage.cost_usd !== null).length,
+  },
+});
 
-  const after =
-    candidates.find(version => version.id === skill.current) ??
-    [...candidates].reverse().find(version => shared(version) * 2 >= beforeTasks.size) ??
-    [...candidates]
-      .map((version, order) => ({ version, order }))
-      .sort((a, b) => shared(b.version) - shared(a.version) || b.version.runs - a.version.runs || b.order - a.order)[0]
-      ?.version ??
-    null;
+export const compareEntry = (entry: Entry, index: Index) => {
+  const tasks = index.tasks.filter(task => task.skill === entry.skill && task.status === "live")
+    .sort((a, b) => a.id.localeCompare(b.id));
+  const live = new Set(tasks.map(task => task.id));
+  // Resolve readings before partitioning: an older grade must not survive in another column.
+  const mine = newest(index.runs).filter(run => run.superseded_by === null && measured(run) && run.pass !== null &&
+    run.skill === entry.skill && run.model === entry.model && live.has(run.task));
+  const columns = {
+    noSkill: mine.filter(run => run.variant === "no_skill"),
+    before: mine.filter(run => run.variant === "with_skill" && run.skill_content === entry.before),
+    after: mine.filter(run => run.variant === "with_skill" && run.skill_content === entry.after),
+  };
 
-  const rows: Row[] = tasks
-    .filter(task => task.skill === skill.name)
-    .sort((a, b) => a.id.localeCompare(b.id))
-    .map(task => {
-      const forTask = mine.filter(run => run.task === task.id);
-      const cellFor = (version: SkillVersion | null) =>
-        version === null ? null : tally(forTask.filter(run => run.skill_content === version.id));
+  const rows: Row[] = tasks.map(task => {
+    const runs = {
+      noSkill: columns.noSkill.filter(run => run.task === task.id),
+      before: columns.before.filter(run => run.task === task.id),
+      after: columns.after.filter(run => run.task === task.id),
+    };
+    const cells = { noSkill: tally(runs.noSkill), before: tally(runs.before), after: tally(runs.after) };
+    const missing = COLUMNS.filter(column => cells[column] === null);
+    const unknown = COLUMNS.some(column => runs[column].some(run => run.rubric === null));
+    // An overlap alone does not make a pooled cell comparable (orchestration-quiz-003).
+    const sameChecks = !COLUMNS.some(column => mixed(cells[column])) &&
+      shareRubric(cells.before, cells.after) && shareRubric(cells.noSkill, cells.after);
+    const reason = missing.length > 0 ? "missing-side" : unknown ? "checks-unknown" : !sameChecks ? "checks-rewritten" : null;
 
-      const beforeCell = cellFor(before);
-      const afterCell = cellFor(after);
-      const rubricMoved = beforeCell !== null && afterCell !== null && !shareRubric(beforeCell, afterCell);
+    return { task: task.id, kind: task.kind, ...cells, counted: reason === null, reason, missing };
+  });
+  const counted = rows.filter(row => row.counted);
+  const sum = (column: Column): Cell | null => {
+    const cells = counted.map(row => row[column]).filter((cell): cell is Cell => cell !== null);
 
-      // The unaided variant was graded on a rubric too. Align it with the newest skilled
-      // column on the row so the three cells are read against each other. When nothing
-      // overlaps, every unaided run is shown rather than an empty cell — and the row says
-      // so, because that number faces neither skilled column.
-      const target = afterCell ?? beforeCell;
-      const unaided = forTask.filter(run => run.variant === "no_skill");
-      const aligned = target === null ? unaided : unaided.filter(run => run.rubric !== null && target.rubrics.includes(run.rubric));
-      const unaidedOffRubric = target !== null && unaided.length > 0 && aligned.length === 0;
-      const retired = task.status === "retired";
-
-      return {
-        task: task.id,
-        kind: task.kind,
-        retired,
-        noSkill: tally(aligned.length > 0 ? aligned : unaided),
-        before: beforeCell,
-        after: afterCell,
-        rubricMoved,
-        unaidedOffRubric,
-        // A retired task keeps its cell for what the older version scored, but the newer
-        // version was never run on it, so it cannot be in a before-and-after total.
-        counted:
-          beforeCell !== null &&
-          !unaidedOffRubric &&
-          (after === null || (!retired && afterCell !== null && !rubricMoved)),
-      };
-    });
-
-  // Only the rows that are a comparison, so the totals share a denominator and a rubric.
-  // skills/building-blocks was reduced and then benchmarked on a task the long version never
-  // ran, so the two share nothing. Rather than empty every cell, total each column over its
-  // own rows and say plainly that this is not a comparison.
-  const overlap = rows.filter(row => row.counted);
-  const counted = overlap.length > 0 ? overlap : rows;
-
-  const sum = (pick: (row: Row) => Cell | null): Cell | null => {
-    const cells = counted.map(pick).filter((cell): cell is Cell => cell !== null);
-
-    if (cells.length === 0) {
-      return null;
-    }
-
-    return {
+    return cells.length === 0 ? null : {
       passed: cells.reduce((total, cell) => total + cell.passed, 0),
       total: cells.reduce((total, cell) => total + cell.total, 0),
       rubrics: [...new Set(cells.flatMap(cell => cell.rubrics))].sort(),
     };
   };
+  const explanations: string[] = [];
+  const rewritten = rows.filter(row => row.reason === "checks-rewritten").length;
+  if (rewritten > 0) {
+    explanations.push(`Checks for ${rewritten} ${rewritten === 1 ? "task differ" : "tasks differ"} across the benchmark columns; those rows are shown but not totalled.`);
+  }
+  const labels = { noSkill: "without skill", before: "before", after: "after" };
+  for (const column of COLUMNS) {
+    const missing = rows.filter(row => row.missing.includes(column)).length;
+    if (missing > 0) {
+      explanations.push(`${missing} ${missing === 1 ? "task has" : "tasks have"} no ${labels[column]} runs; those rows are shown but not totalled.`);
+    }
+  }
+  const unknown = rows.filter(row => row.reason === "checks-unknown").length;
+  if (unknown > 0) {
+    explanations.push(`The check revision is unknown for ${unknown} ${unknown === 1 ? "task" : "tasks"}; those rows are shown but not totalled.`);
+  }
+  const skill = index.skills.find(skill => skill.name === entry.skill);
 
   return {
-    before,
-    after,
-    current,
-    editedAfterBenchmark: current !== null && current.runs === 0,
-    between: measuredVersions.filter(version => version.id !== before?.id && version.id !== after?.id),
+    before: skill ? versionById(skill, entry.before) : null,
+    after: skill ? versionById(skill, entry.after) : null,
     rows,
-    totals: { noSkill: sum(row => row.noSkill), before: sum(row => row.before), after: sum(row => row.after) },
-    coverage: {
-      counted: overlap.length,
-      total: after === null ? rows.length : rows.filter(row => !row.retired).length,
+    totals: { noSkill: sum("noSkill"), before: sum("before"), after: sum("after") },
+    coverage: { counted: counted.length, total: rows.length },
+    explanations,
+    usage: {
+      noSkill: usageMedians(columns.noSkill),
+      before: usageMedians(columns.before),
+      after: usageMedians(columns.after),
     },
-    sharedRows: rows.filter(row => row.before !== null && row.after !== null).length,
-    comparable: after === null || overlap.length > 0,
   };
 };
 
-export type SkillSummary = {
-  name: string;
-  tasks: number;
-  runs: number;
-  noSkill: Cell | null;
-  before: Cell | null;
-  after: Cell | null;
-  beforeVersion: SkillVersion | null;
-  afterVersion: SkillVersion | null;
-  coverage: { counted: number; total: number };
-  comparable: boolean;
-};
+export const summarize = (index: Index) => (index.showcase ?? []).map(entry => {
+  const comparison = compareEntry(entry, index);
 
-export const summarize = (index: Index): SkillSummary[] =>
-  index.skills.map(skill => {
-    const comparison = compareSkill(skill, index.tasks, index.runs);
-    const mine = index.runs.filter(run => run.skill === skill.name);
-
-    return {
-      name: skill.name,
-      // Live tasks: a retired one is kept for its runs, and is not work the skill still faces.
-      tasks: index.tasks.filter(task => task.skill === skill.name && task.status === "live").length,
-      runs: countRuns(mine),
-      noSkill: comparison.totals.noSkill,
-      before: comparison.totals.before,
-      after: comparison.totals.after,
-      beforeVersion: comparison.before,
-      afterVersion: comparison.after,
-      coverage: comparison.coverage,
-      comparable: comparison.comparable,
-    };
-  });
+  return {
+    skill: entry.skill,
+    model: entry.model,
+    tasks: comparison.rows.length,
+    runs: comparison.usage.noSkill.runs + comparison.usage.before.runs + comparison.usage.after.runs,
+    ...comparison.totals,
+    beforeVersion: comparison.before,
+    afterVersion: comparison.after,
+    coverage: comparison.coverage,
+    usage: comparison.usage,
+  };
+});
 
 export const formatCell = (cell: Cell | null) => (cell === null ? "—" : `${cell.passed}/${cell.total}`);

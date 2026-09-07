@@ -1,18 +1,10 @@
 import { Link } from "react-router-dom";
-import Marker from "../components/Marker.js";
 import { formatCell, summarize } from "../lib/compare.js";
 import { useIndex } from "../lib/data.js";
-import { NO_SHARED_TASKS, PARTIAL_COVERAGE } from "../lib/notes.js";
 
 const Summary = () => {
   const index = useIndex();
   const rows = summarize(index);
-  const rewritten = rows.filter(row => row.afterVersion !== null);
-  // The judge is a separate call, and on a single-stack benchmark it is the same model as the
-  // executor. The record says so, and a page that shows the numbers has to say so too.
-  const graded = index.runs.filter(run => run.pass !== null && run.retracted === null);
-  const selfJudged = graded.filter(run => run.judge?.self_judged === true).length;
-
   return (
     <>
       <h1 className="hero">Skill benchmarks</h1>
@@ -41,10 +33,6 @@ const Summary = () => {
         </li>
       </ol>
       <p className="copy">
-        The judge is a separate call, but usually the same model as the executor: {selfJudged} of {graded.length}{" "}
-        graded runs are self-judged, and each record says so. That is a caveat on the numbers, not a defect in them.
-      </p>
-      <p className="copy">
         Every rewrite of a skill goes back through the same tasks, so a skill has a before and an after. The loop is
         short: benchmark, read what the failing runs got wrong, patch the skill where they point, run again, until the
         skill is crisp or it turns out not to be worth its place. How to run it yourself is in the{" "}
@@ -52,11 +40,6 @@ const Summary = () => {
       </p>
 
       <h2>Results</h2>
-      <p className="copy">
-        {rewritten.length} of {rows.length} skills have been rewritten and measured again. A dash in the <em>after</em>{" "}
-        column means the skill has been measured once and not rewritten yet.
-      </p>
-
       <div className="scroll">
         <table className="grid">
           <thead>
@@ -77,21 +60,18 @@ const Summary = () => {
           </thead>
           <tbody>
             {rows.map(row => (
-              <tr key={row.name}>
+              <tr key={`${row.skill}/${row.model}`}>
                 <th scope="row">
-                  <Link to={`/skill/${row.name}`}>{row.name}</Link>
+                  <Link to={`/skill/${row.skill}`}>{row.skill}</Link>
                 </th>
                 <td className="num">
-                  <Link to={`/tasks#${row.name}`}>{row.tasks}</Link>
+                  <Link to={`/tasks#${row.skill}`}>{row.tasks}</Link>
                 </td>
                 <td className="num">{row.runs}</td>
                 <td className="num">{formatCell(row.noSkill)}</td>
                 <td className="num">{formatCell(row.before)}</td>
                 <td className="num">
                   {formatCell(row.after)}
-                  {row.afterVersion !== null && (!row.comparable || row.coverage.counted < row.coverage.total) && (
-                    <Marker symbol="*" note={row.comparable ? PARTIAL_COVERAGE : NO_SHARED_TASKS} />
-                  )}
                 </td>
               </tr>
             ))}
@@ -99,22 +79,6 @@ const Summary = () => {
         </table>
       </div>
 
-      <details className="why">
-        <summary>How the numbers are counted</summary>
-        <p className="footnote">
-          <strong className="moved">*</strong> {PARTIAL_COVERAGE} Hover the mark on a row, or open the skill, to see
-          which tasks that leaves.
-        </p>
-        <p className="footnote">
-          Pass counts are totalled over the tasks where the three columns read against each other: both versions ran
-          the task under the same <code>expect:</code> lines, and so did the unaided runs. A task whose lines were
-          rewritten between the two versions is shown on the skill page and left out of the total. Counts are runs
-          rather than records: a regrade re-reads one run's stored evidence against rewritten lines, and only the
-          newest reading of a run is counted. A run whose grade measured the harness rather than the model is marked
-          retracted on its task page and counted nowhere. The <em>runs</em> column counts every run of the skill,
-          including versions between the two shown.
-        </p>
-      </details>
     </>
   );
 };
