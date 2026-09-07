@@ -7,9 +7,7 @@ The numbers below are **not** blended with #29's; #29 appears only as the bar to
 cut also rewrote two claims — it added an `externalContracts.ts` migration recipe and
 replaced the hand-rolled `approveCooldown` timer with `isMining`. Did the cut cost anything?
 
-**Answer:** No, and on this stack it paid. (Review of this PR found two wrong lines in the
-benchmarked text and both are fixed in this branch, 832 → 867 words — see "Skill edits";
-neither changed a result, and everything below describes the benchmarked `f93bfab3`.) `with_skill` went **3/3 on goal-001 and 3/3 on
+**Answer:** No, and on this stack it paid. `with_skill` went **3/3 on goal-001 and 3/3 on
 goal-002**, against #29's 3/3 and **0/3** — the compressed skill clears the bar on the review
 task and beats it on the fix task, sweeping every expect line in all six runs (54/54 and
 42/42). Both of #29's `with_skill` residuals closed: goal-002 e5 (`externalContracts`
@@ -17,6 +15,10 @@ migration) 1/3 → 3/3 and e7 (Address + contract address) 2/3 → 3/3, the firs
 exactly where the rewrite added a recipe. The cut also reversed the cost sign: #29 reported
 "the skill **increases** cost", where here `with_skill` is cheaper than its own baseline on
 both tasks — **$1.08 vs $2.07** on goal-001, in half the wall-clock.
+
+Review of this PR found two wrong lines in the benchmarked text, and both are fixed in this
+branch (832 → 867 words) — see "Skill edits". Neither changed a result, and everything else
+below describes the benchmarked `f93bfab3`.
 
 Two things complicate the story. The `no_skill` baseline improved sharply (goal-001 26/54 →
 38/54, goal-002 14/42 → 27/42), so the graded numbers separate the variants less than they
@@ -36,8 +38,8 @@ with it, 3/3 → 0/3. See "What the cut cost".
 | Trigger | content-only — no "use the qa skill" line was prepended |
 
 All 12 runs came back `self_judged: true` (judge and executor are both claude). That is
-expected on a single-stack benchmark and is a caveat on the numbers, not a defect in them;
-#29 was graded the same way.
+expected on a single-stack benchmark and is a caveat on the numbers, not a defect in them,
+and #29 was graded the same way.
 
 `expect_sha` is uniform within each task across all six of its runs (`fccf283c89a9` for
 goal-001, `a33ab27244e7` for goal-002), so every run of a task was graded against one rubric.
@@ -77,31 +79,31 @@ workspaces were still on disk. #29 hit the same class of failure twice in 42 run
 
 `no_skill` **38/54** flagged; `with_skill` **54/54**. Run pass **0/3 vs 3/3**.
 
-| Expect | no_skill | with_skill | | Expect | no_skill | with_skill |
-| --- | --- | --- | --- | --- | --- | --- |
-| e1 connect-button | 1/3 | 3/3 | | e10 bg-black wrapper | 3/3 | 3/3 |
-| e2 wrong-network | 3/3 | 3/3 | | e11 loading class | 3/3 | 3/3 |
-| e3 simultaneous approve+pay | 3/3 | 3/3 | | **e12 --radius-field** | **0/3** | 3/3 |
-| e4 raw useWriteContract | 3/3 | 3/3 | | e13 pollingInterval | 3/3 | 3/3 |
-| e5 shared isPending lock | 3/3 | 3/3 | | e14 RPC posture | 3/3 | 3/3 |
-| e6 USDC→externalContracts | 2/3 | 3/3 | | e15 branding title/readme | 3/3 | 3/3 |
-| e7 raw address input | 3/3 | 3/3 | | e16 footer/favicon | 2/3 | 3/3 |
-| **e8 Address + contract addr** | **0/3** | 3/3 | | **e17 mobile deep-link** | **0/3** | 3/3 |
-| e9 console.error-only | 3/3 | 3/3 | | **e18 Phantom** | **0/3** | 3/3 |
+| Expect | no_skill | with_skill | Expect | no_skill | with_skill |
+| --- | --- | --- | --- | --- | --- |
+| e1 connect-button | 1/3 | 3/3 | e10 bg-black wrapper | 3/3 | 3/3 |
+| e2 wrong-network | 3/3 | 3/3 | e11 loading class | 3/3 | 3/3 |
+| e3 simultaneous approve+pay | 3/3 | 3/3 | **e12 --radius-field** | **0/3** | 3/3 |
+| e4 raw useWriteContract | 3/3 | 3/3 | e13 pollingInterval | 3/3 | 3/3 |
+| e5 shared isPending lock | 3/3 | 3/3 | e14 RPC posture | 3/3 | 3/3 |
+| e6 USDC→externalContracts | 2/3 | 3/3 | e15 branding title/readme | 3/3 | 3/3 |
+| e7 raw address input | 3/3 | 3/3 | e16 footer/favicon | 2/3 | 3/3 |
+| **e8 Address + contract addr** | **0/3** | 3/3 | **e17 mobile deep-link** | **0/3** | 3/3 |
+| e9 console.error-only | 3/3 | 3/3 | **e18 Phantom** | **0/3** | 3/3 |
 
 ### qa-goal-002 — fix unprompted, 14 expects, graded from the diff
 
 `no_skill` **27/42**; `with_skill` **42/42**. Run pass **0/3 vs 3/3**.
 
-| Expect | no_skill | with_skill | | Expect | no_skill | with_skill |
-| --- | --- | --- | --- | --- | --- | --- |
-| **e1 connect-button** | **0/3** | 3/3 | | e8 readable errors | 3/3 | 3/3 |
-| **e2 wrong-network branch** | **0/3** | 3/3 | | e9 bg-black→theme | 3/3 | 3/3 |
-| e3 one primary action gated | 3/3 | 3/3 | | e10 loading spinner span | 3/3 | 3/3 |
-| e4 useScaffoldWriteContract | 3/3 | 3/3 | | **e11 --radius-field both blocks** | **0/3** | 3/3 |
-| e5 USDC→externalContracts | 3/3 | 3/3 | | e12 pollingInterval | 3/3 | 3/3 |
-| e6 AddressInput | 3/3 | 3/3 | | e13 title identity | 3/3 | 3/3 |
-| **e7 Address comp + addr shown** | **0/3** | 3/3 | | **e14 README/footer** | **0/3** | 3/3 |
+| Expect | no_skill | with_skill | Expect | no_skill | with_skill |
+| --- | --- | --- | --- | --- | --- |
+| **e1 connect-button** | **0/3** | 3/3 | e8 readable errors | 3/3 | 3/3 |
+| **e2 wrong-network branch** | **0/3** | 3/3 | e9 bg-black→theme | 3/3 | 3/3 |
+| e3 one primary action gated | 3/3 | 3/3 | e10 loading spinner span | 3/3 | 3/3 |
+| e4 useScaffoldWriteContract | 3/3 | 3/3 | **e11 --radius-field both blocks** | **0/3** | 3/3 |
+| e5 USDC→externalContracts | 3/3 | 3/3 | e12 pollingInterval | 3/3 | 3/3 |
+| e6 AddressInput | 3/3 | 3/3 | e13 title identity | 3/3 | 3/3 |
+| **e7 Address comp + addr shown** | **0/3** | 3/3 | **e14 README/footer** | **0/3** | 3/3 |
 
 **All three `with_skill` runs of both tasks passed every expect line.** The single graded
 failure count in the benchmark is 16 `no_skill` misses on goal-001 and 15 on goal-002.
@@ -111,8 +113,8 @@ failure count in the benchmark is 16 `no_skill` misses on goal-001 and 15 on goa
 **1. The five checks compressed to one line each held.** goal-001 e3 (one action at a time),
 e4 (the scaffold write hook), e5 (button locking), e9 (error surfacing) and e14 (RPC posture)
 were 3/3 in both variants in #29, and are 3/3 in both variants here. Compressing them cost
-nothing measurable — but note what that sentence is worth: they were already saturated in
-#29, so this is the absence of a regression, not evidence the lines are carrying weight.
+nothing measurable — but note what that sentence is worth: they were already saturated
+in #29, so this is the absence of a regression, not evidence the lines are carrying weight.
 Their `no_skill` counterparts on goal-002 are also 3/3, so nothing distinguishes the arms on
 any of the five.
 
@@ -307,9 +309,9 @@ flag that is permanently `false` — the exact double-submit the bullet exists t
 
 **Scored against the runs: 0/12 affected, and the failure mode could not have fired.** All six
 goal-002 runs destructure `writeContractAsync` (5 call sites each) and zero call the
-synchronous `writeContract`; all six derive the lock the same way —
-`const { writeContractAsync: writeUsdcAsync, isMining: isApproving } = useScaffoldWriteContract(...)`
-then `const isBusy = isApproving || isPaying`. That shape is identical in `no_skill`, which
+synchronous `writeContract`, and all six derive the lock the same way — destructuring
+`isMining: isApproving` off the hook, then `const isBusy = isApproving || isPaying`. That
+shape is identical in `no_skill`, which
 gets it from SE-2's bundled AGENTS.md. The line is latent on this template and wrong in
 general. **Applied:** the bullet now names `writeContractAsync` and states that the
 synchronous path never sets the flag.
