@@ -2,23 +2,37 @@ import { PatchDiff } from "@pierre/diffs/react";
 import Marker from "../components/Marker.js";
 import { useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { compareSkill, formatCell, mixed } from "../lib/compare.js";
-import { useIndex } from "../lib/data.js";
+import { compareSkill, formatCell, mixed, type Cell, type Row } from "../lib/compare.js";
+import { useDocs, useIndex } from "../lib/data.js";
 import { patchBetween } from "../lib/diff.js";
 import {
   MIXED_RUBRICS,
+  MODEL_MOVED,
   NO_COMPARABLE_ROWS,
   NO_SHARED_TASKS,
   PARTIAL_COVERAGE,
+  PROMPT_MOVED,
   RETIRED_ROW,
   RUBRIC_MOVED,
+  UNAIDED_MODELS,
   UNAIDED_OFF_RUBRIC,
 } from "../lib/notes.js";
 
 const size = (lines: number, words: number) => `${lines} lines / ${words} words`;
+const models = (cell: Cell | null) => (cell === null ? "—" : cell.models.join(", "));
+
+// What moved between the two skilled cells, in the words of the footnote each mark stands for.
+const movedNote = (row: Row) =>
+  [row.rubricMoved ? RUBRIC_MOVED : null, row.promptMoved ? PROMPT_MOVED : null].filter(Boolean).join(" ");
+
+const modelNote = (row: Row) => `${MODEL_MOVED} Before: ${models(row.before)}. After: ${models(row.after)}.`;
+
+const unaidedModelNote = (row: Row) =>
+  `${UNAIDED_MODELS} Without skill: ${models(row.noSkill)}. With skill: ${models(row.after ?? row.before)}.`;
 
 const Skill = () => {
   const index = useIndex();
+  const { docs } = useDocs();
   const { name } = useParams();
   const skill = index.skills.find(entry => entry.name === name) ?? null;
   const [showDiff, setShowDiff] = useState(true);
@@ -31,12 +45,15 @@ const Skill = () => {
   const patch = useMemo(() => {
     const target = comparison?.after ?? comparison?.current ?? null;
 
-    if (comparison?.before == null || target === null || target.id === comparison.before.id) {
+    if (comparison?.before == null || target === null || target.id === comparison.before.id || docs === null) {
       return null;
     }
 
-    return patchBetween(comparison.before, target);
-  }, [comparison]);
+    return patchBetween(
+      { sha: comparison.before.sha, text: docs.skills[comparison.before.id] ?? "" },
+      { sha: target.sha, text: docs.skills[target.id] ?? "" },
+    );
+  }, [comparison, docs]);
 
   if (skill === null || comparison === null) {
     return <h1>No such skill</h1>;
@@ -47,7 +64,8 @@ const Skill = () => {
   const right = after ?? (current !== null && current.id !== before?.id ? current : null);
   const reports = index.reports.filter(report => report.skill.startsWith(skill.name));
   const prs = index.prs.filter(pr => pr.skill === skill.name);
-  const moved = rows.some(row => row.rubricMoved);
+  const moved = rows.some(row => row.rubricMoved || row.promptMoved);
+  const modelMoved = rows.some(row => row.modelMoved || row.unaidedModels);
   const offRubric = rows.some(row => row.unaidedOffRubric);
   const pooled = rows.some(row => mixed(row.noSkill) || mixed(row.before) || mixed(row.after));
   const retired = after !== null && rows.some(row => row.retired);
@@ -113,16 +131,19 @@ const Skill = () => {
               <td className="num">
                 {formatCell(row.noSkill)}
                 {row.unaidedOffRubric && <Marker symbol="§" note={UNAIDED_OFF_RUBRIC} />}
+                {row.unaidedModels && <Marker symbol="◊" note={unaidedModelNote(row)} />}
                 {mixed(row.noSkill) && <Marker symbol="†" note={MIXED_RUBRICS} />}
               </td>
               <td className="num">
                 {formatCell(row.before)}
-                {row.rubricMoved && <Marker symbol="‡" note={RUBRIC_MOVED} />}
+                {(row.rubricMoved || row.promptMoved) && <Marker symbol="‡" note={movedNote(row)} />}
+                {row.modelMoved && <Marker symbol="◊" note={modelNote(row)} />}
                 {mixed(row.before) && <Marker symbol="†" note={MIXED_RUBRICS} />}
               </td>
               <td className="num">
                 {formatCell(row.after)}
-                {row.rubricMoved && <Marker symbol="‡" note={RUBRIC_MOVED} />}
+                {(row.rubricMoved || row.promptMoved) && <Marker symbol="‡" note={movedNote(row)} />}
+                {row.modelMoved && <Marker symbol="◊" note={modelNote(row)} />}
                 {mixed(row.after) && <Marker symbol="†" note={MIXED_RUBRICS} />}
               </td>
             </tr>
@@ -141,6 +162,11 @@ const Skill = () => {
         </tbody>
       </table>
 
+      <p className="footnote">
+        Models: without skill {models(comparison.totals.noSkill)} · before {models(comparison.totals.before)}
+        {after !== null && <> · after {models(comparison.totals.after)}</>}.
+      </p>
+
       {!comparison.comparable && (
         <p className="note">{comparison.sharedRows === 0 ? NO_SHARED_TASKS : NO_COMPARABLE_ROWS}</p>
       )}
@@ -153,7 +179,15 @@ const Skill = () => {
 
       {moved && (
         <p className="footnote">
-          <strong className="moved">‡</strong> {RUBRIC_MOVED}
+          <strong className="moved">‡</strong> The task's expect: lines or prompt were rewritten between the two
+          versions, so the two cells were graded by different rules and are not a comparison. Hover the mark for
+          which. The row is left out of the totals.
+        </p>
+      )}
+
+      {modelMoved && (
+        <p className="footnote">
+          <strong className="moved">◊</strong> {MODEL_MOVED} Hover the mark for the models.
         </p>
       )}
 
@@ -213,6 +247,7 @@ const Skill = () => {
               {showDiff ? "hide" : "show"}
             </button>
           </h2>
+          {showDiff && docs === null && <p className="muted">Loading the skill texts…</p>}
           {showDiff && patch !== null && (
             <>
               <p className="footnote">

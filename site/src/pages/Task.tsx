@@ -1,7 +1,7 @@
 import { Link, useParams } from "react-router-dom";
 import Marker from "../components/Marker.js";
 import { useIndex } from "../lib/data.js";
-import { OLD_RUBRIC, RETRACTED } from "../lib/notes.js";
+import { OLD_PROMPT, OLD_RUBRIC, RETRACTED } from "../lib/notes.js";
 
 const Task = () => {
   const index = useIndex();
@@ -15,11 +15,21 @@ const Task = () => {
   const runs = index.runs
     .filter(run => run.task === task.id)
     .sort((a, b) => (a.created ?? "").localeCompare(b.created ?? "") || a.run.localeCompare(b.run));
-  // The list of expect lines is today's; a run graded before a rewrite carries an earlier
-  // rubric, and its dots count that rubric's lines, not these.
+  // The list of expect lines and the prompt are today's; a run graded before a rewrite
+  // carries an earlier rubric, and its dots count that rubric's lines, not these.
   const onOldRubric = (run: { rubric: string | null }) =>
     run.rubric !== null && task.rubric !== null && run.rubric !== task.rubric;
+  const onOldPrompt = (run: { prompt: string | null }) =>
+    run.prompt !== null && task.prompt !== null && run.prompt !== task.prompt;
   const olderRubrics = runs.filter(run => run.pass !== null && onOldRubric(run)).length;
+  const olderPrompts = runs.filter(run => run.pass !== null && onOldPrompt(run)).length;
+  const oldNote = (run: { rubric: string | null; prompt: string | null; rubric_expects: number | null }) =>
+    [
+      onOldRubric(run) ? `${OLD_RUBRIC} This run was graded on ${run.rubric_expects ?? "?"} lines.` : null,
+      onOldPrompt(run) ? OLD_PROMPT : null,
+    ]
+      .filter(Boolean)
+      .join(" ");
   const retracted = runs.some(run => run.retracted !== null);
 
   return (
@@ -45,10 +55,11 @@ const Task = () => {
           <li key={position}>{line}</li>
         ))}
       </ol>
-      {olderRubrics > 0 && (
+      {(olderRubrics > 0 || olderPrompts > 0) && (
         <p className="footnote">
-          <strong className="moved">‡</strong> {olderRubrics} of the graded runs below were graded on an earlier
-          revision of these lines. {OLD_RUBRIC}
+          <strong className="moved">‡</strong>{" "}
+          {olderRubrics > 0 && `${olderRubrics} of the graded runs below were graded on an earlier revision of these lines. ${OLD_RUBRIC} `}
+          {olderPrompts > 0 && `${olderPrompts} were given an earlier wording of the prompt.`}
         </p>
       )}
 
@@ -113,9 +124,7 @@ const Task = () => {
                       </span>
                     ))
                   : "—"}
-                {run.expects && onOldRubric(run) && (
-                  <Marker symbol="‡" note={`${OLD_RUBRIC} This run was graded on ${run.rubric_expects ?? "?"} lines.`} />
-                )}
+                {run.expects && (onOldRubric(run) || onOldPrompt(run)) && <Marker symbol="‡" note={oldNote(run)} />}
               </td>
               <td className="small">
                 {run.transcript_url ? <a href={run.transcript_url}>open</a> : <span className="muted">—</span>}

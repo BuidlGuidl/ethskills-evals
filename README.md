@@ -92,7 +92,7 @@ against the original side by side, and every report and eval PR write-up. It is 
 yarn project, so `yarn install` at the root stays four packages wide.
 
 ```bash
-yarn build-index          # writes site/public/index.json from artifacts/, tasks/, skills/, reports/ and the eval PRs
+yarn build-index          # writes site/public/index.json (and docs.json, the prose) from artifacts/, tasks/, skills/, reports/ and the eval PRs
 cd site && yarn install && yarn dev
 ```
 

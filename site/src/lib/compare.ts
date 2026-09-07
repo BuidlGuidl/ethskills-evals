@@ -1,24 +1,39 @@
 import type { Index, Run, Skill, SkillVersion, Task } from "./types.js";
 
 // Where the site decides what may be set next to what. Two pass counts are a comparison
-// only when both were graded against the same expect lines, and those get rewritten between
-// benchmarks — the hand-written reports mark such cells '‡' and tell the reader not to read
-// them. Every cell carries the rubrics it was tallied from so a row can say when they moved.
+// only when both were graded against the same expect lines, on the same prompt, and those
+// get rewritten between benchmarks — the hand-written reports mark such cells '‡' and tell
+// the reader not to read them. Every cell carries the rubrics, prompts and models it was
+// tallied from, so a row can say what moved.
 
-export type Cell = { passed: number; total: number; rubrics: string[] };
+export type Cell = { passed: number; total: number; rubrics: string[]; prompts: string[]; models: string[] };
 
 // A retracted grade measured the harness, not the model — a killed CLI, a deliverable that
 // never reached the judge. The record stays on the task page and says why; no count has it.
 const measured = (run: Run) => run.retracted === null;
 
-// A regrade and the run it re-read are one run read twice. Whenever both are in the set
-// being counted, the newer reading wins; a set holding only the source still counts it,
-// which is what makes a per-rubric column come out right.
-const newest = (runs: Run[]) => {
-  const present = new Set(runs.map(run => `${run.task}/${run.run}`));
+// The model a run was executed on, or the executor with a note when the record predates
+// the field: an unrecorded model is not known to equal a recorded one.
+export const modelOf = (run: Run) => run.executor_model ?? `${run.executor ?? "unknown"} (model unrecorded)`;
 
-  return runs.filter(run => !(run.superseded_by !== null && present.has(`${run.task}/${run.superseded_by}`)));
+// A regrade and the run it re-read are one run read twice, and one run can be read many
+// times. Of the readings present in the set, only the newest counts — whichever hops of the
+// chain the set happens to hold, since a column filtered to one rubric may hold the source
+// and a later re-reading but not the one in between. A set holding only the source still
+// counts it, which is what makes a per-rubric column come out right.
+const newest = (runs: Run[]) => {
+  const latest = new Map<string, number>();
+
+  for (const run of runs) {
+    const key = `${run.task}/${run.lineage}`;
+
+    latest.set(key, Math.max(latest.get(key) ?? 0, run.reading));
+  }
+
+  return runs.filter(run => run.reading === latest.get(`${run.task}/${run.lineage}`));
 };
+
+const distinct = (values: (string | null)[]) => [...new Set(values.filter((value): value is string => value !== null))].sort();
 
 export const tally = (runs: Run[]): Cell | null => {
   const graded = newest(runs).filter(run => run.pass !== null && measured(run));
@@ -30,7 +45,9 @@ export const tally = (runs: Run[]): Cell | null => {
   return {
     passed: graded.filter(run => run.pass).length,
     total: graded.length,
-    rubrics: [...new Set(graded.map(run => run.rubric).filter((id): id is string => id !== null))].sort(),
+    rubrics: distinct(graded.map(run => run.rubric)),
+    prompts: distinct(graded.map(run => run.prompt)),
+    models: distinct(graded.map(modelOf)),
   };
 };
 
@@ -39,11 +56,19 @@ export const tally = (runs: Run[]): Cell | null => {
 // not in a tally — they happened, they just have no verdict.
 export const countRuns = (runs: Run[]) => newest(runs).filter(measured).length;
 
-export const shareRubric = (left: Cell | null, right: Cell | null) =>
-  left !== null && right !== null && left.rubrics.some(id => right.rubrics.includes(id));
+const overlap = (left: string[], right: string[]) => left.some(id => right.includes(id));
 
-/** more than one rubric in one cell: a raw count, not a measurement under one set of expect lines */
-export const mixed = (cell: Cell | null) => cell !== null && cell.rubrics.length > 1;
+export const shareRubric = (left: Cell | null, right: Cell | null) =>
+  left !== null && right !== null && overlap(left.rubrics, right.rubrics);
+
+export const sharePrompt = (left: Cell | null, right: Cell | null) =>
+  left !== null && right !== null && overlap(left.prompts, right.prompts);
+
+export const shareModel = (left: Cell | null, right: Cell | null) =>
+  left !== null && right !== null && overlap(left.models, right.models);
+
+/** more than one rubric or prompt in one cell: a raw count, not a measurement under one set of rules */
+export const mixed = (cell: Cell | null) => cell !== null && (cell.rubrics.length > 1 || cell.prompts.length > 1);
 
 export const versionById = (skill: Skill, id: string | null) =>
   id === null ? null : (skill.versions.find(version => version.id === id) ?? null);
@@ -58,8 +83,14 @@ export type Row = {
   after: Cell | null;
   /** the two skilled cells were graded against different expect lines, so they are not a comparison */
   rubricMoved: boolean;
-  /** no unaided run shares the skilled column's rubric, so noSkill pools every unaided run there is */
+  /** the two skilled cells answered different prompts, so they are not a comparison */
+  promptMoved: boolean;
+  /** the two skilled cells ran on different models; a difference between them is not the skill's alone */
+  modelMoved: boolean;
+  /** no unaided run shares the skilled column's rules, so noSkill pools every unaided run there is */
   unaidedOffRubric: boolean;
+  /** the unaided cell pools models, or ran on none of the skilled column's */
+  unaidedModels: boolean;
   /** in the totals: every cell on the row reads against the others */
   counted: boolean;
 };
@@ -78,14 +109,15 @@ export type SkillComparison = {
   rows: Row[];
   /**
    * Totalled over the rows where every cell reads against the others: both versions ran the
-   * task, under the same expect lines, and the unaided runs were graded on those lines too.
-   * A version re-run on one task of six would otherwise show 3/3 beside the older 15/15 and
-   * read as the weaker result; a row whose rubric moved would add two different measurements
-   * into one number. `coverage` says how many rows that leaves.
+   * task, under the same expect lines and prompt, and the unaided runs were graded on those
+   * too. A version re-run on one task of six would otherwise show 3/3 beside the older 15/15
+   * and read as the weaker result; a row whose rubric moved would add two different
+   * measurements into one number. `coverage` says how many rows that leaves. A model change
+   * is marked on the row and not excluded here — excluding it would empty gas entirely.
    */
   totals: { noSkill: Cell | null; before: Cell | null; after: Cell | null };
   coverage: { counted: number; total: number };
-  /** rows with a cell in both skilled columns, whatever their rubrics */
+  /** rows with a cell in both skilled columns, whatever their rules */
   sharedRows: number;
   /** false when no row is a comparison, so the totals are each version's own */
   comparable: boolean;
@@ -130,7 +162,10 @@ export const compareSkill = (skill: Skill, tasks: Task[], runs: Run[]): SkillCom
 
       const beforeCell = cellFor(before);
       const afterCell = cellFor(after);
-      const rubricMoved = beforeCell !== null && afterCell !== null && !shareRubric(beforeCell, afterCell);
+      const both = beforeCell !== null && afterCell !== null;
+      const rubricMoved = both && !shareRubric(beforeCell, afterCell);
+      const promptMoved = both && !sharePrompt(beforeCell, afterCell);
+      const modelMoved = both && !shareModel(beforeCell, afterCell);
 
       // The unaided variant was graded on a rubric too. Align it with the newest skilled
       // column on the row so the three cells are read against each other. When nothing
@@ -138,25 +173,41 @@ export const compareSkill = (skill: Skill, tasks: Task[], runs: Run[]): SkillCom
       // so, because that number faces neither skilled column.
       const target = afterCell ?? beforeCell;
       const unaided = forTask.filter(run => run.variant === "no_skill");
-      const aligned = target === null ? unaided : unaided.filter(run => run.rubric !== null && target.rubrics.includes(run.rubric));
+      const aligned =
+        target === null
+          ? unaided
+          : unaided.filter(
+              run =>
+                run.rubric !== null &&
+                run.prompt !== null &&
+                target.rubrics.includes(run.rubric) &&
+                target.prompts.includes(run.prompt),
+            );
       const unaidedOffRubric = target !== null && unaided.length > 0 && aligned.length === 0;
+      const noSkill = tally(aligned.length > 0 ? aligned : unaided);
       const retired = task.status === "retired";
 
       return {
         task: task.id,
         kind: task.kind,
         retired,
-        noSkill: tally(aligned.length > 0 ? aligned : unaided),
+        noSkill,
         before: beforeCell,
         after: afterCell,
         rubricMoved,
+        promptMoved,
+        modelMoved,
         unaidedOffRubric,
+        unaidedModels: noSkill !== null && target !== null && (noSkill.models.length > 1 || !shareModel(noSkill, target)),
         // A retired task keeps its cell for what the older version scored, but the newer
-        // version was never run on it, so it cannot be in a before-and-after total.
+        // version was never run on it, so it cannot be in a before-and-after total. A cell
+        // that pools rules is a raw count and cannot be in one either.
         counted:
           beforeCell !== null &&
           !unaidedOffRubric &&
-          (after === null || (!retired && afterCell !== null && !rubricMoved)),
+          !mixed(beforeCell) &&
+          !mixed(noSkill) &&
+          (after === null || (!retired && afterCell !== null && !rubricMoved && !promptMoved && !mixed(afterCell))),
       };
     });
 
@@ -164,11 +215,11 @@ export const compareSkill = (skill: Skill, tasks: Task[], runs: Run[]): SkillCom
   // skills/building-blocks was reduced and then benchmarked on a task the long version never
   // ran, so the two share nothing. Rather than empty every cell, total each column over its
   // own rows and say plainly that this is not a comparison.
-  const overlap = rows.filter(row => row.counted);
-  const counted = overlap.length > 0 ? overlap : rows;
+  const counted = rows.filter(row => row.counted);
+  const summed = counted.length > 0 ? counted : rows;
 
   const sum = (pick: (row: Row) => Cell | null): Cell | null => {
-    const cells = counted.map(pick).filter((cell): cell is Cell => cell !== null);
+    const cells = summed.map(pick).filter((cell): cell is Cell => cell !== null);
 
     if (cells.length === 0) {
       return null;
@@ -177,7 +228,9 @@ export const compareSkill = (skill: Skill, tasks: Task[], runs: Run[]): SkillCom
     return {
       passed: cells.reduce((total, cell) => total + cell.passed, 0),
       total: cells.reduce((total, cell) => total + cell.total, 0),
-      rubrics: [...new Set(cells.flatMap(cell => cell.rubrics))].sort(),
+      rubrics: distinct(cells.flatMap(cell => cell.rubrics)),
+      prompts: distinct(cells.flatMap(cell => cell.prompts)),
+      models: distinct(cells.flatMap(cell => cell.models)),
     };
   };
 
@@ -190,11 +243,11 @@ export const compareSkill = (skill: Skill, tasks: Task[], runs: Run[]): SkillCom
     rows,
     totals: { noSkill: sum(row => row.noSkill), before: sum(row => row.before), after: sum(row => row.after) },
     coverage: {
-      counted: overlap.length,
+      counted: counted.length,
       total: after === null ? rows.length : rows.filter(row => !row.retired).length,
     },
     sharedRows: rows.filter(row => row.before !== null && row.after !== null).length,
-    comparable: after === null || overlap.length > 0,
+    comparable: after === null || counted.length > 0,
   };
 };
 
@@ -209,6 +262,8 @@ export type SkillSummary = {
   afterVersion: SkillVersion | null;
   coverage: { counted: number; total: number };
   comparable: boolean;
+  /** some counted row faces the two versions on different models */
+  modelMoved: boolean;
 };
 
 export const summarize = (index: Index): SkillSummary[] =>
@@ -228,6 +283,7 @@ export const summarize = (index: Index): SkillSummary[] =>
       afterVersion: comparison.after,
       coverage: comparison.coverage,
       comparable: comparison.comparable,
+      modelMoved: comparison.rows.some(row => row.counted && row.modelMoved),
     };
   });
 

@@ -19,9 +19,16 @@ export type Run = {
   regraded_at: string | null;
   /** a later regrade re-read this run; the two must never land in one tally */
   superseded_by: string | null;
+  /** the source run this record is a reading of — itself, for a run read once */
+  lineage: string;
+  /** 0 for the source, then each regrade in the order it was made */
+  reading: number;
   /** why this grade measures the harness rather than the model; such a run is kept and never counted */
   retracted: string | null;
+  /** fingerprint of the expect lines this run was graded against */
   rubric: string | null;
+  /** fingerprint of the prompt this run was given */
+  prompt: string | null;
   rubric_expects: number | null;
   transcript_url: string | null;
 };
@@ -33,7 +40,6 @@ export type SkillVersion = {
   words: number;
   runs: number;
   in_repo: boolean;
-  text: string;
 };
 
 export type Skill = {
@@ -52,8 +58,10 @@ export type Task = {
   status: "live" | "retired";
   input: string;
   expect: string[];
-  /** the rubric these expect lines hash to today; a run graded on an earlier revision carries another */
+  /** the fingerprint of today's expect lines; a run graded on an earlier revision carries another */
   rubric: string | null;
+  /** the fingerprint of today's prompt */
+  prompt: string | null;
   runs: number;
   template: string | null;
   notes: string | null;
@@ -65,13 +73,11 @@ export type Report = {
   date: string | null;
   skill: string;
   url: string;
-  markdown: string;
 };
 
 export type PullRequest = {
   number: number;
   title: string;
-  body: string;
   url: string;
   merged_at: string | null;
   state: string;
@@ -87,4 +93,11 @@ export type Index = {
   reports: Report[];
   prs: PullRequest[];
   warnings: string[];
+};
+
+/** the prose, fetched only when a report or skill page opens: report markdown, pull request bodies, skill texts */
+export type Docs = {
+  reports: Record<string, string>;
+  prs: Record<string, string>;
+  skills: Record<string, string>;
 };

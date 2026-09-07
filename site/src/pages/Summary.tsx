@@ -2,7 +2,7 @@ import { Link } from "react-router-dom";
 import Marker from "../components/Marker.js";
 import { formatCell, summarize } from "../lib/compare.js";
 import { useIndex } from "../lib/data.js";
-import { NO_SHARED_TASKS, PARTIAL_COVERAGE } from "../lib/notes.js";
+import { MODEL_MOVED, NO_SHARED_TASKS, PARTIAL_COVERAGE } from "../lib/notes.js";
 
 const Summary = () => {
   const index = useIndex();
@@ -92,6 +92,7 @@ const Summary = () => {
                   {row.afterVersion !== null && (!row.comparable || row.coverage.counted < row.coverage.total) && (
                     <Marker symbol="*" note={row.comparable ? PARTIAL_COVERAGE : NO_SHARED_TASKS} />
                   )}
+                  {row.modelMoved && <Marker symbol="◊" note={MODEL_MOVED} />}
                 </td>
               </tr>
             ))}
@@ -106,9 +107,13 @@ const Summary = () => {
           which tasks that leaves.
         </p>
         <p className="footnote">
+          <strong className="moved">◊</strong> {MODEL_MOVED} The skill page names the models on each row.
+        </p>
+        <p className="footnote">
           Pass counts are totalled over the tasks where the three columns read against each other: both versions ran
-          the task under the same <code>expect:</code> lines, and so did the unaided runs. A task whose lines were
-          rewritten between the two versions is shown on the skill page and left out of the total. Counts are runs
+          the task under the same <code>expect:</code> lines and prompt, and so did the unaided runs. A task whose
+          lines or prompt were rewritten between the two versions is shown on the skill page and left out of the
+          total. Counts are runs
           rather than records: a regrade re-reads one run's stored evidence against rewritten lines, and only the
           newest reading of a run is counted. A run whose grade measured the harness rather than the model is marked
           retracted on its task page and counted nowhere. The <em>runs</em> column counts every run of the skill,
