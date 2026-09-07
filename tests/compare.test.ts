@@ -49,6 +49,8 @@ const run = (task: string, content: string | null, rubric: string, pass: boolean
   variant: content === null ? "no_skill" : "with_skill",
   executor: "claude",
   executor_model: "claude-opus-5",
+  model: "claude-opus-5",
+  usage: { tokens: null, duration_s: null, cost_usd: null, turns: null },
   created: "2026-08-19T00:00:00.000Z",
   pass,
   expects: null,

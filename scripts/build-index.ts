@@ -5,6 +5,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import yaml from "js-yaml";
+import { loadShowcase, runModel, runUsage, selectShowcase } from "../lib/showcase.js";
 import { orderReadings } from "../lib/readings.js";
 import { normalizeSkillText, skillContentId } from "../lib/skill.js";
 import { expectSha, isRecord, loadTaskSpec, loadYamlFile, parseArgs, requireString } from "../lib/task.js";
@@ -38,7 +39,7 @@ import { expectSha, isRecord, loadTaskSpec, loadYamlFile, parseArgs, requireStri
 
 const ROOT = process.cwd();
 const REPO = "BuidlGuidl/ethskills-evals";
-const INDEX_ARGS = new Set(["out", "cache", "no-prs", "no-git", "strict"]);
+const INDEX_ARGS = new Set(["out", "cache", "no-prs", "no-git", "strict", "showcase"]);
 const DEFAULT_OUT = path.join("site", "public", "index.json");
 const DEFAULT_CACHE = path.join("site", "derived.json");
 
@@ -473,6 +474,8 @@ const main = async () => {
     variant: unknown;
     executor: unknown;
     executor_model: unknown;
+    model: string;
+    usage: ReturnType<typeof runUsage>;
     created: string | null;
     pass: boolean | null;
     expects: unknown;
@@ -551,6 +554,9 @@ const main = async () => {
         derived.run_transcripts[commitKey] = touched;
       }
 
+      const transcriptPath = path.join(ROOT, runDir, "transcript.md");
+      const transcript = existsSync(transcriptPath) ? readFileSync(transcriptPath, "utf8") : "";
+
       runs.push({
         task: taskId,
         skill,
@@ -558,8 +564,10 @@ const main = async () => {
         variant: loaded.variant ?? null,
         executor: loaded.executor ?? null,
         executor_model: loaded.executor_model ?? null,
+        model: runModel(loaded),
+        usage: runUsage(transcript, loaded.usage),
         created: typeof loaded.created === "string" ? loaded.created : null,
-        pass: loaded.pass === undefined ? null : Boolean(loaded.pass),
+        pass: typeof loaded.pass === "boolean" ? loaded.pass : null,
         expects: loaded.expects ?? null,
         judge: loaded.judge ?? null,
         skill_version: skillVersion,
@@ -588,6 +596,12 @@ const main = async () => {
   warnings.push(...readings.warnings);
 
   for (const lineage of readings.lineages) {
+    // Regrades have no executor transcript: wallets-quiz-006's newest readings would lose
+    // the cost of their original runs. Usage belongs to that run, not to its later judge.
+    for (const reading of lineage.slice(1)) {
+      reading.usage = lineage[0].usage;
+    }
+
     for (let position = 0; position < lineage.length - 1; position++) {
       lineage[position].superseded_by = lineage[position + 1].run;
     }
@@ -734,9 +748,6 @@ const main = async () => {
     warnings,
   };
 
-  await mkdir(path.dirname(outPath), { recursive: true });
-  await writeFile(outPath, `${JSON.stringify(index, null, 2)}\n`, "utf8");
-
   const merged: Derived = {
     skill_texts: sortKeys(derived.skill_texts),
     skill_versions: sortKeys(derived.skill_versions),
@@ -750,6 +761,20 @@ const main = async () => {
     await mkdir(path.dirname(cachePath), { recursive: true });
     await writeFile(cachePath, `${JSON.stringify(merged, null, 2)}\n`, "utf8");
   }
+
+  // Filter only after all facts have been resolved and cached, including excluded runs.
+  const showcasePath = path.resolve(ROOT, args.showcase === undefined ? "site/showcase.json" : requireString(args.showcase, "--showcase"));
+  const entries = loadShowcase(showcasePath);
+  const selected = entries === null ? null : selectShowcase(index, entries);
+
+  if (selected !== null) {
+    warnings.push(...selected.warnings);
+  }
+
+  const output = { ...index, ...selected, warnings };
+
+  await mkdir(path.dirname(outPath), { recursive: true });
+  await writeFile(outPath, `${JSON.stringify(output, null, 2)}\n`, "utf8");
 
   for (const warning of warnings) {
     process.stderr.write(`warning: ${warning}\n`);
@@ -767,11 +792,11 @@ const main = async () => {
     process.exit(1);
   }
 
-  const ungraded = runs.filter(run => run.pass === null).length;
+  const ungraded = output.runs.filter(run => run.pass === null).length;
 
   process.stdout.write(
-    `wrote ${path.relative(ROOT, outPath)} — ${skills.length} skills, ${tasks.length} tasks, ${runs.length} runs` +
-      `${ungraded > 0 ? ` (${ungraded} ungraded)` : ""}, ${reports.length} reports, ${prs.length} pull requests\n` +
+    `wrote ${path.relative(ROOT, outPath)} — ${output.skills.length} skills, ${output.tasks.length} tasks, ${output.runs.length} runs` +
+      `${ungraded > 0 ? ` (${ungraded} ungraded)` : ""}, ${output.reports.length} reports, ${output.prs.length} pull requests\n` +
       `${changed ? `updated ${path.relative(ROOT, cachePath)} — commit it: the site builds from this cache, not from git\n` : ""}`,
   );
 };

@@ -1,6 +1,8 @@
 export type Variant = "no_skill" | "with_skill";
 export type ExpectStatus = "pass" | "fail";
 
+export type Entry = { skill: string; model: string; before: string; after: string };
+
 export type Run = {
   task: string;
   skill: string | null;
@@ -8,6 +10,8 @@ export type Run = {
   variant: Variant | null;
   executor: string | null;
   executor_model: string | null;
+  model: string;
+  usage: { tokens: number | null; duration_s: number | null; cost_usd: number | null; turns: number | null };
   created: string | null;
   pass: boolean | null;
   expects: Record<string, ExpectStatus> | null;
@@ -80,6 +84,7 @@ export type PullRequest = {
 };
 
 export type Index = {
+  showcase?: Entry[];
   generated: { at: string; commit: string | null; dirty: boolean; repo: string };
   skills: Skill[];
   tasks: Task[];
