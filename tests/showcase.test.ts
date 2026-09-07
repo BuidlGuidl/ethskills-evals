@@ -86,7 +86,7 @@ test("each skill/model entry selects its own versions and retains manifest order
   assert.deepEqual(result.warnings, []);
 });
 
-test("exclusions apply per model and reject missing, mixed and unknown checks without warnings", () => {
+test("exclusions warn per model when missing, mixed or unknown checks leave no tasks", () => {
   const other = { ...entry, model: "gpt-5.4" };
   for (const changed of [
     data.runs.filter(run => run.variant !== "no_skill"),
@@ -97,7 +97,7 @@ test("exclusions apply per model and reject missing, mixed and unknown checks wi
     assert.deepEqual(result.tasks.map(task => task.id), ["addresses-quiz-001"]);
     assert.equal(result.runs.length, 3);
     assert.ok(result.runs.every(run => run.model === other.model));
-    assert.deepEqual(result.warnings, []);
+    assert.deepEqual(result.warnings, ["showcase addresses (claude-opus-5): selects no tasks after exclusion"]);
     assert.equal(result.notes.length, 2);
     assert.match(result.notes[0], /addresses-quiz-001 \((no runs without skill|checks unknown|checks rewritten between rounds)\)/);
     assert.ok(!result.notes[1].includes("addresses-quiz-001"));
@@ -106,10 +106,10 @@ test("exclusions apply per model and reject missing, mixed and unknown checks wi
 
 test("unknown versions, skills and models warn for each empty side", () => {
   const result = selectShowcase(data, [{ ...entry, after: "typo" }]);
-  assert.deepEqual(result.warnings, ["showcase addresses (claude-opus-5): after version typo selects no runs"]);
-  assert.equal(selectShowcase(data, [{ ...entry, skill: "unknown" }]).warnings.length, 2);
-  assert.equal(selectShowcase(data, [{ ...entry, model: "unknown" }]).warnings.length, 2);
-  assert.equal(selectShowcase({ ...data, runs: [run("baseline", null)] }, [entry]).warnings.length, 2);
+  assert.deepEqual(result.warnings, ["showcase addresses (claude-opus-5): after version typo selects no runs", "showcase addresses (claude-opus-5): selects no tasks after exclusion"]);
+  assert.equal(selectShowcase(data, [{ ...entry, skill: "unknown" }]).warnings.length, 3);
+  assert.equal(selectShowcase(data, [{ ...entry, model: "unknown" }]).warnings.length, 3);
+  assert.equal(selectShowcase({ ...data, runs: [run("baseline", null)] }, [entry]).warnings.length, 3);
 });
 
 test("manifest loading distinguishes absence from an empty selection and rejects malformed or duplicate entries", () => {
@@ -123,6 +123,8 @@ test("manifest loading distinguishes absence from an empty selection and rejects
       writeFileSync(file, JSON.stringify(invalid));
       assert.throws(() => loadShowcase(file));
     }
+    writeFileSync(file, JSON.stringify({ entries: [{ ...entry, after: entry.before }] }));
+    assert.throws(() => loadShowcase(file), { message: `${file}: entry 1 names one version twice` });
     writeFileSync(file, JSON.stringify({ entries: [entry, { ...entry, model: "gpt-5.4" }] }));
     assert.equal(loadShowcase(file)?.length, 2);
   } finally {
@@ -136,7 +138,7 @@ test("the CLI selects the committed showcase after resolution and leaves the der
   const cache = path.join(dir, "derived.json");
   const original = readFileSync("site/derived.json", "utf8");
   writeFileSync(cache, original);
-  const args = ["--import", "tsx", "scripts/build-index.ts", "--no-git", "--no-prs", "--strict", "--out", out, "--cache", cache];
+  const args = ["--import", "tsx", "scripts/build-index.ts", "--no-git", "--no-prs", "--out", out, "--cache", cache];
   try {
     const built = spawnSync(process.execPath, args, { encoding: "utf8" });
     assert.equal(built.status, 0, built.stderr);
@@ -203,7 +205,7 @@ test("the CLI selects the committed showcase after resolution and leaves the der
 
     const manifest = path.join(dir, "bad.json");
     writeFileSync(manifest, JSON.stringify({ entries: [{ ...index.showcase![0], after: "unknown" }] }));
-    const failed = spawnSync(process.execPath, [...args, "--showcase", manifest], { encoding: "utf8" });
+    const failed = spawnSync(process.execPath, [...args, "--strict", "--showcase", manifest], { encoding: "utf8" });
     assert.equal(failed.status, 1);
     assert.match(failed.stderr, /after version unknown selects no runs/);
     assert.equal(readFileSync(cache, "utf8"), original);

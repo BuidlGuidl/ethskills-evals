@@ -781,7 +781,7 @@ const main = async () => {
     warnings.push(...selected.warnings);
   }
 
-  const { notes, ...selection } = selected ?? { notes: [] };
+  const { notes, warnings: _, ...selection } = selected ?? { notes: [] };
   for (const note of notes) {
     process.stderr.write(`${note}\n`);
   }

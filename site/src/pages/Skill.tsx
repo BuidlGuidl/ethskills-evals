@@ -32,8 +32,6 @@ const EntryResults = ({ entry }: {
   const [showDiff, setShowDiff] = useState(true);
   const { before, after, rows, totals, usage } = comparison;
   const patch = useMemo(() => before && after ? patchBetween(before, after) : null, [before, after]);
-  const reports = index.reports.filter(report => report.skill === entry.skill);
-  const prs = index.prs.filter(pr => pr.skill === entry.skill);
   const columns = [{ label: "Without skill", value: usage.noSkill }, { label: "With skill, before rewrite", value: usage.before }, { label: "With skill, after rewrite", value: usage.after }];
   const hasUsage = (value: UsageMedians) => Object.values(value.recorded).some(count => count > 0);
   const diffId = `diff-${entry.skill}-${entry.model}`;
@@ -111,17 +109,6 @@ const EntryResults = ({ entry }: {
         </div>
       </> : <p className="muted">These runs have no token, time or cost records.</p>}
     </section>
-    <section aria-label="Why we rewrote it">
-      <h2>Why we rewrote it</h2>
-      <ul className="docs">{reports.map(report => <li key={report.file}>
-        <Link to={`/report/${report.file}`}>{report.title}</Link>
-        <span className="small muted">Report · {report.date ?? "date not recorded"}</span>
-      </li>)}{prs.map(pr => <li key={pr.number}>
-        <Link to={`/pr/${pr.number}`}>{pr.title}</Link>
-        <span className="small muted">Pull request #{pr.number}</span>
-      </li>)}</ul>
-      {reports.length === 0 && prs.length === 0 && <p className="muted">No reports or pull requests linked for this skill.</p>}
-    </section>
     <section aria-label="Skill diff">
       <div className="section-heading">
         <h2>The rewrite</h2>
@@ -160,6 +147,8 @@ const EntryResults = ({ entry }: {
 const Skill = () => {
   const index = useIndex();
   const { name } = useParams();
+  const reports = index.reports.filter(report => report.skill === name);
+  const prs = index.prs.filter(pr => pr.skill === name);
   const entries = index.showcase?.filter(entry => entry.skill === name) ?? [];
   if (entries.length === 0)
     return <h1>Skill not found</h1>;
@@ -170,6 +159,19 @@ const Skill = () => {
         <h1>{name}</h1>
         <a className="small" href={`https://ethskills.com/${name}/SKILL.md`}>upstream ↗</a>
       </div>
-    </header>{entries.map(entry => <EntryResults key={`${entry.skill}/${entry.model}`} entry={entry} />)}</>;
+    </header>
+    {entries.map(entry => <EntryResults key={`${entry.skill}/${entry.model}`} entry={entry} />)}
+    <section aria-label="Why we rewrote it">
+      <h2>Why we rewrote it</h2>
+      <ul className="docs">{reports.map(report => <li key={report.file}>
+        <Link to={`/report/${report.file}`}>{report.title}</Link>
+        <span className="small muted">Report · {report.date ?? "date not recorded"}</span>
+      </li>)}{prs.map(pr => <li key={pr.number}>
+        <Link to={`/pr/${pr.number}`}>{pr.title}</Link>
+        <span className="small muted">Pull request #{pr.number}</span>
+      </li>)}</ul>
+      {reports.length === 0 && prs.length === 0 && <p className="muted">No reports or pull requests linked for this skill.</p>}
+    </section>
+  </>;
 };
 export default Skill;

@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { compareEntry, countRuns, sameRubric, shareRubric, summarize, tally } from "../site/src/lib/compare.js";
+import { compareEntry, sameRubric, summarize, tally } from "../site/src/lib/compare.js";
 import { selectShowcase } from "../lib/showcase.js";
 import type { Entry, Index, Run, Skill, Task } from "../site/src/lib/types.js";
 
@@ -97,12 +97,6 @@ test("ungraded runs are left out of a tally instead of counting as failures", ()
   });
 });
 
-test("shareRubric needs an overlap, not merely two populated cells", () => {
-  assert.equal(shareRubric({ passed: 1, total: 1, rubrics: ["a"] }, { passed: 1, total: 1, rubrics: ["b"] }), false);
-  assert.equal(shareRubric({ passed: 1, total: 1, rubrics: ["a", "b"] }, { passed: 1, total: 1, rubrics: ["b"] }), true);
-  assert.equal(shareRubric(null, { passed: 1, total: 1, rubrics: ["b"] }), false);
-});
-
 test("a regrade replaces the run it re-read instead of being counted beside it", () => {
   const source = { ...run("addresses-quiz-002", "small", "rubric-old", false), run: "r1", superseded_by: "r1-regrade-1" };
   const regrade = { ...run("addresses-quiz-002", "small", "rubric-new", true), run: "r1-regrade-1", regrade_of: "r1" };
@@ -114,6 +108,9 @@ test("a superseded run still counts where its regrade is not in the set", () => 
   const source = { ...run("addresses-quiz-002", "small", "rubric-old", false), run: "r1", superseded_by: "r1-regrade-1" };
 
   assert.deepEqual(tally([source]), { passed: 0, total: 1, rubrics: ["rubric-old"] });
+  const comparison = compareEntry(entry, { ...index, runs: [source] });
+  assert.deepEqual(comparison.totals.after, tally([source]));
+  assert.equal(comparison.usage.after.runs, 1);
 });
 
 test("a run read three times counts once, as its newest reading", () => {
@@ -135,7 +132,6 @@ test("a retracted grade is kept out of every count", () => {
   const real = run("addresses-quiz-002", "small", "rubric-kept", true);
 
   assert.deepEqual(tally([retracted, real]), { passed: 1, total: 1, rubrics: ["rubric-kept"] });
-  assert.equal(countRuns([retracted, real]), 1);
   assert.equal(tally([retracted]), null);
 });
 
@@ -147,16 +143,6 @@ test("a lineage is keyed by task as well as run, because run ids repeat across t
   const elsewhere = { ...run("addresses-quiz-002", "small", "rubric-kept", true), run: "r1-regrade-1" };
 
   assert.equal(tally([here, elsewhere])?.total, 2, "a namesake in another task must not supersede this run");
-  assert.equal(countRuns([here, elsewhere]), 2);
-});
-
-test("counting runs drops superseded readings but keeps ungraded runs", () => {
-  const source = { ...run("addresses-quiz-001", "small", "rubric-new", false), run: "r1", superseded_by: "r1-regrade-1" };
-  const regrade = { ...run("addresses-quiz-001", "small", "rubric-new", true), run: "r1-regrade-1", regrade_of: "r1" };
-  const dead = { ...run("addresses-quiz-002", "small", "rubric-kept", false), run: "r2", pass: null };
-
-  assert.equal(countRuns([source, regrade, dead]), 2, "one run read twice is one run; an ungraded run still ran");
-  assert.equal(tally([source, regrade, dead])?.total, 1, "but only the graded reading is tallied");
 });
 
 test("selection removes changed checks before comparison totals and usage", () => {
@@ -190,7 +176,6 @@ test("entry selection uses the named model and versions, ignoring version order 
     { ...runs[0], model: "other" }, { ...runs[0], skill: "other" },
     { ...runs[0], variant: null }, { ...runs[0], pass: null },
     { ...runs[0], retracted: "failed harness" }, { ...runs[0], task: "unknown" },
-    { ...runs[0], superseded_by: "absent" },
   ];
   assert.deepEqual(compareEntry(entry, { ...index, runs: [...runs, ...excluded] }), compareEntry(entry, index));
   const shuffled = { ...skill, current: "other", versions: [...skill.versions].reverse() };

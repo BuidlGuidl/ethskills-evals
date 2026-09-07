@@ -30,14 +30,6 @@ export const tally = (runs: Run[]): Cell | null => {
   };
 };
 
-// Records, not runs: a regrade and the run it re-read are one run read twice, and a headline
-// that counts records says 896 where the tables say 805. Ungraded runs are counted here and
-// not in a tally — they happened, they just have no verdict.
-export const countRuns = (runs: Run[]) => newest(runs).filter(measured).length;
-
-export const shareRubric = (left: Cell | null, right: Cell | null) =>
-  left !== null && right !== null && left.rubrics.some(id => right.rubrics.includes(id));
-
 // Every run must name the same checks; overlap cannot make a mixed column comparable.
 export const sameRubric = (columns: { rubric: string | null }[][]) => {
   const rubric = columns[0]?.[0]?.rubric;
@@ -92,7 +84,7 @@ export const compareEntry = (entry: Entry, index: Index) => {
     .sort((a, b) => a.id.localeCompare(b.id));
   const live = new Set(tasks.map(task => task.id));
   // Resolve readings before partitioning: an older grade must not survive in another column.
-  const mine = newest(index.runs).filter(run => run.superseded_by === null && measured(run) && run.pass !== null &&
+  const mine = newest(index.runs).filter(run => measured(run) && run.pass !== null &&
     run.skill === entry.skill && run.model === entry.model && live.has(run.task));
   const columns = {
     noSkill: mine.filter(run => run.variant === "no_skill"),
@@ -147,5 +139,3 @@ export const summarize = (index: Index) => (index.showcase ?? []).map(entry => {
     usage: comparison.usage,
   };
 });
-
-export const formatCell = (cell: Cell | null) => (cell === null ? "—" : `${cell.passed}/${cell.total}`);

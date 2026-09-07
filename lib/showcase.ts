@@ -22,6 +22,10 @@ export const loadShowcase = (filePath: string): Entry[] | null => {
       throw new Error(`${filePath}: entry ${position + 1} must name a skill, model, before and after`);
     }
 
+    if (entry.before === entry.after) {
+      throw new Error(`${filePath}: entry ${position + 1} names one version twice`);
+    }
+
     const pair = `${entry.skill}/${entry.model}`;
 
     if (pairs.has(pair)) {
@@ -96,6 +100,7 @@ export const selectShowcase = <Data extends ShowcaseData>(index: Data, entries: 
 
   for (const entry of entries) {
     const excluded: string[] = [];
+    let hasTasks = false;
     for (const task of liveTasks.filter(task => task.skill === entry.skill)) {
       const mine = candidates.filter(run => run.task === task.id && run.model === entry.model);
       const columns = [
@@ -104,6 +109,7 @@ export const selectShowcase = <Data extends ShowcaseData>(index: Data, entries: 
         mine.filter(run => run.variant === "with_skill" && run.skill_content === entry.after),
       ];
       if (sameRubric(columns)) {
+        hasTasks = true;
         taskIds.add(task.id);
         columns.flat().forEach(run => selected.add(run));
       } else {
@@ -113,6 +119,9 @@ export const selectShowcase = <Data extends ShowcaseData>(index: Data, entries: 
           : mine.some(run => run.rubric === null) ? "checks unknown" : "checks rewritten between rounds";
         excluded.push(`${task.id} (${reason})`);
       }
+    }
+    if (!hasTasks) {
+      warnings.push(`showcase ${entry.skill} (${entry.model}): selects no tasks after exclusion`);
     }
     notes.push(`showcase ${entry.skill} (${entry.model}): excluded ${excluded.length > 0 ? excluded.join(", ") : "none"}`);
   }
