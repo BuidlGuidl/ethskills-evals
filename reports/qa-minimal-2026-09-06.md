@@ -195,9 +195,11 @@ volatile-token app it would not be, and the rewrite has no line that would produ
 the compression removed is the narrow *absolute-URL / `metadataBase`* rule, and that rule
 appears in **zero of the six** 2026-09-06 goal-001 diffs — neither arm states it. In #29 it
 was stated 3/3 by `with_skill`, and all three of those runs *checked the claim and passed
-it* — "builds an **absolute** URL from `metadataBase` … so it's not a bare relative path ✅",
-and `with-skill-3` "built from `VERCEL_PROJECT_PRODUCTION_URL` (absolute in prod, OK)". The
-full skill's OG section produced a verified non-finding on this template, not a catch.
+it*, each in its own words: `with-skill-1` "builds an **absolute** URL from
+`metadataBase`/`VERCEL_PROJECT_PRODUCTION_URL` — OK in production"; `with-skill-2` "so it's
+not a bare relative path. ✅"; `with-skill-3` "built from `VERCEL_PROJECT_PRODUCTION_URL`
+(absolute in prod, OK)". The full skill's OG section produced a verified
+non-finding on this template, not a catch.
 
 Meanwhile the stock OG asset is flagged **6/6 here, in both arms**, under branding — but
 under that predicate and not a tighter one. Naming the file is 5/6: `no-skill-3` never writes
