@@ -68,7 +68,7 @@ const Skill = () => {
   const modelMoved = rows.some(row => row.modelMoved || row.unaidedModels);
   const offRubric = rows.some(row => row.unaidedOffRubric);
   const pooled = rows.some(row => mixed(row.noSkill) || mixed(row.before) || mixed(row.after));
-  const retired = after !== null && rows.some(row => row.retired);
+  const retired = rows.some(row => row.retired);
   const fullCoverage = coverage.counted === coverage.total;
 
   return (
@@ -122,7 +122,7 @@ const Skill = () => {
         </thead>
         <tbody>
           {rows.map(row => (
-            <tr key={row.task} className={after !== null && !row.counted ? "uncounted" : undefined}>
+            <tr key={row.task} className={!row.counted && (after !== null || row.retired) ? "uncounted" : undefined}>
               <th scope="row">
                 <Link to={`/task/${row.task}`}>{row.task.replace(`${skill.name}-`, "")}</Link>{" "}
                 <span className="muted small">{row.kind}</span>

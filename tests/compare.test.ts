@@ -384,3 +384,16 @@ test("counting runs drops superseded readings but keeps ungraded runs", () => {
   assert.equal(countRuns([source, regrade, dead]), 2, "one run read twice is one run; an ungraded run still ran");
   assert.equal(tally([source, regrade, dead])?.total, 1, "but only the graded reading is tallied");
 });
+
+test("a retired task under a skill measured once is out of the totals too, as its tag says", () => {
+  // The tag on the row promises the row is left out; a skill with no after column used to
+  // count it anyway, so the tooltip was the reader's only explanation and it was wrong.
+  const single: Skill = { ...skill, latest_measured: "big", current: "big", versions: [version("big", 547, 6)] };
+  const retired = [tasks[0], { ...tasks[1], status: "retired" as const }];
+  const comparison = compareSkill(single, retired, steady);
+
+  assert.equal(comparison.rows[1].retired, true);
+  assert.equal(comparison.rows[1].counted, false);
+  assert.deepEqual(comparison.coverage, { counted: 1, total: 1 });
+  assert.deepEqual(comparison.totals.before, cell(1, 2, ["rubric-new"]), "quiz-002's before cell is not in the total");
+});

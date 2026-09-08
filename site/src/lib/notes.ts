@@ -30,7 +30,7 @@ export const CELLS_DIFFER =
   "are not a comparison.";
 
 export const RETIRED_ROW =
-  "This task is retired: it is not run again, so a version measured after that has no cell here. The row shows what " +
+  "This task is retired: it is not run again, so no version measured after that has a cell here. The row shows what " +
   "was scored while it was live and is left out of the totals.";
 
 export const PARTIAL_COVERAGE =

@@ -199,15 +199,17 @@ export const compareSkill = (skill: Skill, tasks: Task[], runs: Run[]): SkillCom
         modelMoved,
         unaidedOffRubric,
         unaidedModels: noSkill !== null && target !== null && (noSkill.models.length > 1 || !shareModel(noSkill, target)),
-        // A retired task keeps its cell for what the older version scored, but the newer
-        // version was never run on it, so it cannot be in a before-and-after total. A cell
-        // that pools rules is a raw count and cannot be in one either.
+        // A retired task keeps its cell for what was scored while it was live and is never in
+        // a total: the newer version was not run on it, and a skill measured once is still
+        // measured on the work it faces today. A cell that pools rules is a raw count and
+        // cannot be in one either.
         counted:
+          !retired &&
           beforeCell !== null &&
           !unaidedOffRubric &&
           !mixed(beforeCell) &&
           !mixed(noSkill) &&
-          (after === null || (!retired && afterCell !== null && !rubricMoved && !promptMoved && !mixed(afterCell))),
+          (after === null || (afterCell !== null && !rubricMoved && !promptMoved && !mixed(afterCell))),
       };
     });
 
@@ -242,10 +244,7 @@ export const compareSkill = (skill: Skill, tasks: Task[], runs: Run[]): SkillCom
     between: measuredVersions.filter(version => version.id !== before?.id && version.id !== after?.id),
     rows,
     totals: { noSkill: sum(row => row.noSkill), before: sum(row => row.before), after: sum(row => row.after) },
-    coverage: {
-      counted: counted.length,
-      total: after === null ? rows.length : rows.filter(row => !row.retired).length,
-    },
+    coverage: { counted: counted.length, total: rows.filter(row => !row.retired).length },
     sharedRows: rows.filter(row => row.before !== null && row.after !== null).length,
     comparable: after === null || counted.length > 0,
   };
@@ -262,6 +261,8 @@ export type SkillSummary = {
   afterVersion: SkillVersion | null;
   coverage: { counted: number; total: number };
   comparable: boolean;
+  /** rows with a cell in both skilled columns; tells "never ran the same task" from "every shared task moved" */
+  sharedRows: number;
   /** some counted row faces the two versions on different models */
   modelMoved: boolean;
 };
@@ -283,6 +284,7 @@ export const summarize = (index: Index): SkillSummary[] =>
       afterVersion: comparison.after,
       coverage: comparison.coverage,
       comparable: comparison.comparable,
+      sharedRows: comparison.sharedRows,
       modelMoved: comparison.rows.some(row => row.counted && row.modelMoved),
     };
   });

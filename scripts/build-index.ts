@@ -82,8 +82,11 @@ const git = (...args: string[]) =>
   }).trim();
 
 // --no-git makes every lookup miss, which is what a deploy host's shallow single-branch
-// clone looks like. Run it before shipping: if the output still matches, the cache is
-// complete and the build does not depend on history it will not have.
+// clone looks like. Run it before shipping: if site/derived.json comes out byte-identical
+// and there are no warnings, the cache is complete and the build does not depend on history
+// it will not have. index.json is not the thing to diff: `generated` carries the time and
+// the commit, and the sha label on a version no run has measured reads "worktree" without
+// git, where a clean tree with git names HEAD.
 let gitAvailable = true;
 
 const gitOrNull = (...args: string[]) => {

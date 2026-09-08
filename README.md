@@ -102,7 +102,9 @@ which revision of a task's `expect:` lines it was graded against. Both come out 
 history, and history is not durable enough to depend on — a `skill_version` sha can live
 only on a branch that gets squash-merged and deleted, and the deploy host clones a single
 branch shallowly. Resolve once here, commit the answer, and the site builds without git.
-That is what `yarn build-index --no-git` checks: it must produce the same file.
+That is what `yarn build-index --no-git` checks: it must leave `site/derived.json` unchanged
+and warn about nothing. (index.json itself differs in `generated` and in the sha label of a
+version no run has measured, which reads `worktree` without git — not a cache hole.)
 
 Commit `site/derived.json` whenever a benchmark adds runs on a new skill version or a task's
 `expect:` lines change, and after a transcript is rewritten — its link is pinned to the

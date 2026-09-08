@@ -2,15 +2,16 @@ import { Link } from "react-router-dom";
 import Marker from "../components/Marker.js";
 import { formatCell, summarize } from "../lib/compare.js";
 import { useIndex } from "../lib/data.js";
-import { MODEL_MOVED, NO_SHARED_TASKS, PARTIAL_COVERAGE } from "../lib/notes.js";
+import { MODEL_MOVED, NO_COMPARABLE_ROWS, NO_SHARED_TASKS, PARTIAL_COVERAGE } from "../lib/notes.js";
 
 const Summary = () => {
   const index = useIndex();
   const rows = summarize(index);
   const rewritten = rows.filter(row => row.afterVersion !== null);
   // The judge is a separate call, and on a single-stack benchmark it is the same model as the
-  // executor. The record says so, and a page that shows the numbers has to say so too.
-  const graded = index.runs.filter(run => run.pass !== null && run.retracted === null);
+  // executor. The record says so, and a page that shows the numbers has to say so too. Runs,
+  // not records, like every other count on the page: a regrade is a second reading of one run.
+  const graded = index.runs.filter(run => run.pass !== null && run.retracted === null && run.superseded_by === null);
   const selfJudged = graded.filter(run => run.judge?.self_judged === true).length;
 
   return (
@@ -90,7 +91,10 @@ const Summary = () => {
                 <td className="num">
                   {formatCell(row.after)}
                   {row.afterVersion !== null && (!row.comparable || row.coverage.counted < row.coverage.total) && (
-                    <Marker symbol="*" note={row.comparable ? PARTIAL_COVERAGE : NO_SHARED_TASKS} />
+                    <Marker
+                      symbol="*"
+                      note={row.comparable ? PARTIAL_COVERAGE : row.sharedRows === 0 ? NO_SHARED_TASKS : NO_COMPARABLE_ROWS}
+                    />
                   )}
                   {row.modelMoved && <Marker symbol="◊" note={MODEL_MOVED} />}
                 </td>
