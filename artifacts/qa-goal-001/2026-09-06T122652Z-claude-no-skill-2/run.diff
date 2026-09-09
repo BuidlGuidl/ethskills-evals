@@ -1,0 +1,260 @@
+diff --git a/REVIEW.md b/REVIEW.md
+new file mode 100644
+index 0000000..b95c802
+--- /dev/null
++++ b/REVIEW.md
+@@ -0,0 +1,238 @@
++# Pre-ship review — USDC Payouts (Base)
++
++Scope: `packages/nextjs` frontend + config. Report only, no code changed.
++
++**Verification run locally:** `yarn install` → `yarn check-types` (clean), `yarn next build` (clean, 8 routes), `yarn lint` (0 errors, 100 prettier warnings). Could not exercise the live Base flow — no wallet / no RPC key in this environment — so runtime findings below are read from the code and the SE-2 hook internals.
++
++**Verdict: do not ship as-is.** 6 ship-blocking issues, most of them in `app/payouts/page.tsx`. The core problem is that the page bypasses the Scaffold-ETH contract-write hooks and hand-rolls raw wagmi calls, losing the wrong-network guard, simulation, error surfacing, and tx confirmation that SE-2 gives you for free.
++
++---
++
++## Ship-blocking
++
++### 1. Event feed scans Base from genesis — will never load
++
++`packages/nextjs/app/payouts/page.tsx:29-34`
++
++`useScaffoldEventHistory({ fromBlock: 0n, watch: true })` on Base mainnet. The hook pages `eth_getLogs` in 500-block batches (`hooks/scaffold-eth/useScaffoldEventHistory.ts:95`, `blocksBatchSize = 500`) and only advances one page per query. Base is past block ~34M, so that's **~68,000 sequential RPC round-trips** before the first payout can render. On the default public RPC it gets rate-limited within seconds.
++
++Worse: `watch` polling only starts once the backfill is exhausted (`useScaffoldEventHistory.ts:206-210`, `shouldStartPolling` requires `!query.hasNextPage && status === "success"`). Since the backfill never completes, **live updates never start either**. "Latest payouts" will sit on "No payouts yet." permanently.
++
++**Fix:** delete the `fromBlock` line entirely. The hook then falls back to `deployedOnBlock` from `deployedContracts.ts:47` (`33712450`) — see `useScaffoldEventHistory.ts:129-135`. That cuts it to a few hundred batches.
++
++**Also flag for the team:** the hook's own JSDoc marks it `@deprecated` for production and says so explicitly for L2s (`useScaffoldEventHistory.ts:57-60`). It logs a console warning on every non-hardhat chain (`:99-106`). For a public feed on Base, move to an indexer (ponder / subgraph — both have skills in `.agents/skills/`). Fixing `fromBlock` makes the page usable for launch; the indexer is the real fix.
++
++### 2. Writes are not pinned to Base — silent no-op payouts on the wrong chain
++
++`packages/nextjs/app/payouts/page.tsx:21, 36-62`
++
++Uses raw `useWriteContract` from wagmi with no `chainId`. wagmi submits to **whatever chain the wallet is currently on**. Addresses are hardcoded from `deployedContracts[8453]` (`:10-11`) regardless.
++
++Concrete failure: user is connected to Ethereum mainnet. `0x8335…2913` (Base USDC) and `0x7c3f…b6F2` (Payouts) have no code on mainnet. A call to a codeless address **succeeds and returns empty** — no revert. `pay` returns nothing so viem can't tell. The tx confirms, `setAmount("")` / `setMemo("")` clear the form (`:57-58`), and the user believes the payout went out. Real money, no payout, no error.
++
++Note the header does render `WrongNetworkDropdown` in this case (`RainbowKitCustomConnectButton/index.tsx:41`), but mainnet is a *supported* wagmi chain (added for ENS in `services/web3/wagmiConfig.tsx:12-14`), so it's a small chip in the corner — and the payouts form stays fully interactive underneath it.
++
++**Fix:** use `useScaffoldWriteContract({ contractName: "Payouts" })` and `useScaffoldWriteContract({ contractName: "USDC" })`. It hard-blocks on `accountChain.id !== selectedNetwork.id` (`hooks/scaffold-eth/useScaffoldWriteContract.ts:103-106`), simulates before sending (`:118-124`), and routes through `useTransactor`. This one change also fixes #3 and #4. Minimum stopgap if you keep raw wagmi: pass `chainId: base.id` **and** gate the form on `chain?.id === base.id`.
++
++### 3. All errors swallowed into `console.error`
++
++`packages/nextjs/app/payouts/page.tsx:44-46, 59-61`
++
++Every failure path — user rejects in wallet, insufficient allowance, insufficient balance, `Payouts: zero recipient`, `Payouts: zero amount`, malformed address — hits `console.error(e)` and nothing else. The button just un-disables. The user has no idea what happened or whether to retry.
++
++**Fix:** `notification.error(getParsedError(e))`, both from `~~/utils/scaffold-eth` (already exported, `utils/scaffold-eth/index.ts`). Free if you adopt `useScaffoldWriteContract` (#2).
++
++### 4. No confirmation that a payout actually landed
++
++`packages/nextjs/app/payouts/page.tsx:51-58`
++
++`writeContractAsync` resolves on **submission**, not inclusion. Form clears immediately at `:57-58`. If the tx reverts on-chain (most likely: allowance short), the UI has already told the user "done" by clearing the form, and #3 means no error ever appears. There's no tx hash, no explorer link, no pending state past `isPending`.
++
++**Fix:** `useScaffoldWriteContract` → `useTransactor`, which toasts "waiting for confirmation" then success with a block-explorer link. Only clear the form in the success path.
++
++### 5. Recipient address is never validated
++
++`packages/nextjs/app/payouts/page.tsx:17, 78-84, 55`
++
++Plain `<input type="text">` cast with `recipient as \`0x${string}\`` — a lie to the type checker. Empty string or typo throws `InvalidAddressError` inside viem, which is then swallowed (#3), so the button appears to do nothing. Nothing warns before sending real USDC to a mistyped address.
++
++**Fix:** use `AddressInput` from `@scaffold-ui/components` (per AGENTS.md, gives ENS resolution + validation), and disable "Send Payout" unless `isAddress(recipient)`. ENS resolution matters here — a payouts tool where you paste raw hex is exactly where typos cost money.
++
++### 6. Shipping on the shared public Alchemy key and WalletConnect project ID
++
++`packages/nextjs/scaffold.config.ts:16, 40`
++
++`DEFAULT_ALCHEMY_API_KEY = "IZYEU2cWBgnFmgiTAgpWD"` and `walletConnectProjectId` fallback `'3a8170812b534d0ff9d794f19a901d64'` are the Scaffold-ETH public defaults, shared across every SE-2 project on the internet. Rate limits are not yours; WalletConnect project IDs are domain-scoped and can be blocked.
++
++There's a second-order effect: when the default Alchemy key is detected, `wagmiConfig.tsx:20` *de-prioritises* Alchemy to the back of the fallback list, so all Base traffic hits viem's default public RPC (`mainnet.base.org`) first. That compounds #1.
++
++**Fix:** set `NEXT_PUBLIC_ALCHEMY_API_KEY` and `NEXT_PUBLIC_WALLET_CONNECT_PROJECT_ID` in the Vercel project env before the launch build. Both are already wired up in `.env.example`.
++
++---
++
++## Should-fix
++
++### 7. USDC hand-added to the autogenerated `deployedContracts.ts`
++
++`packages/nextjs/contracts/deployedContracts.ts:49` (file header: "autogenerated … You should not edit it manually", `:1-4`)
++
++The next `yarn deploy` regenerates this file and wipes the USDC entry. Balance read, approve, and the `USDC` contract name all break at build time.
++
++**Fix:** move the USDC block to `contracts/externalContracts.ts` under key `8453` — that file is currently an empty stub (`:14`) and exists for exactly this.
++
++### 8. Hardcoded `deployedContracts[8453]` instead of the hooks
++
++`packages/nextjs/app/payouts/page.tsx:10-11`
++
++Duplicates addresses/ABIs that `useDeployedContractInfo` already resolves from `scaffold.config.targetNetworks`. Adding a testnet target later means editing the page. Resolved by #2 + #7.
++
++### 9. No allowance read — Approve/Pay flow is guesswork
++
++`packages/nextjs/app/payouts/page.tsx:36-47, 99-114`
++
++Two buttons, always both shown, with no indication of which is needed. Two concrete breakages:
++- User with existing allowance still sees Approve as a required-looking step.
++- Approve uses the *current* `amount` (`:42`). Approve 100, then edit the field to 150, then Send → `transferFrom` reverts, silently (#3).
++
++**Fix:** read `allowance(connectedAddress, PAYOUTS.address)` via `useScaffoldReadContract` (the ABI has it), only render Approve when `allowance < parsedAmount`, and hide it once covered.
++
++### 10. Both buttons share one `isPending`
++
++`packages/nextjs/app/payouts/page.tsx:21, 101-113`
++
++One `useWriteContract` instance drives both handlers, so approving spins *and* disables "Send Payout" and vice versa. Two separate `useScaffoldWriteContract` calls (one per contract, per #2) give independent `isMining` flags.
++
++### 11. Amount input accepts negatives and scientific notation
++
++`packages/nextjs/app/payouts/page.tsx:85-91, 42, 55`
++
++`type="number"` permits `-5` and `1e5`. `parseUnits("-5", 6)` yields a negative bigint; encoding it as `uint256` throws in viem → swallowed (#3). No check against `usdcBalance` either, so over-balance sends revert on-chain with no message.
++
++**Fix:** validate `parsedAmount > 0n && parsedAmount <= usdcBalance` and disable the button otherwise; show "Insufficient balance" inline. Consider `IntegerInput` from `@scaffold-ui/components`.
++
++### 12. `6` decimals hardcoded in four places
++
++`packages/nextjs/app/payouts/page.tsx:42, 55, 75, 126`
++
++The USDC ABI already exposes `decimals()`. **Fix:** one `USDC_DECIMALS = 6` constant at minimum, or read it once via `useScaffoldReadContract`.
++
++### 13. Array index as React key on a live-updating list
++
++`packages/nextjs/app/payouts/page.tsx:120-121`
++
++`key={i}` on a list where `watch` **prepends** new events (`useScaffoldEventHistory.ts:246`, `setLiveEvents(prev => [...newEvents, ...prev])`). Every new payout shifts all keys, so React re-renders/mismatches rows.
++
++**Fix:** `key={`${payout.transactionHash}-${payout.logIndex}`}`.
++
++### 14. Hardcoded black background ignores the DaisyUI theme
++
++`packages/nextjs/app/payouts/page.tsx:65, 121`
++
++`bg-black text-white` on the page wrapper, `border-gray-700` on the cards. Header and footer use theme tokens, so in light mode (the default, `styles/globals.css:11-13`) `/payouts` is a black slab between a white header and white footer. The theme toggle in the footer appears broken on this page.
++
++**Fix:** `bg-base-100 text-base-content` and `border-base-300`. AGENTS.md ("Styling") requires DaisyUI classes over raw Tailwind.
++
++### 15. Hand-rolled address shortening instead of `Address`
++
++`packages/nextjs/app/payouts/page.tsx:13, 122-124`
++
++`shorten()` reimplements a worse version of `Address` from `@scaffold-ui/components` — loses ENS names, blockie avatar, explorer link, and copy-to-clipboard. For a payouts feed, "did this go to the right person" is the whole point, and `0x1234…5678` doesn't answer it.
++
++**Fix:** `<Address address={payout.args.from} />`. AGENTS.md mandates this library for web3 UI. (`app/page.tsx:27` already uses it correctly.)
++
++### 16. 30s polling interval on a 2s-block L2
++
++`packages/nextjs/scaffold.config.ts:24`
++
++Balance and feed can lag half a minute. AGENTS.md explicitly says to *decrease* polling for L2s; this is 7.5× the SE-2 default of 4000.
++
++**Fix:** ~5000. (Note this also throttles the #1 backfill — another reason to fix `fromBlock` first.)
++
++### 17. "Debug Contracts" in the production nav
++
++`packages/nextjs/components/Header.tsx:29-33`
++
++Unconditionally in the menu. Anyone hitting the shipped site gets a UI to call `pay` and `approve` on the mainnet contracts with arbitrary arguments. The `/debug` and `/blockexplorer` routes both build into the production bundle (confirmed in the build output).
++
++**Fix:** gate the link on `targetNetwork.id === hardhat.id` (`Header.tsx:66` already computes `isLocalNetwork`), and ideally drop both route directories from the ship build. The block-explorer route is local-chain-only anyway and will just error on Base.
++
++### 18. Home page is still Scaffold-ETH boilerplate
++
++`packages/nextjs/app/page.tsx:20-45`
++
++"Welcome to Scaffold-ETH 2", "Get started by editing packages/nextjs/app/page.tsx", "Edit your smart contract YourContract.sol", plus a Block Explorer card that only works locally. This is the first thing real users see at `/`.
++
++**Fix:** replace with a short payouts landing page, or redirect `/` → `/payouts`.
++
++### 19. Metadata still says Scaffold-ETH; `/payouts` has none of its own
++
++`packages/nextjs/app/layout.tsx:10-13`
++
++Title `'Scaffold-ETH 2 App'`, description `'Built with 🏗 Scaffold-ETH 2'`, OG image `/thumbnail.jpg` is the SE-2 default. Every link shared in Slack/Telegram previews as a Scaffold-ETH demo.
++
++**Fix:** real title/description in `layout.tsx`, plus `app/payouts/layout.tsx` exporting `getMetadata({ title: "Payouts", description: "…" })` — `app/debug` and `app/blockexplorer` already do this.
++
++### 20. Deploy script disables TypeScript errors
++
++`packages/nextjs/package.json` (`vercel:yolo`) + `next.config.ts:7-9`
++
++`vercel:yolo` sets `NEXT_PUBLIC_IGNORE_BUILD_ERROR=true`, which flips `typescript.ignoreBuildErrors`. AGENTS.md points at `yarn vercel:yolo --prod` for deploys, but that's the prototyping path — it will ship a build with type errors in it and say nothing.
++
++Types are currently clean (`yarn check-types` passes), so this costs nothing to tighten now.
++
++**Fix:** deploy the launch build with `yarn vercel --prod`; keep `vercel:yolo` for throwaway previews.
++
++### 21. `public/manifest.json` is not valid JSON
++
++`packages/nextjs/public/manifest.json`
++
++Unquoted keys and single quotes — a JS object literal, not JSON. Any parser rejects it. Nothing references it (no `manifest` in `layout.tsx` metadata), so it's inert today, but it's a dead file that will bite whoever adds a PWA manifest link.
++
++**Fix:** delete it, or make it valid and wire it into `getMetadata`.
++
++### 22. Disconnected state has no connect button
++
++`packages/nextjs/app/payouts/page.tsx:70-71`
++
++Renders the bare sentence "Please connect your wallet to send a payout." — the only connect affordance is up in the header. Cheap friction on the landing action.
++
++**Fix:** render `<RainbowKitCustomConnectButton />` inline in that branch.
++
++### 23. Loading balance renders as "0 USDC"
++
++`packages/nextjs/app/payouts/page.tsx:74-76`
++
++`usdcBalance !== undefined ? … : "0"` — during the initial read (and on any RPC hiccup, which is likely given #1/#6) a funded user is told they have 0 USDC.
++
++**Fix:** show a skeleton or "—" while `isLoading`; distinguish undefined from zero.
++
++### 24. Zero test coverage on the money path
++
++`packages/hardhat/test/` is empty. `Payouts.pay` (`packages/hardhat/contracts/Payouts.sol:20-25`) moves real USDC and has three `require`s that nothing exercises.
++
++**Fix:** a Base-fork test covering happy path, zero recipient, zero amount, and insufficient allowance. Not strictly a frontend issue, but it's the contract this frontend spends money through.
++
++### 25. 100 prettier warnings, 11 files
++
++`yarn lint` → 0 errors, 100 warnings, all `prettier/prettier`. Affected: `app/layout.tsx`, `app/page.tsx`, `app/payouts/page.tsx`, `components/Header.tsx`, `components/ScaffoldEthAppWithProviders.tsx`, `next.config.ts`, `scaffold.config.ts`, `services/web3/wagmiConfig.tsx`, `utils/scaffold-eth/getMetadata.ts`, `app/blockexplorer/address/[address]/page.tsx`, `types/abitype/abi.d.ts`. `wagmiConfig.tsx:20` is a single 900-character line — genuinely hard to review, which is where #6's fallback-ordering logic hides.
++
++**Fix:** `yarn format`. Warnings don't fail `yarn build`, so this will only accumulate.
++
++---
++
++## Nits
++
++- `packages/nextjs/next.config.ts:1, 24` — mixes ESM `import type` with `module.exports`. Next's documented form for `next.config.ts` is `export default nextConfig`. Build currently works (verified), so this is cosmetic, but it's fragile across Next upgrades.
++- `packages/nextjs/app/payouts/page.tsx:101, 108` — `btn loading` is DaisyUI 4 syntax; DaisyUI 5 (5.5.19 here) wants a `<span className="loading loading-spinner">` child. The class currently does nothing visible.
++- `packages/nextjs/app/layout.tsx:17` — empty template literal `className={``}`.
++
++---
++
++## Suggested order
++
++1. **#1** (`fromBlock`) — one line, unblocks the entire feed.
++2. **#2, #3, #4** — one refactor to `useScaffoldWriteContract`; fixes the silent-wrong-chain hazard and both feedback gaps together.
++3. **#5, #9, #11** — input validation + allowance gating; these are the remaining ways a user loses money or gets stuck.
++4. **#6** — env keys in Vercel. Do before the launch build, not after.
++5. **#7** — before anyone runs `yarn deploy` again.
++6. Everything else.
+diff --git a/packages/nextjs/next-env.d.ts b/packages/nextjs/next-env.d.ts
+index c4b7818..9edff1c 100644
+--- a/packages/nextjs/next-env.d.ts
++++ b/packages/nextjs/next-env.d.ts
+@@ -1,6 +1,6 @@
+ /// <reference types="next" />
+ /// <reference types="next/image-types/global" />
+-import "./.next/dev/types/routes.d.ts";
++import "./.next/types/routes.d.ts";
+ 
+ // NOTE: This file should not be edited
+ // see https://nextjs.org/docs/app/api-reference/config/typescript for more information.
+
+# Untracked files and status
+ A REVIEW.md
+ M packages/nextjs/next-env.d.ts

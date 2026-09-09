@@ -1,0 +1,1851 @@
+diff --git a/.github/workflows/lint.yaml b/.github/workflows/lint.yaml
+index e0e9ab5..4ca97c5 100644
+--- a/.github/workflows/lint.yaml
++++ b/.github/workflows/lint.yaml
+@@ -33,6 +33,9 @@ jobs:
+       - name: Run hardhat node, deploy contracts (& generate contracts typescript output)
+         run: yarn chain & yarn deploy
+ 
++      - name: Run hardhat tests
++        run: yarn hardhat:test
++
+       - name: Run hardhat lint
+         run: yarn hardhat:lint --max-warnings=0
+ 
+diff --git a/.gitignore b/.gitignore
+index 6db6ff8..86e7dc4 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -21,3 +21,20 @@ node_modules
+ 
+ # cli
+ dist
++
++# env files (never commit deployer keys or API keys)
++.env
++.env.local
++.env.*.local
++
++# ephemeral local deployments (real network deployments ARE committed)
++packages/hardhat/deployments/default
++packages/hardhat/deployments/localhost
++
++# hardhat / next build output
++packages/hardhat/artifacts
++packages/hardhat/cache
++packages/hardhat/generated
++packages/hardhat/typechain-types
++packages/nextjs/.next
++packages/nextjs/out
+diff --git a/README.md b/README.md
+index ae36e1f..a036ef2 100644
+--- a/README.md
++++ b/README.md
+@@ -1,5 +1,40 @@
+ # 🏗 Scaffold-ETH 2
+ 
++## USDC Payouts (this project)
++
++A dApp for sending USDC payouts to teammates and contributors on **Base mainnet** (chain id 8453).
++
++- `Payouts.sol` pulls USDC from the sender via `transferFrom` and emits a `Paid` event with an optional memo.
++- The `/payouts` page handles the approve → pay flow and renders the onchain payout feed.
++- USDC (`0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`) lives in `packages/nextjs/contracts/externalContracts.ts`.
++  Do not move it into `deployedContracts.ts` — that file is regenerated on every `yarn deploy`.
++
++### Before deploying the frontend
++
++Set both in Vercel/system env, otherwise the app falls back to the shared Scaffold-ETH demo keys,
++which are rate limited and not suitable for real traffic:
++
++```
++NEXT_PUBLIC_ALCHEMY_API_KEY=
++NEXT_PUBLIC_WALLET_CONNECT_PROJECT_ID=
++```
++
++### Deployment records
++
++`packages/nextjs/contracts/deployedContracts.ts` is fully regenerated from `packages/hardhat/deployments/`
++on every `yarn deploy`. That directory was missing, so any local deploy silently dropped the live Base
++address from the frontend. `packages/hardhat/deployments/base/Payouts.json` has been reconstructed from the
++compiled artifact of the committed source plus the address and deploy block that were already recorded in
++`deployedContracts.ts`. The original deploy transaction/receipt hashes were not available, so only
++`receipt.blockNumber` is present. Keep this directory committed for every live network.
++
++### Known limitation
++
++The payout feed uses `useScaffoldEventHistory`, which polls `eth_getLogs`. It starts from the contract's
++`deployedOnBlock`, so it is cheap today, but the cost grows with chain height. Move it to an indexer
++(ponder/subgraph) before the feed gets large.
++
++
+ <h4 align="center">
+   <a href="https://docs.scaffoldeth.io">Documentation</a> |
+   <a href="https://scaffoldeth.io">Website</a>
+diff --git a/packages/hardhat/.env.example b/packages/hardhat/.env.example
+index b377975..0cc36a3 100644
+--- a/packages/hardhat/.env.example
++++ b/packages/hardhat/.env.example
+@@ -1,9 +1,10 @@
+ # Template for Hardhat environment variables.
+ 
+ # To use this template, copy this file, rename it .env, and fill in the values.
++# .env is gitignored — never commit real keys.
+ 
+ # If not set, we provide default values (check `hardhat.config.ts`) so developers can start prototyping out of the box,
+-# but we recommend getting your own API Keys for Production Apps.
++# but you must set your own keys before deploying or verifying on Base mainnet.
+ 
+ # To access the values stored in this .env file you can use: process.env.VARIABLENAME
+ ALCHEMY_API_KEY=
+diff --git a/packages/hardhat/contracts/mocks/MockUSDC.sol b/packages/hardhat/contracts/mocks/MockUSDC.sol
+new file mode 100644
+index 0000000..904fbf3
+--- /dev/null
++++ b/packages/hardhat/contracts/mocks/MockUSDC.sol
+@@ -0,0 +1,21 @@
++//SPDX-License-Identifier: MIT
++pragma solidity >=0.8.0 <0.9.0;
++
++import { ERC20 } from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
++
++/**
++ * Stand-in for Base USDC on local chains only. Never deployed to a live network:
++ * `deploy/00_deploy_payouts.ts` only deploys it when the chain id is not in USDC_BY_CHAIN_ID.
++ * Freely mintable on purpose so anyone can fund a test payout.
++ */
++contract MockUSDC is ERC20 {
++    constructor() ERC20("Mock USD Coin", "USDC") {}
++
++    function decimals() public pure override returns (uint8) {
++        return 6;
++    }
++
++    function mint(address to, uint256 amount) external {
++        _mint(to, amount);
++    }
++}
+diff --git a/packages/hardhat/deploy/00_deploy_payouts.ts b/packages/hardhat/deploy/00_deploy_payouts.ts
+index c22bbd5..05fad5b 100644
+--- a/packages/hardhat/deploy/00_deploy_payouts.ts
++++ b/packages/hardhat/deploy/00_deploy_payouts.ts
+@@ -1,22 +1,47 @@
+ import { deployScript, artifacts } from "../rocketh/deploy.js";
+ 
+-// USDC on Base
+-const USDC_ADDRESS = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
++// Canonical USDC per chain. Payouts is only useful where real USDC exists, so any chain
++// missing from this map gets a locally deployed MockUSDC instead of a silent misconfiguration.
++const USDC_BY_CHAIN_ID: Record<number, `0x${string}`> = {
++  8453: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", // Base
++  84532: "0x036CbD53842c5426634e7929541eC2318f3dCF7e", // Base Sepolia
++};
++
++const LOCAL_CHAIN_IDS = [31337];
+ 
+ /**
+- * Deploys the Payouts contract pointed at Base USDC.
++ * Deploys the Payouts contract pointed at the USDC of the current chain.
+  *
+  * @param env Rocketh environment object.
+  */
+ export default deployScript(
+   async env => {
+     const { deployer } = env.namedAccounts;
++    const chainId = Number(env.network.chain.id);
++
++    let usdcAddress = USDC_BY_CHAIN_ID[chainId];
++
++    if (!usdcAddress) {
++      if (!LOCAL_CHAIN_IDS.includes(chainId)) {
++        throw new Error(
++          `No USDC address configured for chain ${chainId}. Add it to USDC_BY_CHAIN_ID before deploying Payouts.`,
++        );
++      }
++      // Local chain: deploy a mock so the approve -> pay flow is testable end to end.
++      // Saved as "USDC" so the frontend finds it under the same contract name as on Base.
++      const mock = await env.deploy("USDC", {
++        account: deployer,
++        artifact: artifacts.MockUSDC,
++        args: [],
++      });
++      usdcAddress = mock.address;
++    }
+ 
+     await env.deploy("Payouts", {
+       account: deployer,
+       artifact: artifacts.Payouts,
+       // Contract constructor arguments
+-      args: [USDC_ADDRESS],
++      args: [usdcAddress],
+     });
+   },
+   {
+diff --git a/packages/hardhat/deployments/base/.chain b/packages/hardhat/deployments/base/.chain
+new file mode 100644
+index 0000000..dce183d
+--- /dev/null
++++ b/packages/hardhat/deployments/base/.chain
+@@ -0,0 +1 @@
++{"chainId": "8453"}
+\ No newline at end of file
+diff --git a/packages/hardhat/deployments/base/Payouts.json b/packages/hardhat/deployments/base/Payouts.json
+new file mode 100644
+index 0000000..e73ceb1
+--- /dev/null
++++ b/packages/hardhat/deployments/base/Payouts.json
+@@ -0,0 +1,135 @@
++{
++  "address": "0x7c3f2A9d41B85E60Cf14a14e2b9D073A55e0b6F2",
++  "abi": [
++    {
++      "inputs": [
++        {
++          "internalType": "address",
++          "name": "_usdc",
++          "type": "address"
++        }
++      ],
++      "stateMutability": "nonpayable",
++      "type": "constructor"
++    },
++    {
++      "anonymous": false,
++      "inputs": [
++        {
++          "indexed": true,
++          "internalType": "address",
++          "name": "from",
++          "type": "address"
++        },
++        {
++          "indexed": true,
++          "internalType": "address",
++          "name": "to",
++          "type": "address"
++        },
++        {
++          "indexed": false,
++          "internalType": "uint256",
++          "name": "amount",
++          "type": "uint256"
++        },
++        {
++          "indexed": false,
++          "internalType": "string",
++          "name": "memo",
++          "type": "string"
++        }
++      ],
++      "name": "Paid",
++      "type": "event"
++    },
++    {
++      "inputs": [
++        {
++          "internalType": "address",
++          "name": "to",
++          "type": "address"
++        },
++        {
++          "internalType": "uint256",
++          "name": "amount",
++          "type": "uint256"
++        },
++        {
++          "internalType": "string",
++          "name": "memo",
++          "type": "string"
++        }
++      ],
++      "name": "pay",
++      "outputs": [],
++      "stateMutability": "nonpayable",
++      "type": "function"
++    },
++    {
++      "inputs": [],
++      "name": "usdc",
++      "outputs": [
++        {
++          "internalType": "contract IERC20",
++          "name": "",
++          "type": "address"
++        }
++      ],
++      "stateMutability": "view",
++      "type": "function"
++    }
++  ],
++  "contractName": "Payouts",
++  "sourceName": "contracts/Payouts.sol",
++  "bytecode": "0x60a0604052348015600e575f5ffd5b5060405161040d38038061040d833981016040819052602b91603b565b6001600160a01b03166080526066565b5f60208284031215604a575f5ffd5b81516001600160a01b0381168114605f575f5ffd5b9392505050565b6080516103896100845f395f8181603d015261015d01526103895ff3fe608060405234801561000f575f5ffd5b5060043610610034575f3560e01c80633e413bee146100385780634a4bdb301461007b575b5f5ffd5b61005f7f000000000000000000000000000000000000000000000000000000000000000081565b6040516001600160a01b03909116815260200160405180910390f35b61008e610089366004610268565b610090565b005b6001600160a01b0384166100eb5760405162461bcd60e51b815260206004820152601760248201527f5061796f7574733a207a65726f20726563697069656e7400000000000000000060448201526064015b60405180910390fd5b5f83116101315760405162461bcd60e51b815260206004820152601460248201527314185e5bdd5d1cce881e995c9bc8185b5bdd5b9d60621b60448201526064016100e2565b6040516323b872dd60e01b81523360048201526001600160a01b038581166024830152604482018590527f000000000000000000000000000000000000000000000000000000000000000016906323b872dd906064016020604051808303815f875af11580156101a3573d5f5f3e3d5ffd5b505050506040513d601f19601f820116820180604052508101906101c791906102f8565b6102135760405162461bcd60e51b815260206004820152601860248201527f5061796f7574733a207472616e73666572206661696c6564000000000000000060448201526064016100e2565b836001600160a01b0316336001600160a01b03167ff438e2c4a3356a8b7d1d49f07f1c48399c11eb019c9fa7343bacc0371dade02285858560405161025a9392919061031e565b60405180910390a350505050565b5f5f5f5f6060858703121561027b575f5ffd5b84356001600160a01b0381168114610291575f5ffd5b935060208501359250604085013567ffffffffffffffff8111156102b3575f5ffd5b8501601f810187136102c3575f5ffd5b803567ffffffffffffffff8111156102d9575f5ffd5b8760208284010111156102ea575f5ffd5b949793965060200194505050565b5f60208284031215610308575f5ffd5b81518015158114610317575f5ffd5b9392505050565b83815260406020820152816040820152818360608301375f818301606090810191909152601f909201601f191601019291505056fea26469706673582212202fc5d5390c7d92f4c6bcd10e4f571b2a380687e85d13431d74fe4a27578b24c464736f6c634300081e0033",
++  "deployedBytecode": "0x608060405234801561000f575f5ffd5b5060043610610034575f3560e01c80633e413bee146100385780634a4bdb301461007b575b5f5ffd5b61005f7f000000000000000000000000000000000000000000000000000000000000000081565b6040516001600160a01b03909116815260200160405180910390f35b61008e610089366004610268565b610090565b005b6001600160a01b0384166100eb5760405162461bcd60e51b815260206004820152601760248201527f5061796f7574733a207a65726f20726563697069656e7400000000000000000060448201526064015b60405180910390fd5b5f83116101315760405162461bcd60e51b815260206004820152601460248201527314185e5bdd5d1cce881e995c9bc8185b5bdd5b9d60621b60448201526064016100e2565b6040516323b872dd60e01b81523360048201526001600160a01b038581166024830152604482018590527f000000000000000000000000000000000000000000000000000000000000000016906323b872dd906064016020604051808303815f875af11580156101a3573d5f5f3e3d5ffd5b505050506040513d601f19601f820116820180604052508101906101c791906102f8565b6102135760405162461bcd60e51b815260206004820152601860248201527f5061796f7574733a207472616e73666572206661696c6564000000000000000060448201526064016100e2565b836001600160a01b0316336001600160a01b03167ff438e2c4a3356a8b7d1d49f07f1c48399c11eb019c9fa7343bacc0371dade02285858560405161025a9392919061031e565b60405180910390a350505050565b5f5f5f5f6060858703121561027b575f5ffd5b84356001600160a01b0381168114610291575f5ffd5b935060208501359250604085013567ffffffffffffffff8111156102b3575f5ffd5b8501601f810187136102c3575f5ffd5b803567ffffffffffffffff8111156102d9575f5ffd5b8760208284010111156102ea575f5ffd5b949793965060200194505050565b5f60208284031215610308575f5ffd5b81518015158114610317575f5ffd5b9392505050565b83815260406020820152816040820152818360608301375f818301606090810191909152601f909201601f191601019291505056fea26469706673582212202fc5d5390c7d92f4c6bcd10e4f571b2a380687e85d13431d74fe4a27578b24c464736f6c634300081e0033",
++  "linkReferences": {},
++  "deployedLinkReferences": {},
++  "immutableReferences": {
++    "803": [
++      {
++        "length": 32,
++        "start": 61
++      },
++      {
++        "length": 32,
++        "start": 349
++      }
++    ]
++  },
++  "inputSourceName": "project/contracts/Payouts.sol",
++  "devdoc": {
++    "kind": "dev",
++    "methods": {},
++    "version": 1
++  },
++  "evm": {
++    "gasEstimates": {
++      "creation": {
++        "codeDepositCost": "181000",
++        "executionCost": "infinite",
++        "totalCost": "infinite"
++      },
++      "external": {
++        "pay(address,uint256,string)": "infinite",
++        "usdc()": "infinite"
++      }
++    }
++  },
++  "metadata": "{\"compiler\":{\"version\":\"0.8.30+commit.73712a01\"},\"language\":\"Solidity\",\"output\":{\"abi\":[{\"inputs\":[{\"internalType\":\"address\",\"name\":\"_usdc\",\"type\":\"address\"}],\"stateMutability\":\"nonpayable\",\"type\":\"constructor\"},{\"anonymous\":false,\"inputs\":[{\"indexed\":true,\"internalType\":\"address\",\"name\":\"from\",\"type\":\"address\"},{\"indexed\":true,\"internalType\":\"address\",\"name\":\"to\",\"type\":\"address\"},{\"indexed\":false,\"internalType\":\"uint256\",\"name\":\"amount\",\"type\":\"uint256\"},{\"indexed\":false,\"internalType\":\"string\",\"name\":\"memo\",\"type\":\"string\"}],\"name\":\"Paid\",\"type\":\"event\"},{\"inputs\":[{\"internalType\":\"address\",\"name\":\"to\",\"type\":\"address\"},{\"internalType\":\"uint256\",\"name\":\"amount\",\"type\":\"uint256\"},{\"internalType\":\"string\",\"name\":\"memo\",\"type\":\"string\"}],\"name\":\"pay\",\"outputs\":[],\"stateMutability\":\"nonpayable\",\"type\":\"function\"},{\"inputs\":[],\"name\":\"usdc\",\"outputs\":[{\"internalType\":\"contract IERC20\",\"name\":\"\",\"type\":\"address\"}],\"stateMutability\":\"view\",\"type\":\"function\"}],\"devdoc\":{\"kind\":\"dev\",\"methods\":{},\"version\":1},\"userdoc\":{\"kind\":\"user\",\"methods\":{},\"notice\":\"Routes USDC payouts straight to recipients and records them for the feed.\",\"version\":1}},\"settings\":{\"compilationTarget\":{\"project/contracts/Payouts.sol\":\"Payouts\"},\"evmVersion\":\"prague\",\"libraries\":{},\"metadata\":{\"bytecodeHash\":\"ipfs\",\"useLiteralContent\":true},\"optimizer\":{\"enabled\":true,\"runs\":200},\"remappings\":[\"project/:@openzeppelin/contracts/=npm/@openzeppelin/contracts@5.6.1/\"]},\"sources\":{\"project/contracts/Payouts.sol\":{\"content\":\"//SPDX-License-Identifier: MIT\\npragma solidity >=0.8.0 <0.9.0;\\n\\ninterface IERC20 {\\n    function transferFrom(address from, address to, uint256 amount) external returns (bool);\\n}\\n\\n/**\\n * Routes USDC payouts straight to recipients and records them for the feed.\\n */\\ncontract Payouts {\\n    IERC20 public immutable usdc;\\n\\n    event Paid(address indexed from, address indexed to, uint256 amount, string memo);\\n\\n    constructor(address _usdc) {\\n        usdc = IERC20(_usdc);\\n    }\\n\\n    function pay(address to, uint256 amount, string calldata memo) external {\\n        require(to != address(0), \\\"Payouts: zero recipient\\\");\\n        require(amount > 0, \\\"Payouts: zero amount\\\");\\n        require(usdc.transferFrom(msg.sender, to, amount), \\\"Payouts: transfer failed\\\");\\n        emit Paid(msg.sender, to, amount, memo);\\n    }\\n}\\n\",\"keccak256\":\"0x8d3fbec4b26bc635dc871518eac9fefd9c3f079899b173203ecd018b84d88aab\",\"license\":\"MIT\"}},\"version\":1}",
++  "storageLayout": {
++    "storage": [],
++    "types": null
++  },
++  "userdoc": {
++    "kind": "user",
++    "methods": {},
++    "notice": "Routes USDC payouts straight to recipients and records them for the feed.",
++    "version": 1
++  },
++  "argsData": "0x000000000000000000000000833589fcd6edb6e08f4c7c32d4f71b54bda02913",
++  "receipt": {
++    "blockNumber": "0x2026942"
++  }
++}
+\ No newline at end of file
+diff --git a/packages/hardhat/hardhat.config.ts b/packages/hardhat/hardhat.config.ts
+index a108193..5910cf6 100644
+--- a/packages/hardhat/hardhat.config.ts
++++ b/packages/hardhat/hardhat.config.ts
+@@ -4,7 +4,6 @@ import hardhatToolbox from "@nomicfoundation/hardhat-toolbox-mocha-ethers";
+ import HardhatDeploy from "hardhat-deploy";
+ import generateTsAbis from "./scripts/generateTsAbis.js";
+ 
+-
+ // If not set, it uses the hardhat account 0 private key.
+ // You can generate a random account with `yarn generate` or `yarn account:import` to import your existing PK
+ const deployerPrivateKey =
+@@ -32,171 +31,135 @@ export default defineConfig({
+   solidity: {
+     compilers: [
+       {
+-        version: '0.8.30',
++        version: "0.8.30",
+         settings: {
+           optimizer: {
+             enabled: true,
+             // https://docs.soliditylang.org/en/latest/using-the-compiler.html#optimizer-options
+-            runs: 200
+-          }
+-        }
+-      }
+-    ]
++            runs: 200,
++          },
++        },
++      },
++    ],
+   },
+   generateTypedArtifacts: {
+     destinations: [
+       {
+-        folder: './generated',
+-        mode: 'typescript'
+-      }
+-    ]
++        folder: "./generated",
++        mode: "typescript",
++      },
++    ],
+   },
+   // Configuration for hardhat-verify and rocketh-verify
+   verify: {
+     etherscan: {
+-      apiKey: etherscanApiKey
+-    }
++      apiKey: etherscanApiKey,
++    },
+   },
+   networks: {
+     // View the networks that are pre-configured.
+     // If the network you are looking for is not here you can add new network settings
+     default: {
+-      type: 'http',
+-      url: 'http://127.0.0.1:8545'
++      type: "http",
++      url: "http://127.0.0.1:8545",
+     },
+     hardhat: {
+-      type: 'edr-simulated',
++      type: "edr-simulated",
+       forking: {
+         url: `https://eth-mainnet.alchemyapi.io/v2/${providerApiKey}`,
+-        enabled: process.env.MAINNET_FORKING_ENABLED === "true"
+-      }
++        enabled: process.env.MAINNET_FORKING_ENABLED === "true",
++      },
+     },
+     mainnet: {
+-      type: 'http',
+-      url: 'https://mainnet.rpc.buidlguidl.com',
+-      accounts: [
+-        deployerPrivateKey
+-      ]
++      type: "http",
++      url: "https://mainnet.rpc.buidlguidl.com",
++      accounts: [deployerPrivateKey],
+     },
+     sepolia: {
+-      type: 'http',
++      type: "http",
+       url: `https://eth-sepolia.g.alchemy.com/v2/${providerApiKey}`,
+-      accounts: [
+-        deployerPrivateKey
+-      ]
++      accounts: [deployerPrivateKey],
+     },
+     optimism: {
+-      type: 'http',
++      type: "http",
+       url: `https://opt-mainnet.g.alchemy.com/v2/${providerApiKey}`,
+-      accounts: [
+-        deployerPrivateKey
+-      ]
++      accounts: [deployerPrivateKey],
+     },
+     optimismSepolia: {
+-      type: 'http',
++      type: "http",
+       url: `https://opt-sepolia.g.alchemy.com/v2/${providerApiKey}`,
+-      accounts: [
+-        deployerPrivateKey
+-      ]
++      accounts: [deployerPrivateKey],
+     },
+     base: {
+-      type: 'http',
+-      url: 'https://mainnet.base.org',
+-      accounts: [
+-        deployerPrivateKey
+-      ]
++      type: "http",
++      url: "https://mainnet.base.org",
++      accounts: [deployerPrivateKey],
+     },
+     baseSepolia: {
+-      type: 'http',
+-      url: 'https://sepolia.base.org',
+-      accounts: [
+-        deployerPrivateKey
+-      ]
++      type: "http",
++      url: "https://sepolia.base.org",
++      accounts: [deployerPrivateKey],
+     },
+     arbitrum: {
+-      type: 'http',
++      type: "http",
+       url: `https://arb-mainnet.g.alchemy.com/v2/${providerApiKey}`,
+-      accounts: [
+-        deployerPrivateKey
+-      ]
++      accounts: [deployerPrivateKey],
+     },
+     arbitrumSepolia: {
+-      type: 'http',
++      type: "http",
+       url: `https://arb-sepolia.g.alchemy.com/v2/${providerApiKey}`,
+-      accounts: [
+-        deployerPrivateKey
+-      ]
++      accounts: [deployerPrivateKey],
+     },
+     scrollSepolia: {
+-      type: 'http',
+-      url: 'https://sepolia-rpc.scroll.io',
+-      accounts: [
+-        deployerPrivateKey
+-      ]
++      type: "http",
++      url: "https://sepolia-rpc.scroll.io",
++      accounts: [deployerPrivateKey],
+     },
+     scroll: {
+-      type: 'http',
+-      url: 'https://rpc.scroll.io',
+-      accounts: [
+-        deployerPrivateKey
+-      ]
++      type: "http",
++      url: "https://rpc.scroll.io",
++      accounts: [deployerPrivateKey],
+     },
+     celo: {
+-      type: 'http',
+-      url: 'https://forno.celo.org',
+-      accounts: [
+-        deployerPrivateKey
+-      ]
++      type: "http",
++      url: "https://forno.celo.org",
++      accounts: [deployerPrivateKey],
+     },
+     celoSepolia: {
+-      type: 'http',
+-      url: 'https://forno.celo-sepolia.celo-testnet.org/',
+-      accounts: [
+-        deployerPrivateKey
+-      ]
++      type: "http",
++      url: "https://forno.celo-sepolia.celo-testnet.org/",
++      accounts: [deployerPrivateKey],
+     },
+     polygon: {
+-      type: 'http',
++      type: "http",
+       url: `https://polygon-mainnet.g.alchemy.com/v2/${providerApiKey}`,
+-      accounts: [
+-        deployerPrivateKey
+-      ]
++      accounts: [deployerPrivateKey],
+     },
+     polygonAmoy: {
+-      type: 'http',
++      type: "http",
+       url: `https://polygon-amoy.g.alchemy.com/v2/${providerApiKey}`,
+-      accounts: [
+-        deployerPrivateKey
+-      ]
++      accounts: [deployerPrivateKey],
+     },
+     gnosis: {
+-      type: 'http',
+-      url: 'https://rpc.gnosischain.com',
+-      accounts: [
+-        deployerPrivateKey
+-      ]
++      type: "http",
++      url: "https://rpc.gnosischain.com",
++      accounts: [deployerPrivateKey],
+     },
+     chiado: {
+-      type: 'http',
+-      url: 'https://rpc.chiadochain.net',
+-      accounts: [
+-        deployerPrivateKey
+-      ]
++      type: "http",
++      url: "https://rpc.chiadochain.net",
++      accounts: [deployerPrivateKey],
+     },
+     polygonZkEvm: {
+-      type: 'http',
++      type: "http",
+       url: `https://polygonzkevm-mainnet.g.alchemy.com/v2/${providerApiKey}`,
+-      accounts: [
+-        deployerPrivateKey
+-      ]
++      accounts: [deployerPrivateKey],
+     },
+     polygonZkEvmCardona: {
+-      type: 'http',
++      type: "http",
+       url: `https://polygonzkevm-cardona.g.alchemy.com/v2/${providerApiKey}`,
+-      accounts: [
+-        deployerPrivateKey
+-      ]
+-    }
++      accounts: [deployerPrivateKey],
++    },
+   },
+-  tasks: deployTasks
+-});
+\ No newline at end of file
++  tasks: deployTasks,
++});
+diff --git a/packages/hardhat/test/Payouts.ts b/packages/hardhat/test/Payouts.ts
+new file mode 100644
+index 0000000..96bbb6a
+--- /dev/null
++++ b/packages/hardhat/test/Payouts.ts
+@@ -0,0 +1,79 @@
++import { expect } from "chai";
++import { network } from "hardhat";
++
++const { ethers } = await network.connect();
++
++const usdc = (whole: string) => ethers.parseUnits(whole, 6);
++
++describe("Payouts", () => {
++  const deployFixture = async () => {
++    const [payer, recipient] = await ethers.getSigners();
++
++    const token = await ethers.deployContract("MockUSDC");
++    const payouts = await ethers.deployContract("Payouts", [await token.getAddress()]);
++
++    await token.mint(payer.address, usdc("1000"));
++
++    return { payer, recipient, token, payouts };
++  };
++
++  it("points at the token it was constructed with", async () => {
++    const { token, payouts } = await deployFixture();
++    expect(await payouts.usdc()).to.equal(await token.getAddress());
++  });
++
++  it("moves USDC from the payer to the recipient and emits Paid", async () => {
++    const { payer, recipient, token, payouts } = await deployFixture();
++    await token.approve(await payouts.getAddress(), usdc("100"));
++
++    await expect(payouts.pay(recipient.address, usdc("100"), "March invoice"))
++      .to.emit(payouts, "Paid")
++      .withArgs(payer.address, recipient.address, usdc("100"), "March invoice");
++
++    expect(await token.balanceOf(recipient.address)).to.equal(usdc("100"));
++    expect(await token.balanceOf(payer.address)).to.equal(usdc("900"));
++  });
++
++  it("spends only the paid amount of the allowance", async () => {
++    const { recipient, token, payouts } = await deployFixture();
++    await token.approve(await payouts.getAddress(), usdc("100"));
++    await payouts.pay(recipient.address, usdc("40"), "");
++
++    const [payer] = await ethers.getSigners();
++    expect(await token.allowance(payer.address, await payouts.getAddress())).to.equal(usdc("60"));
++  });
++
++  it("rejects a zero recipient", async () => {
++    const { token, payouts } = await deployFixture();
++    await token.approve(await payouts.getAddress(), usdc("100"));
++
++    await expect(payouts.pay(ethers.ZeroAddress, usdc("1"), "")).to.be.revertedWith("Payouts: zero recipient");
++  });
++
++  it("rejects a zero amount", async () => {
++    const { recipient, token, payouts } = await deployFixture();
++    await token.approve(await payouts.getAddress(), usdc("100"));
++
++    await expect(payouts.pay(recipient.address, 0, "")).to.be.revertedWith("Payouts: zero amount");
++  });
++
++  it("reverts when the payer has not approved enough", async () => {
++    const { recipient, token, payouts } = await deployFixture();
++    await token.approve(await payouts.getAddress(), usdc("10"));
++
++    await expect(payouts.pay(recipient.address, usdc("11"), "")).to.be.revertedWithCustomError(
++      token,
++      "ERC20InsufficientAllowance",
++    );
++  });
++
++  it("reverts when the payer does not hold enough USDC", async () => {
++    const { recipient, token, payouts } = await deployFixture();
++    await token.approve(await payouts.getAddress(), usdc("5000"));
++
++    await expect(payouts.pay(recipient.address, usdc("2000"), "")).to.be.revertedWithCustomError(
++      token,
++      "ERC20InsufficientBalance",
++    );
++  });
++});
+diff --git a/packages/nextjs/.env.example b/packages/nextjs/.env.example
+index b57486d..203f1a2 100644
+--- a/packages/nextjs/.env.example
++++ b/packages/nextjs/.env.example
+@@ -3,12 +3,9 @@
+ # For local development, copy this file, rename it to .env.local, and fill in the values.
+ # When deploying live, you'll need to store the vars in Vercel/System config.
+ 
+-# If not set, we provide default values (check `scaffold.config.ts`) so developers can start prototyping out of the box,
+-# but we recommend getting your own API Keys for Production Apps.
+-
+-# To access the values stored in this env file you can use: process.env.VARIABLENAME
+-# You'll need to prefix the variables names with NEXT_PUBLIC_ if you want to access them on the client side.
+-# More info: https://nextjs.org/docs/pages/building-your-application/configuring/environment-variables
++# REQUIRED FOR PRODUCTION. Without them the app falls back to the shared Scaffold-ETH demo
++# keys, which are rate limited and must not carry real user traffic.
++# Alchemy key (Base mainnet): https://dashboard.alchemyapi.io
+ NEXT_PUBLIC_ALCHEMY_API_KEY=
++# WalletConnect project id: https://cloud.walletconnect.com
+ NEXT_PUBLIC_WALLET_CONNECT_PROJECT_ID=
+-
+diff --git a/packages/nextjs/app/blockexplorer/address/[address]/page.tsx b/packages/nextjs/app/blockexplorer/address/[address]/page.tsx
+index 8f6464b..1959ae7 100644
+--- a/packages/nextjs/app/blockexplorer/address/[address]/page.tsx
++++ b/packages/nextjs/app/blockexplorer/address/[address]/page.tsx
+@@ -1,4 +1,3 @@
+-
+ import fs from "fs";
+ import path from "path";
+ import { Address } from "viem";
+@@ -47,13 +46,7 @@ const getContractData = async (address: Address) => {
+     return null;
+   }
+ 
+-  const artifactsDirectory = path.join(
+-    process.cwd(),
+-    "..",
+-    "hardhat",
+-    "artifacts",
+-    "build-info",
+-  );
++  const artifactsDirectory = path.join(process.cwd(), "..", "hardhat", "artifacts", "build-info");
+ 
+   if (!fs.existsSync(artifactsDirectory)) {
+     throw new Error(`Directory ${artifactsDirectory} not found.`);
+@@ -93,4 +86,4 @@ const AddressPage = async (props: PageProps) => {
+   return <AddressComponent address={address} contractData={contractData} />;
+ };
+ 
+-export default AddressPage;
+\ No newline at end of file
++export default AddressPage;
+diff --git a/packages/nextjs/app/layout.tsx b/packages/nextjs/app/layout.tsx
+index 4532506..8e5d073 100644
+--- a/packages/nextjs/app/layout.tsx
++++ b/packages/nextjs/app/layout.tsx
+@@ -1,4 +1,3 @@
+-
+ import "@rainbow-me/rainbowkit/styles.css";
+ import "@scaffold-ui/components/styles.css";
+ import { ScaffoldEthAppWithProviders } from "~~/components/ScaffoldEthAppWithProviders";
+@@ -6,10 +5,9 @@ import { ThemeProvider } from "~~/components/ThemeProvider";
+ import "~~/styles/globals.css";
+ import { getMetadata } from "~~/utils/scaffold-eth/getMetadata";
+ 
+-
+ export const metadata = getMetadata({
+-  title: 'Scaffold-ETH 2 App',
+-  description: 'Built with 🏗 Scaffold-ETH 2'
++  title: "USDC Payouts",
++  description: "Send USDC payouts to teammates and contributors on Base.",
+ });
+ 
+ const ScaffoldEthApp = ({ children }: { children: React.ReactNode }) => {
+@@ -24,4 +22,4 @@ const ScaffoldEthApp = ({ children }: { children: React.ReactNode }) => {
+   );
+ };
+ 
+-export default ScaffoldEthApp;
+\ No newline at end of file
++export default ScaffoldEthApp;
+diff --git a/packages/nextjs/app/page.tsx b/packages/nextjs/app/page.tsx
+index 05a7d29..f219c98 100644
+--- a/packages/nextjs/app/page.tsx
++++ b/packages/nextjs/app/page.tsx
+@@ -1,77 +1,52 @@
+-
+ "use client";
+ 
+-import { useAccount } from "wagmi";
++import Link from "next/link";
+ import { Address } from "@scaffold-ui/components";
+ import type { NextPage } from "next";
+-import Link from "next/link";
+-import { BugAntIcon, MagnifyingGlassIcon } from "@heroicons/react/24/outline";
++import { useAccount } from "wagmi";
++import { BanknotesIcon, ClockIcon } from "@heroicons/react/24/outline";
+ import { useTargetNetwork } from "~~/hooks/scaffold-eth";
+ 
+-
+ const Home: NextPage = () => {
+   const { address: connectedAddress } = useAccount();
+   const { targetNetwork } = useTargetNetwork();
+ 
+   return (
+-    <>
+-      <div className="flex items-center flex-col grow pt-10">
+-        <div className="px-5">
+-          <h1 className="text-center">
+-            <span className="block text-2xl mb-2">Welcome to</span>
+-            <span className="block text-4xl font-bold">Scaffold-ETH 2</span>
+-            
+-          </h1>
+-          <div className="flex justify-center items-center space-x-2 flex-col">
+-            <p className="my-2 font-medium">Connected Address:</p>
+-            <Address address={connectedAddress} chain={targetNetwork} />
+-          </div>
+-          
+-<p className="text-center text-lg">
+-  Get started by editing{" "}
+-  <code className="italic bg-base-300 text-base font-bold max-w-full break-words break-all inline-block">
+-    packages/nextjs/app/page.tsx
+-  </code>
+-</p>
+-<p className="text-center text-lg">
+-  Edit your smart contract{" "}
+-  <code className="italic bg-base-300 text-base font-bold max-w-full break-words break-all inline-block">
+-    YourContract.sol
+-  </code>{" "}
+-  in{" "}
+-  <code className="italic bg-base-300 text-base font-bold max-w-full break-words break-all inline-block">
+-    packages/hardhat/contracts
+-  </code>
+-</p>
+-
++    <div className="flex items-center flex-col grow pt-10">
++      <div className="px-5 text-center">
++        <h1>
++          <span className="block text-2xl mb-2">Welcome to</span>
++          <span className="block text-4xl font-bold">USDC Payouts</span>
++        </h1>
++        <p className="text-lg">Send USDC to teammates and contributors on {targetNetwork.name}.</p>
++        <div className="flex justify-center items-center space-x-2 flex-col">
++          <p className="my-2 font-medium">Connected Address:</p>
++          <Address address={connectedAddress} chain={targetNetwork} />
+         </div>
++        <Link href="/payouts" className="btn btn-primary mt-6">
++          Send a payout
++        </Link>
++      </div>
+ 
+-        <div className="grow bg-base-300 w-full mt-16 px-8 py-12">
+-          <div className="flex justify-center items-center gap-12 flex-col md:flex-row">
+-            <div className="flex flex-col bg-base-100 border border-base-300 px-10 py-10 text-center items-center max-w-xs">
+-              <BugAntIcon className="h-8 w-8" />
+-              <p>
+-                Tinker with your smart contract using the{" "}
+-                <Link href="/debug" passHref className="link">
+-                  Debug Contracts
+-                </Link>{" "}
+-                tab.
+-              </p>
+-            </div>
+-            <div className="flex flex-col bg-base-100 border border-base-300 px-10 py-10 text-center items-center max-w-xs">
+-              <MagnifyingGlassIcon className="h-8 w-8" />
+-              <p>
+-                Explore your local transactions with the{" "}
+-                <Link href="/blockexplorer" passHref className="link">
+-                  Block Explorer
+-                </Link>{" "}
+-                tab.
+-              </p>
+-            </div>
++      <div className="grow bg-base-300 w-full mt-16 px-8 py-12">
++        <div className="flex justify-center items-center gap-12 flex-col md:flex-row">
++          <div className="flex flex-col bg-base-100 border border-base-300 px-10 py-10 text-center items-center max-w-xs">
++            <BanknotesIcon className="h-8 w-8" />
++            <p>
++              Approve once, then send USDC straight to a recipient from the{" "}
++              <Link href="/payouts" passHref className="link">
++                Payouts
++              </Link>{" "}
++              tab.
++            </p>
++          </div>
++          <div className="flex flex-col bg-base-100 border border-base-300 px-10 py-10 text-center items-center max-w-xs">
++            <ClockIcon className="h-8 w-8" />
++            <p>Every payout is recorded onchain with an optional memo, so the team feed stays auditable.</p>
+           </div>
+         </div>
+       </div>
+-    </>
++    </div>
+   );
+ };
+ 
+diff --git a/packages/nextjs/app/payouts/page.tsx b/packages/nextjs/app/payouts/page.tsx
+index 13764ef..17e4f56 100644
+--- a/packages/nextjs/app/payouts/page.tsx
++++ b/packages/nextjs/app/payouts/page.tsx
+@@ -1,133 +1,188 @@
+ "use client";
+ 
+ import { useState } from "react";
++import { Address, AddressInput } from "@scaffold-ui/components";
+ import type { NextPage } from "next";
+-import { formatUnits, parseUnits } from "viem";
+-import { useAccount, useWriteContract } from "wagmi";
+-import deployedContracts from "~~/contracts/deployedContracts";
+-import { useScaffoldEventHistory, useScaffoldReadContract } from "~~/hooks/scaffold-eth";
++import { formatUnits, isAddress, parseUnits } from "viem";
++import { useAccount } from "wagmi";
++import {
++  useDeployedContractInfo,
++  useScaffoldEventHistory,
++  useScaffoldReadContract,
++  useScaffoldWriteContract,
++  useTargetNetwork,
++} from "~~/hooks/scaffold-eth";
+ 
+-const PAYOUTS = deployedContracts[8453].Payouts;
+-const USDC = deployedContracts[8453].USDC;
++const USDC_DECIMALS = 6;
+ 
+-const shorten = (addr?: string) => (addr ? `${addr.slice(0, 6)}...${addr.slice(-4)}` : "");
++/** Returns the amount in USDC base units, or undefined if the input is not a valid positive amount. */
++const parseAmount = (value: string) => {
++  const trimmed = value.trim();
++  if (!/^\d+(\.\d{1,6})?$/.test(trimmed)) return undefined;
++  const parsed = parseUnits(trimmed, USDC_DECIMALS);
++  return parsed > 0n ? parsed : undefined;
++};
+ 
+ const PayoutsPage: NextPage = () => {
+   const { address: connectedAddress, isConnected } = useAccount();
++  const { targetNetwork } = useTargetNetwork();
+   const [recipient, setRecipient] = useState("");
+   const [amount, setAmount] = useState("");
+   const [memo, setMemo] = useState("");
+ 
+-  const { writeContractAsync, isPending } = useWriteContract();
++  const { data: payoutsContract } = useDeployedContractInfo({ contractName: "Payouts" });
++
++  const { writeContractAsync: writeUsdcAsync, isMining: isApproving } = useScaffoldWriteContract({
++    contractName: "USDC",
++  });
++  const { writeContractAsync: writePayoutsAsync, isMining: isPaying } = useScaffoldWriteContract({
++    contractName: "Payouts",
++  });
+ 
+-  const { data: usdcBalance } = useScaffoldReadContract({
++  const { data: usdcBalance, refetch: refetchBalance } = useScaffoldReadContract({
+     contractName: "USDC",
+     functionName: "balanceOf",
+     args: [connectedAddress],
+   });
+ 
+-  const { data: payouts } = useScaffoldEventHistory({
++  const { data: allowance, refetch: refetchAllowance } = useScaffoldReadContract({
++    contractName: "USDC",
++    functionName: "allowance",
++    args: [connectedAddress, payoutsContract?.address],
++  });
++
++  // fromBlock is intentionally omitted: it defaults to the contract's deployedOnBlock, so we do not
++  // scan Base from genesis on every page load.
++  const { data: payouts, isLoading: isLoadingPayouts } = useScaffoldEventHistory({
+     contractName: "Payouts",
+     eventName: "Paid",
+-    fromBlock: 0n,
+     watch: true,
+   });
+ 
++  const parsedAmount = parseAmount(amount);
++  const isRecipientValid = isAddress(recipient);
++  const hasEnoughBalance = parsedAmount !== undefined && usdcBalance !== undefined && usdcBalance >= parsedAmount;
++  // While the allowance is still loading we keep showing (a disabled) Approve rather than
++  // offering a Send Payout that would revert.
++  const needsApproval = parsedAmount !== undefined && (allowance === undefined || allowance < parsedAmount);
++  const isBusy = isApproving || isPaying;
++
++  const validationError = (() => {
++    if (recipient.length > 0 && !isRecipientValid) return "Enter a valid recipient address.";
++    if (amount.length > 0 && parsedAmount === undefined) return "Enter an amount above 0 with at most 6 decimals.";
++    if (parsedAmount !== undefined && usdcBalance !== undefined && !hasEnoughBalance)
++      return "Amount exceeds your USDC balance.";
++    return undefined;
++  })();
++
++  const canSubmit =
++    isRecipientValid && parsedAmount !== undefined && hasEnoughBalance && allowance !== undefined && !isBusy;
++
+   const handleApprove = async () => {
++    if (!canSubmit || !parsedAmount || !payoutsContract) return;
+     try {
+-      await writeContractAsync({
+-        address: USDC.address,
+-        abi: USDC.abi,
+-        functionName: "approve",
+-        args: [PAYOUTS.address, parseUnits(amount || "0", 6)],
+-      });
++      await writeUsdcAsync({ functionName: "approve", args: [payoutsContract.address, parsedAmount] });
++      await refetchAllowance();
+     } catch (e) {
+-      console.error(e);
++      // useScaffoldWriteContract already surfaces the error as a notification.
++      console.error("approve failed", e);
+     }
+   };
+ 
+   const handlePay = async () => {
++    if (!canSubmit || !parsedAmount || !isRecipientValid) return;
+     try {
+-      await writeContractAsync({
+-        address: PAYOUTS.address,
+-        abi: PAYOUTS.abi,
+-        functionName: "pay",
+-        args: [recipient as `0x${string}`, parseUnits(amount || "0", 6), memo],
+-      });
++      await writePayoutsAsync({ functionName: "pay", args: [recipient, parsedAmount, memo] });
++      setRecipient("");
+       setAmount("");
+       setMemo("");
++      await Promise.all([refetchBalance(), refetchAllowance()]);
+     } catch (e) {
+-      console.error(e);
++      console.error("payout failed", e);
+     }
+   };
+ 
+   return (
+-    <div className="min-h-screen bg-black text-white">
+-      <div className="max-w-xl mx-auto pt-10 px-4 pb-16">
++    <div className="flex flex-col grow">
++      <div className="w-full max-w-xl mx-auto pt-10 px-4 pb-16">
+         <h1 className="text-3xl font-bold mb-1">USDC Payouts</h1>
+         <p className="text-sm opacity-70 mb-6">Send a USDC payout to any teammate or contributor on Base.</p>
+ 
+         {!isConnected ? (
+-          <p className="mt-4">Please connect your wallet to send a payout.</p>
++          <div className="alert">
++            <span>Connect your wallet to send a payout.</span>
++          </div>
+         ) : (
+-          <>
+-            <p className="mb-4">
+-              Your balance: {usdcBalance !== undefined ? formatUnits(usdcBalance, 6) : "0"} USDC
+-            </p>
+-
+-            <input
+-              type="text"
+-              placeholder="0x... recipient address"
+-              className="input input-bordered w-full mb-3"
+-              value={recipient}
+-              onChange={e => setRecipient(e.target.value)}
+-            />
+-            <input
+-              type="number"
+-              placeholder="Amount (USDC)"
+-              className="input input-bordered w-full mb-3"
+-              value={amount}
+-              onChange={e => setAmount(e.target.value)}
+-            />
+-            <textarea
+-              placeholder="What is this payout for? (optional)"
+-              className="textarea textarea-bordered w-full mb-4"
+-              value={memo}
+-              onChange={e => setMemo(e.target.value)}
+-            />
+-
+-            <div className="flex gap-3">
+-              <button
+-                className={`btn btn-primary ${isPending ? "loading" : ""}`}
+-                disabled={isPending}
+-                onClick={handleApprove}
+-              >
+-                Approve
+-              </button>
+-              <button
+-                className={`btn btn-secondary ${isPending ? "loading" : ""}`}
+-                disabled={isPending}
+-                onClick={handlePay}
+-              >
+-                Send Payout
+-              </button>
++          <div className="card bg-base-100 shadow-xl">
++            <div className="card-body gap-3">
++              <p className="m-0">
++                Your balance:{" "}
++                <span className="font-bold">
++                  {usdcBalance !== undefined ? formatUnits(usdcBalance, USDC_DECIMALS) : "…"} USDC
++                </span>
++              </p>
++
++              <AddressInput placeholder="Recipient address" value={recipient} onChange={setRecipient} />
++              <input
++                type="text"
++                inputMode="decimal"
++                placeholder="Amount (USDC)"
++                className="input input-bordered w-full"
++                value={amount}
++                onChange={e => setAmount(e.target.value)}
++              />
++              <textarea
++                placeholder="What is this payout for? (optional)"
++                className="textarea textarea-bordered w-full"
++                value={memo}
++                onChange={e => setMemo(e.target.value)}
++              />
++
++              {validationError && <p className="text-error text-sm m-0">{validationError}</p>}
++
++              <div className="card-actions">
++                {needsApproval ? (
++                  <button className="btn btn-primary" disabled={!canSubmit} onClick={handleApprove}>
++                    {isApproving && <span className="loading loading-spinner loading-sm" />}
++                    Approve {amount || ""} USDC
++                  </button>
++                ) : (
++                  <button className="btn btn-primary" disabled={!canSubmit} onClick={handlePay}>
++                    {isPaying && <span className="loading loading-spinner loading-sm" />}
++                    Send Payout
++                  </button>
++                )}
++              </div>
++              {needsApproval && parsedAmount !== undefined && (
++                <p className="text-xs opacity-70 m-0">
++                  Approving lets the Payouts contract move this amount of USDC on your behalf. You will sign the payout
++                  itself right after.
++                </p>
++              )}
+             </div>
+-          </>
++          </div>
+         )}
+ 
+         <h2 className="text-xl font-semibold mt-10 mb-3">Latest payouts</h2>
+         <div className="flex flex-col gap-2">
+-          {(payouts ?? []).map((payout, i) => (
+-            <div key={i} className="border border-gray-700 rounded p-3">
+-              <span className="font-mono">{shorten(payout.args.from)}</span>
+-              {" paid "}
+-              <span className="font-mono">{shorten(payout.args.to)}</span>
+-              {" "}
+-              {payout.args.amount !== undefined ? formatUnits(payout.args.amount, 6) : "0"} USDC
+-              {payout.args.memo ? <span className="block opacity-70 mt-1">“{payout.args.memo}”</span> : null}
++          {payouts?.map(payout => (
++            <div
++              key={`${payout.transactionHash}-${payout.logIndex}`}
++              className="flex flex-col gap-1 border border-base-300 rounded-box p-3"
++            >
++              <div className="flex flex-wrap items-center gap-1">
++                <Address address={payout.args.from} size="sm" chain={targetNetwork} />
++                <span>paid</span>
++                <Address address={payout.args.to} size="sm" chain={targetNetwork} />
++                <span className="font-bold">
++                  {payout.args.amount !== undefined ? formatUnits(payout.args.amount, USDC_DECIMALS) : "0"} USDC
++                </span>
++              </div>
++              {payout.args.memo && <span className="opacity-70">“{payout.args.memo}”</span>}
+             </div>
+           ))}
+-          {(payouts ?? []).length === 0 && <p className="opacity-60">No payouts yet.</p>}
++          {isLoadingPayouts && <p className="opacity-60">Loading payouts…</p>}
++          {!isLoadingPayouts && payouts?.length === 0 && <p className="opacity-60">No payouts yet.</p>}
+         </div>
+       </div>
+     </div>
+diff --git a/packages/nextjs/components/Header.tsx b/packages/nextjs/components/Header.tsx
+index e3ed623..61b1e6a 100644
+--- a/packages/nextjs/components/Header.tsx
++++ b/packages/nextjs/components/Header.tsx
+@@ -9,8 +9,6 @@ import { Bars3Icon, BugAntIcon } from "@heroicons/react/24/outline";
+ import { FaucetButton, RainbowKitCustomConnectButton } from "~~/components/scaffold-eth";
+ import { useOutsideClick, useTargetNetwork } from "~~/hooks/scaffold-eth";
+ 
+-
+-
+ type HeaderMenuLink = {
+   label: string;
+   href: string;
+@@ -19,18 +17,18 @@ type HeaderMenuLink = {
+ 
+ export const menuLinks: HeaderMenuLink[] = [
+   {
+-    label: 'Home',
+-    href: '/'
++    label: "Home",
++    href: "/",
+   },
+   {
+-    label: 'Payouts',
+-    href: '/payouts'
++    label: "Payouts",
++    href: "/payouts",
+   },
+   {
+-    label: 'Debug Contracts',
+-    href: '/debug',
+-    icon: <BugAntIcon className="h-4 w-4" />
+-  }
++    label: "Debug Contracts",
++    href: "/debug",
++    icon: <BugAntIcon className="h-4 w-4" />,
++  },
+ ];
+ 
+ export const HeaderMenuLinks = () => {
+@@ -89,11 +87,11 @@ export const Header = () => {
+         </details>
+         <Link href="/" passHref className="hidden lg:flex items-center gap-2 ml-4 mr-6 shrink-0">
+           <div className="flex relative w-10 h-10">
+-            <Image alt="SE2 logo" className="cursor-pointer" fill src="/logo.svg" />
++            <Image alt="USDC Payouts logo" className="cursor-pointer" fill src="/logo.svg" />
+           </div>
+           <div className="flex flex-col">
+-            <span className="font-bold leading-tight">Scaffold-ETH</span>
+-            <span className="text-xs">Ethereum dev stack</span>
++            <span className="font-bold leading-tight">USDC Payouts</span>
++            <span className="text-xs">Pay contributors on Base</span>
+           </div>
+         </Link>
+         <ul className="hidden lg:flex lg:flex-nowrap h-full m-0 p-0 list-none">
+@@ -106,4 +104,4 @@ export const Header = () => {
+       </div>
+     </div>
+   );
+-};
+\ No newline at end of file
++};
+diff --git a/packages/nextjs/components/ScaffoldEthAppWithProviders.tsx b/packages/nextjs/components/ScaffoldEthAppWithProviders.tsx
+index a88b82e..ec23fdd 100644
+--- a/packages/nextjs/components/ScaffoldEthAppWithProviders.tsx
++++ b/packages/nextjs/components/ScaffoldEthAppWithProviders.tsx
+@@ -12,9 +12,7 @@ import { Header } from "~~/components/Header";
+ import { BlockieAvatar } from "~~/components/scaffold-eth";
+ import { wagmiConfig } from "~~/services/web3/wagmiConfig";
+ 
+-
+ const ScaffoldEthApp = ({ children }: { children: React.ReactNode }) => {
+-
+   return (
+     <>
+       <div className={`flex flex-col min-h-screen `}>
+@@ -46,12 +44,15 @@ export const ScaffoldEthAppWithProviders = ({ children }: { children: React.Reac
+ 
+   return (
+     <WagmiProvider config={wagmiConfig}>
+-    <QueryClientProvider client={queryClient}>
+-    <RainbowKitProvider avatar={BlockieAvatar} theme={mounted ? (isDarkMode ? darkTheme() : lightTheme()) : lightTheme()}>
+-      <ProgressBar height="3px" color="#2299dd" />
+-      <ScaffoldEthApp>{children}</ScaffoldEthApp>
+-    </RainbowKitProvider>
+-    </QueryClientProvider>
++      <QueryClientProvider client={queryClient}>
++        <RainbowKitProvider
++          avatar={BlockieAvatar}
++          theme={mounted ? (isDarkMode ? darkTheme() : lightTheme()) : lightTheme()}
++        >
++          <ProgressBar height="3px" color="#2299dd" />
++          <ScaffoldEthApp>{children}</ScaffoldEthApp>
++        </RainbowKitProvider>
++      </QueryClientProvider>
+     </WagmiProvider>
+   );
+-};
+\ No newline at end of file
++};
+diff --git a/packages/nextjs/contracts/deployedContracts.ts b/packages/nextjs/contracts/deployedContracts.ts
+index 0be2434..8793101 100644
+--- a/packages/nextjs/contracts/deployedContracts.ts
++++ b/packages/nextjs/contracts/deployedContracts.ts
+@@ -10,26 +10,64 @@ const deployedContracts = {
+       address: "0x7c3f2A9d41B85E60Cf14a14e2b9D073A55e0b6F2",
+       abi: [
+         {
+-          inputs: [{ internalType: "address", name: "_usdc", type: "address" }],
++          inputs: [
++            {
++              internalType: "address",
++              name: "_usdc",
++              type: "address",
++            },
++          ],
+           stateMutability: "nonpayable",
+           type: "constructor",
+         },
+         {
+           anonymous: false,
+           inputs: [
+-            { indexed: true, internalType: "address", name: "from", type: "address" },
+-            { indexed: true, internalType: "address", name: "to", type: "address" },
+-            { indexed: false, internalType: "uint256", name: "amount", type: "uint256" },
+-            { indexed: false, internalType: "string", name: "memo", type: "string" },
++            {
++              indexed: true,
++              internalType: "address",
++              name: "from",
++              type: "address",
++            },
++            {
++              indexed: true,
++              internalType: "address",
++              name: "to",
++              type: "address",
++            },
++            {
++              indexed: false,
++              internalType: "uint256",
++              name: "amount",
++              type: "uint256",
++            },
++            {
++              indexed: false,
++              internalType: "string",
++              name: "memo",
++              type: "string",
++            },
+           ],
+           name: "Paid",
+           type: "event",
+         },
+         {
+           inputs: [
+-            { internalType: "address", name: "to", type: "address" },
+-            { internalType: "uint256", name: "amount", type: "uint256" },
+-            { internalType: "string", name: "memo", type: "string" },
++            {
++              internalType: "address",
++              name: "to",
++              type: "address",
++            },
++            {
++              internalType: "uint256",
++              name: "amount",
++              type: "uint256",
++            },
++            {
++              internalType: "string",
++              name: "memo",
++              type: "string",
++            },
+           ],
+           name: "pay",
+           outputs: [],
+@@ -39,7 +77,13 @@ const deployedContracts = {
+         {
+           inputs: [],
+           name: "usdc",
+-          outputs: [{ internalType: "contract IERC20", name: "", type: "address" }],
++          outputs: [
++            {
++              internalType: "contract IERC20",
++              name: "",
++              type: "address",
++            },
++          ],
+           stateMutability: "view",
+           type: "function",
+         },
+@@ -47,93 +91,6 @@ const deployedContracts = {
+       inheritedFunctions: {},
+       deployedOnBlock: 33712450,
+     },
+-    USDC: {
+-      address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+-      abi: [
+-        {
+-          anonymous: false,
+-          inputs: [
+-            { indexed: true, internalType: "address", name: "owner", type: "address" },
+-            { indexed: true, internalType: "address", name: "spender", type: "address" },
+-            { indexed: false, internalType: "uint256", name: "value", type: "uint256" },
+-          ],
+-          name: "Approval",
+-          type: "event",
+-        },
+-        {
+-          anonymous: false,
+-          inputs: [
+-            { indexed: true, internalType: "address", name: "from", type: "address" },
+-            { indexed: true, internalType: "address", name: "to", type: "address" },
+-            { indexed: false, internalType: "uint256", name: "value", type: "uint256" },
+-          ],
+-          name: "Transfer",
+-          type: "event",
+-        },
+-        {
+-          inputs: [
+-            { internalType: "address", name: "owner", type: "address" },
+-            { internalType: "address", name: "spender", type: "address" },
+-          ],
+-          name: "allowance",
+-          outputs: [{ internalType: "uint256", name: "", type: "uint256" }],
+-          stateMutability: "view",
+-          type: "function",
+-        },
+-        {
+-          inputs: [
+-            { internalType: "address", name: "spender", type: "address" },
+-            { internalType: "uint256", name: "amount", type: "uint256" },
+-          ],
+-          name: "approve",
+-          outputs: [{ internalType: "bool", name: "", type: "bool" }],
+-          stateMutability: "nonpayable",
+-          type: "function",
+-        },
+-        {
+-          inputs: [{ internalType: "address", name: "account", type: "address" }],
+-          name: "balanceOf",
+-          outputs: [{ internalType: "uint256", name: "", type: "uint256" }],
+-          stateMutability: "view",
+-          type: "function",
+-        },
+-        {
+-          inputs: [],
+-          name: "decimals",
+-          outputs: [{ internalType: "uint8", name: "", type: "uint8" }],
+-          stateMutability: "view",
+-          type: "function",
+-        },
+-        {
+-          inputs: [],
+-          name: "symbol",
+-          outputs: [{ internalType: "string", name: "", type: "string" }],
+-          stateMutability: "view",
+-          type: "function",
+-        },
+-        {
+-          inputs: [
+-            { internalType: "address", name: "to", type: "address" },
+-            { internalType: "uint256", name: "amount", type: "uint256" },
+-          ],
+-          name: "transfer",
+-          outputs: [{ internalType: "bool", name: "", type: "bool" }],
+-          stateMutability: "nonpayable",
+-          type: "function",
+-        },
+-        {
+-          inputs: [
+-            { internalType: "address", name: "from", type: "address" },
+-            { internalType: "address", name: "to", type: "address" },
+-            { internalType: "uint256", name: "amount", type: "uint256" },
+-          ],
+-          name: "transferFrom",
+-          outputs: [{ internalType: "bool", name: "", type: "bool" }],
+-          stateMutability: "nonpayable",
+-          type: "function",
+-        },
+-      ],
+-    },
+   },
+ } as const;
+ 
+diff --git a/packages/nextjs/contracts/externalContracts.ts b/packages/nextjs/contracts/externalContracts.ts
+index ab6daa8..e308c40 100644
+--- a/packages/nextjs/contracts/externalContracts.ts
++++ b/packages/nextjs/contracts/externalContracts.ts
+@@ -1,6 +1,9 @@
+ import { GenericContractsDeclaration } from "~~/utils/scaffold-eth/contract";
+ 
+ /**
++ * Contracts we do not deploy ourselves. Kept here (and not in the autogenerated
++ * deployedContracts.ts) so `yarn deploy` cannot wipe them.
++ *
+  * @example
+  * const externalContracts = {
+  *   1: {
+@@ -11,6 +14,96 @@ import { GenericContractsDeclaration } from "~~/utils/scaffold-eth/contract";
+  *   },
+  * } as const;
+  */
+-const externalContracts = {} as const;
++const externalContracts = {
++  8453: {
++    USDC: {
++      address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
++      abi: [
++        {
++          anonymous: false,
++          inputs: [
++            { indexed: true, internalType: "address", name: "owner", type: "address" },
++            { indexed: true, internalType: "address", name: "spender", type: "address" },
++            { indexed: false, internalType: "uint256", name: "value", type: "uint256" },
++          ],
++          name: "Approval",
++          type: "event",
++        },
++        {
++          anonymous: false,
++          inputs: [
++            { indexed: true, internalType: "address", name: "from", type: "address" },
++            { indexed: true, internalType: "address", name: "to", type: "address" },
++            { indexed: false, internalType: "uint256", name: "value", type: "uint256" },
++          ],
++          name: "Transfer",
++          type: "event",
++        },
++        {
++          inputs: [
++            { internalType: "address", name: "owner", type: "address" },
++            { internalType: "address", name: "spender", type: "address" },
++          ],
++          name: "allowance",
++          outputs: [{ internalType: "uint256", name: "", type: "uint256" }],
++          stateMutability: "view",
++          type: "function",
++        },
++        {
++          inputs: [
++            { internalType: "address", name: "spender", type: "address" },
++            { internalType: "uint256", name: "amount", type: "uint256" },
++          ],
++          name: "approve",
++          outputs: [{ internalType: "bool", name: "", type: "bool" }],
++          stateMutability: "nonpayable",
++          type: "function",
++        },
++        {
++          inputs: [{ internalType: "address", name: "account", type: "address" }],
++          name: "balanceOf",
++          outputs: [{ internalType: "uint256", name: "", type: "uint256" }],
++          stateMutability: "view",
++          type: "function",
++        },
++        {
++          inputs: [],
++          name: "decimals",
++          outputs: [{ internalType: "uint8", name: "", type: "uint8" }],
++          stateMutability: "view",
++          type: "function",
++        },
++        {
++          inputs: [],
++          name: "symbol",
++          outputs: [{ internalType: "string", name: "", type: "string" }],
++          stateMutability: "view",
++          type: "function",
++        },
++        {
++          inputs: [
++            { internalType: "address", name: "to", type: "address" },
++            { internalType: "uint256", name: "amount", type: "uint256" },
++          ],
++          name: "transfer",
++          outputs: [{ internalType: "bool", name: "", type: "bool" }],
++          stateMutability: "nonpayable",
++          type: "function",
++        },
++        {
++          inputs: [
++            { internalType: "address", name: "from", type: "address" },
++            { internalType: "address", name: "to", type: "address" },
++            { internalType: "uint256", name: "amount", type: "uint256" },
++          ],
++          name: "transferFrom",
++          outputs: [{ internalType: "bool", name: "", type: "bool" }],
++          stateMutability: "nonpayable",
++          type: "function",
++        },
++      ],
++    },
++  },
++} as const;
+ 
+ export default externalContracts satisfies GenericContractsDeclaration;
+diff --git a/packages/nextjs/next.config.ts b/packages/nextjs/next.config.ts
+index 8da88cb..b5a8ed5 100644
+--- a/packages/nextjs/next.config.ts
++++ b/packages/nextjs/next.config.ts
+@@ -1,12 +1,11 @@
+ import type { NextConfig } from "next";
+ 
+-
+ const nextConfig: NextConfig = {
+   reactStrictMode: true,
+   devIndicators: false,
+   typescript: {
+-    ignoreBuildErrors: process.env.NEXT_PUBLIC_IGNORE_BUILD_ERROR === "true"
+-  }
++    ignoreBuildErrors: process.env.NEXT_PUBLIC_IGNORE_BUILD_ERROR === "true",
++  },
+ };
+ 
+ const isIpfs = process.env.NEXT_PUBLIC_IPFS_BUILD === "true";
+@@ -19,6 +18,4 @@ if (isIpfs) {
+   };
+ }
+ 
+-
+-
+-module.exports = nextConfig;
+\ No newline at end of file
++module.exports = nextConfig;
+diff --git a/packages/nextjs/public/manifest.json b/packages/nextjs/public/manifest.json
+index a003bec..323200d 100644
+--- a/packages/nextjs/public/manifest.json
++++ b/packages/nextjs/public/manifest.json
+@@ -1,5 +1,5 @@
+ {
+-  name: 'Scaffold-ETH 2 DApp',
+-  description: 'A DApp built with Scaffold-ETH',
+-  iconPath: 'logo.svg'
+-}
+\ No newline at end of file
++  "name": "USDC Payouts",
++  "description": "Send USDC payouts to teammates and contributors on Base.",
++  "iconPath": "logo.svg"
++}
+diff --git a/packages/nextjs/scaffold.config.ts b/packages/nextjs/scaffold.config.ts
+index 3cdb150..2b186c4 100644
+--- a/packages/nextjs/scaffold.config.ts
++++ b/packages/nextjs/scaffold.config.ts
+@@ -1,7 +1,5 @@
+ import * as chains from "viem/chains";
+ 
+-
+-
+ export type BaseConfig = {
+   targetNetworks: readonly chains.Chain[];
+   pollingInterval: number;
+@@ -11,38 +9,51 @@ export type BaseConfig = {
+   burnerWalletMode: "localNetworksOnly" | "allNetworks" | "disabled";
+ };
+ 
+-export type ScaffoldConfig = BaseConfig ;
++export type ScaffoldConfig = BaseConfig;
+ 
+ export const DEFAULT_ALCHEMY_API_KEY = "IZYEU2cWBgnFmgiTAgpWD";
++export const DEFAULT_WALLET_CONNECT_PROJECT_ID = "3a8170812b534d0ff9d794f19a901d64";
++
++const alchemyApiKey = process.env.NEXT_PUBLIC_ALCHEMY_API_KEY || DEFAULT_ALCHEMY_API_KEY;
++const walletConnectProjectId = process.env.NEXT_PUBLIC_WALLET_CONNECT_PROJECT_ID || DEFAULT_WALLET_CONNECT_PROJECT_ID;
++
++// The shared Scaffold-ETH demo keys are rate limited and must not carry real user traffic.
++if (process.env.NODE_ENV === "production") {
++  if (alchemyApiKey === DEFAULT_ALCHEMY_API_KEY) {
++    console.warn("⚠️ NEXT_PUBLIC_ALCHEMY_API_KEY is not set — falling back to the shared Scaffold-ETH demo key.");
++  }
++  if (walletConnectProjectId === DEFAULT_WALLET_CONNECT_PROJECT_ID) {
++    console.warn(
++      "⚠️ NEXT_PUBLIC_WALLET_CONNECT_PROJECT_ID is not set — falling back to the shared Scaffold-ETH demo project id.",
++    );
++  }
++}
+ 
+ const scaffoldConfig = {
+   // The networks on which your DApp is live
+-  targetNetworks: [
+-    chains.base
+-  ],
++  targetNetworks: [chains.base],
+   // The interval at which your front-end polls the RPC servers for new data (it has no effect if you only target the local network (default is 4000))
+-  pollingInterval: 30000,
+-  // This is ours Alchemy's default API key.
++  // Base is an L2 with ~2s blocks, so we poll fast enough for payouts to show up promptly.
++  pollingInterval: 4000,
+   // You can get your own at https://dashboard.alchemyapi.io
+   // It's recommended to store it in an env variable:
+   // .env.local for local testing, and in the Vercel/system env config for live apps.
+-  alchemyApiKey: process.env.NEXT_PUBLIC_ALCHEMY_API_KEY || DEFAULT_ALCHEMY_API_KEY,
++  alchemyApiKey,
+   // If you want to use a different RPC for a specific network, you can add it here.
+   // The key is the chain ID, and the value is the HTTP RPC URL
+   rpcOverrides: {
+     // Example:
+     // [chains.mainnet.id]: "https://mainnet.rpc.buidlguidl.com",
+   },
+-  // This is ours WalletConnect's default project ID.
+   // You can get your own at https://cloud.walletconnect.com
+   // It's recommended to store it in an env variable:
+   // .env.local for local testing, and in the Vercel/system env config for live apps.
+-  walletConnectProjectId: process.env.NEXT_PUBLIC_WALLET_CONNECT_PROJECT_ID || '3a8170812b534d0ff9d794f19a901d64',
++  walletConnectProjectId,
+   // Configure Burner Wallet visibility:
+   // - "localNetworksOnly": only show when all target networks are local (hardhat/anvil)
+   // - "allNetworks": show on any configured target networks
+   // - "disabled": completely disable
+-  burnerWalletMode: 'localNetworksOnly'
++  burnerWalletMode: "localNetworksOnly",
+ } as const satisfies ScaffoldConfig;
+ 
+-export default scaffoldConfig;
+\ No newline at end of file
++export default scaffoldConfig;
+diff --git a/packages/nextjs/services/web3/wagmiConfig.tsx b/packages/nextjs/services/web3/wagmiConfig.tsx
+index 7dc8200..ae52349 100644
+--- a/packages/nextjs/services/web3/wagmiConfig.tsx
++++ b/packages/nextjs/services/web3/wagmiConfig.tsx
+@@ -5,7 +5,6 @@ import { createConfig } from "wagmi";
+ import scaffoldConfig, { DEFAULT_ALCHEMY_API_KEY, ScaffoldConfig } from "~~/scaffold.config";
+ import { getAlchemyHttpUrl } from "~~/utils/scaffold-eth";
+ 
+-
+ const { targetNetworks } = scaffoldConfig;
+ 
+ // We always want to have mainnet enabled (ENS resolution, ETH price, etc). But only once.
+@@ -17,5 +16,25 @@ export const wagmiConfig = createConfig({
+   chains: enabledChains,
+   connectors: wagmiConnectors(),
+   ssr: true,
+-  client: ({ chain }) => { const mainnetFallbackWithDefaultRPC = [http("https://mainnet.rpc.buidlguidl.com")]; let rpcFallbacks = [...(chain.id === mainnet.id ? mainnetFallbackWithDefaultRPC : []), http()]; const rpcOverrideUrl = (scaffoldConfig.rpcOverrides as ScaffoldConfig["rpcOverrides"])?.[chain.id]; if (rpcOverrideUrl) { rpcFallbacks = [http(rpcOverrideUrl), ...rpcFallbacks]; } else { const alchemyHttpUrl = getAlchemyHttpUrl(chain.id); if (alchemyHttpUrl) { const isUsingDefaultKey = scaffoldConfig.alchemyApiKey === DEFAULT_ALCHEMY_API_KEY; rpcFallbacks = isUsingDefaultKey ? [...rpcFallbacks, http(alchemyHttpUrl)] : [http(alchemyHttpUrl), ...rpcFallbacks]; } } return createClient({ chain, transport: fallback(rpcFallbacks), ...(chain.id !== (hardhat as Chain).id ? { pollingInterval: scaffoldConfig.pollingInterval } : {}), }); }
++  client: ({ chain }) => {
++    const mainnetFallbackWithDefaultRPC = [http("https://mainnet.rpc.buidlguidl.com")];
++    let rpcFallbacks = [...(chain.id === mainnet.id ? mainnetFallbackWithDefaultRPC : []), http()];
++    const rpcOverrideUrl = (scaffoldConfig.rpcOverrides as ScaffoldConfig["rpcOverrides"])?.[chain.id];
++    if (rpcOverrideUrl) {
++      rpcFallbacks = [http(rpcOverrideUrl), ...rpcFallbacks];
++    } else {
++      const alchemyHttpUrl = getAlchemyHttpUrl(chain.id);
++      if (alchemyHttpUrl) {
++        const isUsingDefaultKey = scaffoldConfig.alchemyApiKey === DEFAULT_ALCHEMY_API_KEY;
++        rpcFallbacks = isUsingDefaultKey
++          ? [...rpcFallbacks, http(alchemyHttpUrl)]
++          : [http(alchemyHttpUrl), ...rpcFallbacks];
++      }
++    }
++    return createClient({
++      chain,
++      transport: fallback(rpcFallbacks),
++      ...(chain.id !== (hardhat as Chain).id ? { pollingInterval: scaffoldConfig.pollingInterval } : {}),
++    });
++  },
+ });
+diff --git a/packages/nextjs/styles/globals.css b/packages/nextjs/styles/globals.css
+index 82f8503..46259b2 100644
+--- a/packages/nextjs/styles/globals.css
++++ b/packages/nextjs/styles/globals.css
+@@ -118,4 +118,3 @@
+ .link:hover {
+   opacity: 80%;
+ }
+-  
+diff --git a/packages/nextjs/tsconfig.json b/packages/nextjs/tsconfig.json
+index a3fd309..6e425ec 100644
+--- a/packages/nextjs/tsconfig.json
++++ b/packages/nextjs/tsconfig.json
+@@ -1,11 +1,7 @@
+ {
+   "compilerOptions": {
+     "target": "es2020",
+-    "lib": [
+-      "dom",
+-      "dom.iterable",
+-      "esnext"
+-    ],
++    "lib": ["dom", "dom.iterable", "esnext"],
+     "allowJs": true,
+     "skipLibCheck": true,
+     "strict": true,
+@@ -19,9 +15,7 @@
+     "jsx": "react-jsx",
+     "incremental": true,
+     "paths": {
+-      "~~/*": [
+-        "./*"
+-      ]
++      "~~/*": ["./*"]
+     },
+     "plugins": [
+       {
+@@ -29,14 +23,6 @@
+       }
+     ]
+   },
+-  "include": [
+-    "next-env.d.ts",
+-    "**/*.ts",
+-    "**/*.tsx",
+-    ".next/types/**/*.ts",
+-    ".next/dev/types/**/*.ts"
+-  ],
+-  "exclude": [
+-    "node_modules"
+-  ]
++  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts", ".next/dev/types/**/*.ts"],
++  "exclude": ["node_modules"]
+ }
+diff --git a/packages/nextjs/types/abitype/abi.d.ts b/packages/nextjs/types/abitype/abi.d.ts
+index 19f14df..4eb2c74 100644
+--- a/packages/nextjs/types/abitype/abi.d.ts
++++ b/packages/nextjs/types/abitype/abi.d.ts
+@@ -13,4 +13,4 @@ declare module "~~/node_modules/viem/node_modules/abitype" {
+   export interface Register {
+     AddressType: AddressType;
+   }
+-}
+\ No newline at end of file
++}
+diff --git a/packages/nextjs/utils/scaffold-eth/getMetadata.ts b/packages/nextjs/utils/scaffold-eth/getMetadata.ts
+index 515ca10..b8ed063 100644
+--- a/packages/nextjs/utils/scaffold-eth/getMetadata.ts
++++ b/packages/nextjs/utils/scaffold-eth/getMetadata.ts
+@@ -1,11 +1,9 @@
+-
+ import type { Metadata } from "next";
+ 
+-
+ const baseUrl = process.env.VERCEL_PROJECT_PRODUCTION_URL
+   ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
+   : `http://localhost:${process.env.PORT || 3000}`;
+-const titleTemplate = "%s | Scaffold-ETH 2";
++const titleTemplate = "%s | USDC Payouts";
+ 
+ export const getMetadata = ({
+   title,
+@@ -19,42 +17,40 @@ export const getMetadata = ({
+   const imageUrl = `${baseUrl}${imageRelativePath}`;
+ 
+   return {
+-  metadataBase: new URL(baseUrl),
+-  title: {
+-    default: title,
+-    template: titleTemplate
+-  },
+-  description: description,
+-  openGraph: {
++    metadataBase: new URL(baseUrl),
+     title: {
+       default: title,
+-      template: titleTemplate
++      template: titleTemplate,
+     },
+     description: description,
+-    images: [
+-      {
+-        url: imageUrl
+-      }
+-    ]
+-  },
+-  twitter: {
+-    title: {
+-      default: title,
+-      template: titleTemplate
++    openGraph: {
++      title: {
++        default: title,
++        template: titleTemplate,
++      },
++      description: description,
++      images: [
++        {
++          url: imageUrl,
++        },
++      ],
+     },
+-    description: description,
+-    images: [
+-      imageUrl
+-    ]
+-  },
+-  icons: {
+-    icon: [
+-      {
+-        url: '/favicon.png',
+-        sizes: '32x32',
+-        type: 'image/png'
+-      }
+-    ]
+-  }
++    twitter: {
++      title: {
++        default: title,
++        template: titleTemplate,
++      },
++      description: description,
++      images: [imageUrl],
++    },
++    icons: {
++      icon: [
++        {
++          url: "/favicon.png",
++          sizes: "32x32",
++          type: "image/png",
++        },
++      ],
++    },
++  };
+ };
+-}
+\ No newline at end of file
+
+# Untracked files and status
