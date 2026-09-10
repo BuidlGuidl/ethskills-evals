@@ -33,6 +33,13 @@ stay clean.
 The run carries `retracted:` rather than being deleted, so it is visibly excluded.
 It is not regradeable — a regrade re-reads the same leaking report.
 
+**Two earlier runs fail the same check.** `2026-08-27T093508Z-claude-with-skill-1`
+and `-2` are flagged by the new patterns; the third run of that sitting is clean.
+All three scored 12/12, so the numbers they support are not in doubt, but two of
+them are not measurements. Four mistake records lean on that sitting and now say
+so. Retracting those two runs is out of scope here — they sit in a merged report
+and retracting them changes published numbers — and is left as a follow-up.
+
 `2026-09-08T142026Z-codex-with-skill-4` replaces it: same stack, same
 `input_sha` (`c199c849f028`) and `expect_sha` (`19b9dc8a26cc`), skill file byte-identical
 (`git diff 7be55c8b 08bc438 -- skills/audit/` is empty; `skill_version` records
