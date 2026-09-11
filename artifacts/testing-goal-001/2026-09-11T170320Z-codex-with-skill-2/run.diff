@@ -1,0 +1,274 @@
+diff --git a/FINDINGS.md b/FINDINGS.md
+new file mode 100644
+index 0000000..7eaf858
+--- /dev/null
++++ b/FINDINGS.md
+@@ -0,0 +1,157 @@
++# UsdtYieldVault deployment findings
++
++## Verdict
++
++Do not deploy this contract to mainnet as written. The production USDT integration makes every deposit revert, and the vault's internal accounting neither recognizes Aave yield nor continues to account for retained withdrawal fees. The configurable deposit fee also accepts values that disable deposits.
++
++No file under `src/`, `test/UsdtYieldVault.t.sol`, or `test/mocks/` was changed. The reproductions are new tests in `test/UsdtYieldVaultMainnetFork.t.sol` and `test/UsdtYieldVaultAdversarial.t.sol`.
++
++## 1. Critical: every deposit reverts with real mainnet USDT
++
++### What I found
++
++`deposit` uses the typed call `usdt.approve(address(aavePool), amount)`. Mainnet USDT's `approve` succeeds without returning the ABI-encoded `bool` required by `IERC20.approve`. Solidity attempts to decode the absent return value and reverts. The subsequent Aave `supply` call is never reached.
++
++The existing `MockUSDT` inherits OpenZeppelin ERC20 and returns a standard `bool`, so all mock tests miss this production behavior.
++
++### How I found it
++
++The test forks Ethereum at block `25,955,537`, uses the exact USDT and Aave Pool addresses specified for deployment, funds a depositor, and asserts that an ordinary deposit succeeds. The trace shows `transferFrom` succeeds, USDT emits `Approval` and returns `[Stop]` with no data, and the vault immediately reverts.
++
++### Evidence (verbatim)
++
++```text
++$ set -o pipefail
++$ MAINNET_RPC_URL=https://ethereum-rpc.publicnode.com forge test --match-test test_RealUsdtDepositSucceeds -vvvv 2>&1 | sed -n '/UsdtYieldVault::deposit/,/Backtrace:/p'
++    ├─ [64074] UsdtYieldVault::deposit(1000000000 [1e9])
++    │   ├─ [34830] 0xdAC17F958D2ee523a2206206994597C13D831ec7::transferFrom(alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6], UsdtYieldVault: [0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f], 1000000000 [1e9])
++    │   │   ├─ emit Transfer(from: alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6], to: UsdtYieldVault: [0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f], value: 1000000000 [1e9])
++    │   │   └─ ← [Stop]
++    │   ├─ [24953] 0xdAC17F958D2ee523a2206206994597C13D831ec7::approve(0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2, 1000000000 [1e9])
++    │   │   ├─ emit Approval(owner: UsdtYieldVault: [0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f], spender: 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2, value: 1000000000 [1e9])
++    │   │   └─ ← [Stop]
++    │   └─ ← [Revert] EvmError: Revert
++    └─ ← [Revert] EvmError: Revert
++
++Backtrace:
++```
++
++### Fix I would make
++
++Replace the raw `IERC20.approve` with OpenZeppelin `SafeERC20.forceApprove` (the contract already imports and enables `SafeERC20`). Add a pinned mainnet-fork test that completes deposit and withdrawal against real USDT and the real Aave pool before deployment.
++
++## 2. High: Aave yield is permanently absent from depositor accounting
++
++### What I found
++
++All share conversions use `totalAssetsStored`, which changes only by deposit and withdrawal principal. Aave's aUSDT balance grows as interest accrues, but that growth never changes `totalAssetsStored`. Consequently `sharePrice`, `balanceOfUnderlying`, and withdrawals ignore all yield. The purported yield vault strands its yield in the contract.
++
++### How I found it
++
++After a 1,000 USDT deposit, the test adds 100 USDT to the vault's aUSDT balance to model aToken interest accrual and checks the depositor's claim. Custody becomes 1,100 USDT while the claim remains 1,000 USDT.
++
++### Evidence (verbatim)
++
++```text
++$ forge test --match-test test_AaveYieldMustIncreaseDepositorClaim -vv
++No files changed, compilation skipped
++2026-09-11T17:06:06.014054Z  WARN evm::traces::external: etherscan config not found
++
++Ran 1 test for test/UsdtYieldVaultAdversarial.t.sol:UsdtYieldVaultAdversarialTest
++[FAIL: Aave yield is present in custody but never credited to depositors: 1000000000 != 1100000000] test_AaveYieldMustIncreaseDepositorClaim() (gas: 450018)
++Suite result: FAILED. 0 passed; 1 failed; 0 skipped; finished in 1.13ms (434.92µs CPU time)
++
++Ran 1 test suite in 7.58ms (1.13ms CPU time): 0 tests passed, 1 failed, 0 skipped (1 total tests)
++
++Failing tests:
++Encountered 1 failing test in test/UsdtYieldVaultAdversarial.t.sol:UsdtYieldVaultAdversarialTest
++[FAIL: Aave yield is present in custody but never credited to depositors: 1000000000 != 1100000000] test_AaveYieldMustIncreaseDepositorClaim() (gas: 450018)
++
++Encountered a total of 1 failing tests, 0 tests succeeded
++
++Tip: Run `forge test --rerun` to retry only the 1 failed test
++```
++
++### Fix I would make
++
++Base share conversion and `totalAssets()` on actual redeemable Aave custody (normally the vault's aUSDT balance, with careful handling of any idle USDT), or explicitly synchronize accounting with that balance before every mint and burn. Specify and test how unsolicited transfers, rounding, Aave liquidity shortfalls, and losses affect conversions. Add handler-driven invariants over multi-user deposit/withdraw sequences that tie claims to custody.
++
++## 3. High: retained withdrawal fees disappear from accounting
++
++### What I found
++
++On withdrawal the vault removes `grossAssets` from `totalAssetsStored` but asks Aave to withdraw only `netAssets`. The fee remains as aUSDT owned by the vault while recorded assets fall by the fee. After the sole user exits, `totalAssets()` is zero even though 3 USDT remains in custody. This contradicts the stated design that fees remain supplied and accrue to remaining shareholders, causes custody/accounting drift on every withdrawal, and leaves the final user's fee ownerless.
++
++### How I found it
++
++The test deposits 1,000 USDT, withdraws every share, and asserts the core custody equality `totalAssets() == aUsdt.balanceOf(vault)`.
++
++### Evidence (verbatim)
++
++```text
++$ forge test --match-test test_WithdrawalFeeMustRemainInTrackedAssets -vv
++Compiling 1 files with Solc 0.8.28
++Solc 0.8.28 finished in 1.07s
++Compiler run successful!
++2026-09-11T17:05:56.886702Z  WARN evm::traces::external: etherscan config not found
++
++Ran 1 test for test/UsdtYieldVaultAdversarial.t.sol:UsdtYieldVaultAdversarialTest
++[FAIL: withdrawal fee is held by the vault but disappears from its accounting: 0 != 3000000] test_WithdrawalFeeMustRemainInTrackedAssets() (gas: 250829)
++Suite result: FAILED. 0 passed; 1 failed; 0 skipped; finished in 1.13ms (162.41µs CPU time)
++
++Ran 1 test suite in 10.58ms (1.13ms CPU time): 0 tests passed, 1 failed, 0 skipped (1 total tests)
++
++Failing tests:
++Encountered 1 failing test in test/UsdtYieldVaultAdversarial.t.sol:UsdtYieldVaultAdversarialTest
++[FAIL: withdrawal fee is held by the vault but disappears from its accounting: 0 != 3000000] test_WithdrawalFeeMustRemainInTrackedAssets() (gas: 250829)
++
++Encountered a total of 1 failing tests, 0 tests succeeded
++
++Tip: Run `forge test --rerun` to retry only the 1 failed test
++```
++
++### Fix I would make
++
++Use actual custody as the asset basis, as above, so retained fees remain priced into outstanding shares. Define the zero-share case explicitly: send the last withdrawal's fee to a named recipient, waive it, or mint an explicit fee claim; do not leave unowned assets to be captured by a later depositor. Test both partial withdrawals with remaining holders and the final withdrawal.
++
++## 4. Medium: the owner can set a fee that disables all deposits
++
++### What I found
++
++Neither the constructor nor `setDepositFee` bounds `depositFeeBps`. At exactly 10,000 bps, every deposit computes `netAmount == 0` and reverts `NoSharesMinted`. Above 10,000 bps, `amount - fee` underflows and panics. The fuzz search covers the full accepted `uint256` domain beginning at the boundary; the setter accepts the first counterexample instead of reverting.
++
++### How I found it
++
++The fuzz test bounds inputs from `BPS_DENOMINATOR` through `type(uint256).max` and requires invalid fee settings to be rejected at configuration time.
++
++### Evidence (verbatim)
++
++```text
++$ forge test --match-test testFuzz_DepositFeeCannotExceedAllDepositedAssets -vv
++No files changed, compilation skipped
++2026-09-11T17:06:10.130100Z  WARN evm::traces::external: etherscan config not found
++
++Ran 1 test for test/UsdtYieldVaultAdversarial.t.sol:UsdtYieldVaultAdversarialTest
++[FAIL: next call did not revert as expected; counterexample: calldata=0x97e97bff0000000000000000000000000000000000000000000000000000000000000002 args=[2]] testFuzz_DepositFeeCannotExceedAllDepositedAssets(uint256) (runs: 0, μ: 0, ~: 0)
++Suite result: FAILED. 0 passed; 1 failed; 0 skipped; finished in 1.76ms (979.44µs CPU time)
++
++Ran 1 test suite in 16.32ms (1.76ms CPU time): 0 tests passed, 1 failed, 0 skipped (1 total tests)
++
++Failing tests:
++Encountered 1 failing test in test/UsdtYieldVaultAdversarial.t.sol:UsdtYieldVaultAdversarialTest
++[FAIL: next call did not revert as expected; counterexample: calldata=0x97e97bff0000000000000000000000000000000000000000000000000000000000000002 args=[2]] testFuzz_DepositFeeCannotExceedAllDepositedAssets(uint256) (runs: 0, μ: 0, ~: 0)
++
++Encountered a total of 1 failing tests, 0 tests succeeded
++
++Tip: Run `forge test --rerun` to retry only the 1 failed test
++```
++
++The displayed `args=[2]` is the raw fuzzer input; Foundry's `bound` maps it into the tested interval beginning at 10,000 bps.
++
++### Fix I would make
++
++Enforce a documented maximum strictly below 10,000 bps in both the constructor and setter, using a custom error. Fuzz both entry points across the full domain and add explicit tests at the maximum, one below it, and one above it.
++
++## Sign-off
++
++The original 39 tests still pass unchanged, but they exercise a standard ERC-20 mock, assert stored accounting largely against itself, do not model aToken balance growth, and do not test custody equality after a withdrawal sequence. Their green result and line/function coverage therefore do not contradict any finding above. Finding 1 makes the proposed deployment non-functional immediately; findings 2 and 3 mean replacing only the approval call would still not produce a correct yield vault.
+diff --git a/test/UsdtYieldVaultAdversarial.t.sol b/test/UsdtYieldVaultAdversarial.t.sol
+new file mode 100644
+index 0000000..1dcb436
+--- /dev/null
++++ b/test/UsdtYieldVaultAdversarial.t.sol
+@@ -0,0 +1,65 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.28;
++
++import {Test} from "forge-std/Test.sol";
++
++import {UsdtYieldVault} from "../src/UsdtYieldVault.sol";
++import {MockUSDT} from "./mocks/MockUSDT.sol";
++import {MockAavePool, MockAToken} from "./mocks/MockAavePool.sol";
++
++contract UsdtYieldVaultAdversarialTest is Test {
++    UsdtYieldVault internal vault;
++    MockUSDT internal usdt;
++    MockAavePool internal pool;
++    MockAToken internal aUsdt;
++
++    address internal owner = makeAddr("owner");
++    address internal alice = makeAddr("alice");
++
++    function setUp() public {
++        usdt = new MockUSDT();
++        pool = new MockAavePool(address(usdt));
++        aUsdt = pool.aToken();
++        vault = new UsdtYieldVault(address(usdt), address(aUsdt), address(pool), 10, owner);
++
++        usdt.mint(alice, 10_000e6);
++        vm.prank(alice);
++        usdt.approve(address(vault), type(uint256).max);
++    }
++
++    function test_WithdrawalFeeMustRemainInTrackedAssets() public {
++        vm.prank(alice);
++        uint256 shares = vault.deposit(1_000e6);
++
++        vm.prank(alice);
++        vault.withdraw(shares);
++
++        assertEq(
++            vault.totalAssets(),
++            aUsdt.balanceOf(address(vault)),
++            "withdrawal fee is held by the vault but disappears from its accounting"
++        );
++    }
++
++    function test_AaveYieldMustIncreaseDepositorClaim() public {
++        vm.prank(alice);
++        vault.deposit(1_000e6);
++
++        uint256 claimBefore = vault.balanceOfUnderlying(alice);
++        deal(address(aUsdt), address(vault), aUsdt.balanceOf(address(vault)) + 100e6);
++
++        assertEq(
++            vault.balanceOfUnderlying(alice),
++            claimBefore + 100e6,
++            "Aave yield is present in custody but never credited to depositors"
++        );
++    }
++
++    function testFuzz_DepositFeeCannotExceedAllDepositedAssets(uint256 feeBps) public {
++        feeBps = bound(feeBps, vault.BPS_DENOMINATOR(), type(uint256).max);
++
++        vm.prank(owner);
++        vm.expectRevert();
++        vault.setDepositFee(feeBps);
++    }
++}
+diff --git a/test/UsdtYieldVaultMainnetFork.t.sol b/test/UsdtYieldVaultMainnetFork.t.sol
+new file mode 100644
+index 0000000..13fd290
+--- /dev/null
++++ b/test/UsdtYieldVaultMainnetFork.t.sol
+@@ -0,0 +1,29 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.28;
++
++import {Test} from "forge-std/Test.sol";
++import {UsdtYieldVault} from "../src/UsdtYieldVault.sol";
++
++contract UsdtYieldVaultMainnetForkTest is Test {
++    address internal constant USDT = 0xdAC17F958D2ee523a2206206994597C13D831ec7;
++    address internal constant A_USDT = 0x23878914EFE38d27C4D67Ab83ed1b93A74D4086a;
++    address internal constant AAVE_POOL = 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2;
++    uint256 internal constant PINNED_BLOCK = 25_955_537;
++
++    function test_RealUsdtDepositSucceeds() public {
++        vm.createSelectFork(vm.envString("MAINNET_RPC_URL"), PINNED_BLOCK);
++
++        address alice = makeAddr("alice");
++        UsdtYieldVault vault = new UsdtYieldVault(USDT, A_USDT, AAVE_POOL, 10, address(this));
++        deal(USDT, alice, 1_000e6);
++
++        vm.startPrank(alice);
++        (bool approved,) =
++            USDT.call(abi.encodeWithSignature("approve(address,uint256)", address(vault), type(uint256).max));
++        assertTrue(approved, "user approval failed");
++        uint256 shares = vault.deposit(1_000e6);
++        vm.stopPrank();
++
++        assertGt(shares, 0);
++    }
++}
+
+# Untracked files and status
+ A FINDINGS.md
+ A test/UsdtYieldVaultAdversarial.t.sol
+ A test/UsdtYieldVaultMainnetFork.t.sol

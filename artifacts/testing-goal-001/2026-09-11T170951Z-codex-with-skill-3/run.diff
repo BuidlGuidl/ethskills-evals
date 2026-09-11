@@ -1,0 +1,301 @@
+diff --git a/FINDINGS.md b/FINDINGS.md
+new file mode 100644
+index 0000000..9ab8b0a
+--- /dev/null
++++ b/FINDINGS.md
+@@ -0,0 +1,175 @@
++# UsdtYieldVault deployment findings
++
++## Sign-off decision
++
++**Do not deploy this contract on Monday.** The exact mainnet integration named for deployment cannot complete one deposit, and the accounting also strands both withdrawal fees and Aave yield. The existing 39 tests do not exercise real USDT or assert equality between vault accounting and custody.
++
++All reproducers are new files under `test/`. Nothing under `src/`, `test/UsdtYieldVault.t.sol`, or `test/mocks/` was changed.
++
++## Critical — every deposit with real mainnet USDT reverts
++
++`deposit()` uses `usdt.approve(address(aavePool), amount)`. Mainnet USDT performs the approval but returns no value. Because the call is made through `IERC20.approve`, Solidity tries to decode a Boolean return value and reverts on the empty return data. The transaction rolls back before `AavePool.supply`, so this deployment cannot accept real USDT.
++
++I found this with a fork pinned at block 20,000,000 using the exact USDT and Aave Pool addresses in the deployment plan. The test uses `SafeERC20.forceApprove` only to set up Alice's approval to the vault; the failing call shown below is the unmodified vault's own approval to Aave.
++
++Test: `test/UsdtYieldVaultFork.t.sol:test_RealUsdtDepositMustSucceed`
++
++Command and real output:
++
++```text
++$ MAINNET_RPC_URL=https://gateway.tenderly.co/public/mainnet forge test --match-test test_RealUsdtDepositMustSucceed -vv
++No files changed, compilation skipped
++2026-09-11T17:13:22.727270Z  WARN evm::traces::external: etherscan config not found
++2026-09-11T17:13:23.018577Z  WARN foundry_fork_db::cache: Failed to read cache file err=Os { code: 2, kind: NotFound, message: "No such file or directory" } path="/home/damu/.foundry/cache/rpc/mainnet/20000000"
++
++Ran 1 test for test/UsdtYieldVaultFork.t.sol:UsdtYieldVaultForkTest
++[FAIL: EvmError: Revert] test_RealUsdtDepositMustSucceed() (gas: 94248)
++Suite result: FAILED. 0 passed; 1 failed; 0 skipped; finished in 3.15s (1.20s CPU time)
++
++Ran 1 test suite in 3.15s (3.15s CPU time): 0 tests passed, 1 failed, 0 skipped (1 total tests)
++
++Failing tests:
++Encountered 1 failing test in test/UsdtYieldVaultFork.t.sol:UsdtYieldVaultForkTest
++[FAIL: EvmError: Revert] test_RealUsdtDepositMustSucceed() (gas: 94248)
++
++Encountered a total of 1 failing tests, 0 tests succeeded
++```
++
++The failing call was isolated with this command and output:
++
++```text
++$ MAINNET_RPC_URL=https://gateway.tenderly.co/public/mainnet forge test --match-test test_RealUsdtDepositMustSucceed -vvvv 2>&1 | sed -n '/UsdtYieldVault::deposit(1000000000/,/Backtrace:/p'
++    ├─ [84174] UsdtYieldVault::deposit(1000000000 [1e9])
++    │   ├─ [43630] 0xdAC17F958D2ee523a2206206994597C13D831ec7::transferFrom(alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6], UsdtYieldVault: [0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f], 1000000000 [1e9])
++    │   │   ├─ emit Transfer(from: alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6], to: UsdtYieldVault: [0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f], value: 1000000000 [1e9])
++    │   │   └─ ← [Stop]
++    │   ├─ [24953] 0xdAC17F958D2ee523a2206206994597C13D831ec7::approve(0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2, 1000000000 [1e9])
++    │   │   ├─ emit Approval(owner: UsdtYieldVault: [0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f], spender: 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2, value: 1000000000 [1e9])
++    │   │   └─ ← [Stop]
++    │   └─ ← [Revert] EvmError: Revert
++    └─ ← [Revert] EvmError: Revert
++
++Backtrace:
++```
++
++### Fix description
++
++Use `SafeERC20.forceApprove` (or `safeIncreaseAllowance`) rather than raw `IERC20.approve`. Prefer setting the necessary allowance safely and explicitly accounting for USDT's no-return behavior. Keep a pinned mainnet-fork test covering deposit and withdrawal through the deployed token and pool.
++
++## High — withdrawal fees become permanently unaccounted and stranded
++
++On withdrawal the vault requests only `netAssets` from Aave, so the withdrawal fee remains as aUSDT in the vault. It nevertheless subtracts the full `grossAssets` from `totalAssetsStored`. A full exit therefore leaves real assets in custody while accounting says zero. No function can sweep or re-account those tokens. This contradicts the contract comment that fees accrue to remaining shareholders; after the last exit there are no remaining shares, and the fee is orphaned.
++
++Test: `test/UsdtYieldVaultAdversarial.t.sol:test_WithdrawalFeeMustRemainAccountedFor`
++
++Command and real output:
++
++```text
++$ forge test --match-test test_WithdrawalFeeMustRemainAccountedFor -vv
++No files changed, compilation skipped
++2026-09-11T17:12:07.681272Z  WARN evm::traces::external: etherscan config not found
++
++Ran 1 test for test/UsdtYieldVaultAdversarial.t.sol:UsdtYieldVaultAdversarialTest
++[FAIL: retained fee disappeared from accounting: 0 != 3000000] test_WithdrawalFeeMustRemainAccountedFor() (gas: 250585)
++Suite result: FAILED. 0 passed; 1 failed; 0 skipped; finished in 789.25µs (162.60µs CPU time)
++
++Ran 1 test suite in 7.50ms (789.25µs CPU time): 0 tests passed, 1 failed, 0 skipped (1 total tests)
++
++Failing tests:
++Encountered 1 failing test in test/UsdtYieldVaultAdversarial.t.sol:UsdtYieldVaultAdversarialTest
++[FAIL: retained fee disappeared from accounting: 0 != 3000000] test_WithdrawalFeeMustRemainAccountedFor() (gas: 250585)
++
++Encountered a total of 1 failing tests, 0 tests succeeded
++
++Tip: Run `forge test --rerun` to retry only the 1 failed test
++```
++
++### Fix description
++
++Choose and document who owns withdrawal fees. If they accrue to remaining shareholders, subtract only `netAssets` from the asset accounting and define the last-share behavior so no assets can become ownerless. A stronger design derives managed assets from actual aUSDT custody rather than a manually maintained parallel counter. Add a handler-driven invariant requiring accounted assets to equal recoverable custody across multi-user deposit/withdraw sequences.
++
++## High — Aave yield is never reflected in shares and becomes stranded
++
++`totalAssets()`, `convertToShares()`, `convertToAssets()`, and `sharePrice()` use only `totalAssetsStored`. That counter changes on deposit and withdrawal but never when the aUSDT balance grows. Consequently depositors cannot redeem Aave yield: even if custody grows from 1,000 to 1,100 USDT, their aggregate recorded claim remains 1,000 USDT. After all shares are burned, the yield stays behind with no recovery path.
++
++The mainnet-fork test safely pre-sets the vault's Aave allowance and mocks only the already-proven broken `approve` return so execution can proceed past the critical blocker. Supply and yield accrual then use the real deployed USDT, Aave Pool, and aUSDT at the pinned block. After one year, real aUSDT custody is 1,067.684628 USDT while the depositor's recorded assets remain exactly 1,000 USDT.
++
++Test: `test/UsdtYieldVaultFork.t.sol:test_AaveYieldMustIncreaseDepositorAccounting_AfterBypassingApproveBug`
++
++Command and real output:
++
++```text
++$ MAINNET_RPC_URL=https://gateway.tenderly.co/public/mainnet forge test --match-test test_AaveYieldMustIncreaseDepositorAccounting_AfterBypassingApproveBug -vv
++Compiling 1 files with Solc 0.8.28
++Solc 0.8.28 finished in 900.44ms
++Compiler run successful!
++2026-09-11T17:16:00.162353Z  WARN evm::traces::external: etherscan config not found
++2026-09-11T17:16:00.471389Z  WARN foundry_fork_db::cache: Failed to read cache file err=Os { code: 2, kind: NotFound, message: "No such file or directory" } path="/home/damu/.foundry/cache/rpc/mainnet/20000000"
++
++Ran 1 test for test/UsdtYieldVaultFork.t.sol:UsdtYieldVaultForkTest
++[FAIL: real Aave yield is unaccounted: 1000000000 != 1067684628] test_AaveYieldMustIncreaseDepositorAccounting_AfterBypassingApproveBug() (gas: 352999)
++Suite result: FAILED. 0 passed; 1 failed; 0 skipped; finished in 11.07s (8.98s CPU time)
++2026-09-11T17:16:11.233006Z  WARN flush{path=Some("/home/damu/.foundry/cache/rpc/mainnet/20000000")}: cache: Failed to open json cache for writing e=Read-only file system (os error 30)
++
++Ran 1 test suite in 11.07s (11.07s CPU time): 0 tests passed, 1 failed, 0 skipped (1 total tests)
++
++Failing tests:
++Encountered 1 failing test in test/UsdtYieldVaultFork.t.sol:UsdtYieldVaultForkTest
++[FAIL: real Aave yield is unaccounted: 1000000000 != 1067684628] test_AaveYieldMustIncreaseDepositorAccounting_AfterBypassingApproveBug() (gas: 352999)
++
++Encountered a total of 1 failing tests, 0 tests succeeded
++
++Tip: Run `forge test --rerun` to retry only the 1 failed test
++```
++
++### Fix description
++
++Base conversions and `totalAssets()` on the current recoverable underlying value of the vault's aUSDT position (with carefully specified handling of any idle USDT), rather than a counter that cannot observe interest. Test increasing aToken custody and prove that existing shareholders—not later depositors or stranded storage—receive that value.
++
++## Medium — the owner can set an invalid fee and disable deposits
++
++The constructor and `setDepositFee()` accept every `uint256`. At 10,000 bps deposits always revert with `NoSharesMinted`; above 10,000 bps `amount - fee` underflows. An owner mistake or compromised owner can therefore stop all deposits without using the explicit pause mechanism.
++
++Test: `test/UsdtYieldVaultAdversarial.t.sol:test_DepositFeeMustBeBounded`
++
++Command and real output:
++
++```text
++$ forge test --match-test test_DepositFeeMustBeBounded -vv
++No files changed, compilation skipped
++2026-09-11T17:12:08.354550Z  WARN evm::traces::external: etherscan config not found
++
++Ran 1 test for test/UsdtYieldVaultAdversarial.t.sol:UsdtYieldVaultAdversarialTest
++[FAIL: panic: arithmetic underflow or overflow (0x11)] test_DepositFeeMustBeBounded() (gas: 44766)
++Suite result: FAILED. 0 passed; 1 failed; 0 skipped; finished in 709.91µs (57.03µs CPU time)
++
++Ran 1 test suite in 7.98ms (709.91µs CPU time): 0 tests passed, 1 failed, 0 skipped (1 total tests)
++
++Failing tests:
++Encountered 1 failing test in test/UsdtYieldVaultAdversarial.t.sol:UsdtYieldVaultAdversarialTest
++[FAIL: panic: arithmetic underflow or overflow (0x11)] test_DepositFeeMustBeBounded() (gas: 44766)
++
++Encountered a total of 1 failing tests, 0 tests succeeded
++
++Tip: Run `forge test --rerun` to retry only the 1 failed test
++```
++
++### Fix description
++
++Define a conservative maximum deposit fee below 10,000 bps and enforce it in both the constructor and setter with a custom error. Fuzz the complete accepted domain and test the maximum accepted value and the first rejected value explicitly.
++
++## Review limitations and remaining sign-off work
++
++The mainnet fork proves the first integration call is already fatal, so later real Aave behavior is unreachable in the current implementation. Once that blocker is repaired, the fork suite still needs successful deposit, interest accrual, partial/full withdrawal, pause, and multi-user ordering tests at a pinned block.
++
++I attempted the required static-analysis gate, but the installed launcher is broken, so it provides no safety evidence:
++
++```text
++$ slither . --filter-paths 'lib|test'
++Traceback (most recent call last):
++  File "/home/damu/.local/bin/slither", line 5, in <module>
++    from slither.__main__ import main
++ModuleNotFoundError: No module named 'slither'
++```
++
++This is not a Slither finding; it is an incomplete deployment check that must be rerun in a working environment before sign-off.
+diff --git a/test/UsdtYieldVaultAdversarial.t.sol b/test/UsdtYieldVaultAdversarial.t.sol
+new file mode 100644
+index 0000000..e0e51a3
+--- /dev/null
++++ b/test/UsdtYieldVaultAdversarial.t.sol
+@@ -0,0 +1,56 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.28;
++
++import {Test} from "forge-std/Test.sol";
++
++import {UsdtYieldVault} from "../src/UsdtYieldVault.sol";
++import {MockUSDT} from "./mocks/MockUSDT.sol";
++import {MockAavePool, MockAToken} from "./mocks/MockAavePool.sol";
++
++contract UsdtYieldVaultAdversarialTest is Test {
++    MockUSDT internal usdt;
++    MockAavePool internal pool;
++    MockAToken internal aUsdt;
++    UsdtYieldVault internal vault;
++
++    address internal owner = makeAddr("owner");
++    address internal alice = makeAddr("alice");
++
++    function setUp() public {
++        usdt = new MockUSDT();
++        pool = new MockAavePool(address(usdt));
++        aUsdt = pool.aToken();
++        vault = new UsdtYieldVault(address(usdt), address(aUsdt), address(pool), 0, owner);
++
++        usdt.mint(alice, 1_000_000e6);
++        vm.prank(alice);
++        usdt.approve(address(vault), type(uint256).max);
++    }
++
++    function test_WithdrawalFeeMustRemainAccountedFor() public {
++        vm.prank(alice);
++        uint256 shares = vault.deposit(1_000e6);
++
++        vm.prank(alice);
++        vault.withdraw(shares);
++
++        assertEq(vault.totalAssets(), aUsdt.balanceOf(address(vault)), "retained fee disappeared from accounting");
++    }
++
++    function test_AaveYieldMustIncreaseDepositorAccounting() public {
++        vm.prank(alice);
++        vault.deposit(1_000e6);
++
++        deal(address(aUsdt), address(vault), 1_100e6);
++
++        assertEq(vault.totalAssets(), aUsdt.balanceOf(address(vault)), "Aave yield is absent from share accounting");
++    }
++
++    function test_DepositFeeMustBeBounded() public {
++        vm.prank(owner);
++        vault.setDepositFee(10_001);
++
++        vm.prank(alice);
++        vault.deposit(1_000e6);
++    }
++}
+diff --git a/test/UsdtYieldVaultFork.t.sol b/test/UsdtYieldVaultFork.t.sol
+new file mode 100644
+index 0000000..fb091a3
+--- /dev/null
++++ b/test/UsdtYieldVaultFork.t.sol
+@@ -0,0 +1,47 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.28;
++
++import {Test} from "forge-std/Test.sol";
++import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
++import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
++
++import {UsdtYieldVault} from "../src/UsdtYieldVault.sol";
++
++contract UsdtYieldVaultForkTest is Test {
++    using SafeERC20 for IERC20;
++
++    address internal constant USDT = 0xdAC17F958D2ee523a2206206994597C13D831ec7;
++    address internal constant A_USDT = 0x23878914EFE38d27C4D67Ab83ed1b93A74D4086a;
++    address internal constant AAVE_POOL = 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2;
++    uint256 internal constant FORK_BLOCK = 20_000_000;
++
++    UsdtYieldVault internal vault;
++    address internal alice = makeAddr("alice");
++
++    function setUp() public {
++        vm.createSelectFork(vm.envString("MAINNET_RPC_URL"), FORK_BLOCK);
++        vault = new UsdtYieldVault(USDT, A_USDT, AAVE_POOL, 0, address(this));
++        deal(USDT, alice, 1_000e6);
++        vm.prank(alice);
++        IERC20(USDT).forceApprove(address(vault), type(uint256).max);
++    }
++
++    function test_RealUsdtDepositMustSucceed() public {
++        vm.prank(alice);
++        vault.deposit(1_000e6);
++
++        assertEq(IERC20(A_USDT).balanceOf(address(vault)), 1_000e6);
++    }
++
++    function test_AaveYieldMustIncreaseDepositorAccounting_AfterBypassingApproveBug() public {
++        vm.prank(address(vault));
++        IERC20(USDT).forceApprove(AAVE_POOL, type(uint256).max);
++        vm.mockCall(USDT, abi.encodeCall(IERC20.approve, (AAVE_POOL, 1_000e6)), abi.encode(true));
++
++        vm.prank(alice);
++        vault.deposit(1_000e6);
++        vm.warp(block.timestamp + 365 days);
++
++        assertEq(vault.totalAssets(), IERC20(A_USDT).balanceOf(address(vault)), "real Aave yield is unaccounted");
++    }
++}
+
+# Untracked files and status
+ A FINDINGS.md
+ A test/UsdtYieldVaultAdversarial.t.sol
+ A test/UsdtYieldVaultFork.t.sol
