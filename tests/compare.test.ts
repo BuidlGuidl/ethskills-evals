@@ -247,8 +247,9 @@ test("real showcase entries contain only comparable tasks and their runs", () =>
   assert.deepEqual(results.map((result, i) => [real.showcase![i].skill, result.usage.before.runs, result.usage.after.runs, result.usage.noSkill.runs]), [
     ["addresses", 12, 12, 12], ["l2s", 12, 12, 12], ["protocol", 6, 6, 12],
     ["wallets", 9, 9, 18], ["security", 18, 18, 36], ["orchestration", 9, 9, 12],
+    ["frontend-playbook", 24, 24, 24],
   ]);
-  assert.deepEqual(results.map(result => result.rows.length), [4, 4, 2, 3, 6, 3]);
+  assert.deepEqual(results.map(result => result.rows.length), [4, 4, 2, 3, 6, 3, 8]);
   for (const entry of real.showcase!) {
     for (const row of compareEntry(entry, real).rows) {
       const runs = real.runs.filter(run => run.task === row.task && run.model === entry.model);
@@ -261,5 +262,5 @@ test("real showcase entries contain only comparable tasks and their runs", () =>
       assert.equal(result.rows.reduce((sum, row) => sum + (row[column]?.total ?? 0), 0), result.totals[column]?.total ?? 0);
     }
   }
-  assert.equal(summarize(real).reduce((sum, row) => sum + row.runs, 0), 234);
+  assert.equal(summarize(real).reduce((sum, row) => sum + row.runs, 0), 306);
 });
