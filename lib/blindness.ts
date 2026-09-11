@@ -6,10 +6,26 @@
 // path verbatim. Task preambles were reworded per-task afterwards, which fixes the tasks
 // edited and nothing else. This list is the harness-level check, so the blindness invariant
 // holds for every task, present and future, and not just the ones someone remembered to edit.
+//
+// The first three patterns all key on the word "skill", and #110 showed that is not where a
+// skill's fingerprint necessarily lands. The audit skill's whole body is an external checklist
+// corpus, so its runs describe their METHOD rather than their source: "informed by pinned
+// general, precision/math, ERC-20, lending, oracle, proxy, access-control, and Arbitrum
+// checklists" names no skill, no path and no SKILL.md, and told the judge the variant anyway.
+// The last two patterns catch that shape. They are deliberately narrow — a report recommending
+// that the team adopt a checklist is not a leak, and 48 such lines across the 581 no_skill runs
+// on disk trip neither — so they require either a provenance claim about checklists the review
+// itself walked, or the vendor namespace those checklists are published under.
 export const SKILL_MENTION_PATTERNS: { label: string; pattern: RegExp }[] = [
   { label: "skill install path", pattern: /\.(?:claude|agents)[\/\\]skills\b/i },
   { label: "SKILL.md reference", pattern: /\bSKILL\.md\b/i },
   { label: "skill self-reference", pattern: /\b(?:the|my|this|provided|installed|attached)\s+skill\b/i },
+  {
+    label: "checklist provenance",
+    pattern:
+      /\b(?:pinned|informed\s+by|guided\s+by|derived\s+from|based\s+on|walk(?:ed|ing)?|driven|sweep|per|against|following|followed|using|used)\b[^.\n]{0,140}\bchecklists\b|\bchecklists?\b[^.\n]{0,40}\b(?:sweep|corpus|pass|walkthrough)\b/i,
+  },
+  { label: "checklist corpus namespace", pattern: /\bevm-audit(?:-[a-z0-9]+)+\b|\bCHECKLIST_REV\b/i },
 ];
 
 // Reported as file:line so the operator can read the hit and judge it, rather than being told

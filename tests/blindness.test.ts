@@ -42,6 +42,49 @@ test("a leaking section header reports as line 0 of its own section", () => {
   assert.match(hits[0], /output\/notes-from-SKILL\.md:0\b/);
 });
 
+// #110: the audit skill's fingerprint is its external checklist corpus, not the word "skill".
+// The graded run that leaked said this, and the first three patterns all missed it.
+test("a report that names the checklists it walked is a hit", () => {
+  const hits = findSkillMentions(
+    evidence([
+      [
+        "run.diff",
+        "+This was a source review of the complete workspace supplied, informed by pinned general, " +
+          "precision/math, ERC-20, lending, oracle, proxy, access-control, and Arbitrum checklists.\n",
+      ],
+    ]),
+  );
+
+  assert.equal(hits.length, 1);
+  assert.match(hits[0], /run\.diff:1\b.*\[checklist provenance\]/);
+});
+
+// Nothing in a no_skill run stops it recommending that the team adopt a checklist, and 48 lines
+// like these sit in the no_skill evidence already. Widening the guard must not start failing them.
+test("recommending a checklist to the team is not a hit", () => {
+  const clean = evidence([
+    [
+      "output/answer.md",
+      [
+        "## Deployment checklist",
+        "Add a listing checklist item that names the feed's `description()` and asserts it matches.",
+        "Run the pre-flight checklist at D-3 and confirm the signer roster.",
+        "Make that a required field in `listCollateral`'s review checklist.",
+      ].join("\n"),
+    ],
+  ]);
+
+  assert.deepEqual(findSkillMentions(clean), []);
+});
+
+// A per-finding `**Category**: evm-audit-oracles` line leaks the corpus without any prose claim.
+test("the checklist vendor namespace is a hit on its own", () => {
+  const hits = findSkillMentions(evidence([["run.diff", "+**Category**: evm-audit-proxies, evm-audit-access-control\n"]]));
+
+  assert.equal(hits.length, 1);
+  assert.match(hits[0], /\[checklist corpus namespace\]/);
+});
+
 test("each pattern is recognised, and one line counts once", () => {
   const hits = findSkillMentions(
     evidence([
