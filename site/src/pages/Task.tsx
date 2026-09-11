@@ -13,7 +13,7 @@ const Task = () => {
   }
 
   const runs = index.runs.filter(run => run.task === task.id).sort((a, b) => (a.created ?? "").localeCompare(b.created ?? "") || a.run.localeCompare(b.run));
-  const earlier = runs.some(run => run.rubric !== null && task.rubric !== null && run.rubric !== task.rubric);
+  const earlier = runs.some(run => (run.rubric !== null && task.rubric !== null && run.rubric !== task.rubric) || (run.prompt !== null && task.prompt !== null && run.prompt !== task.prompt));
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(task.input);
@@ -42,7 +42,7 @@ const Task = () => {
       <ol className="checks">
         {task.expect.map((line, position) => <li key={position}>{line}</li>)}
       </ol>
-      {earlier && <p className="footnote">Some runs used earlier checks. Each run's dots show the checks used then.</p>}
+      {earlier && <p className="footnote">Some runs used an earlier prompt or earlier checks. Each run's dots show the checks used then.</p>}
     </section>
     <section aria-labelledby="runs-heading">
       <div className="section-heading">

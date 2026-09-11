@@ -1,0 +1,2352 @@
+diff --git a/DEPLOY.md b/DEPLOY.md
+new file mode 100644
+index 0000000..b102cba
+--- /dev/null
++++ b/DEPLOY.md
+@@ -0,0 +1,188 @@
++# Deploying the Tip Jar frontend to IPFS
++
++The site ships as a **static export** (`packages/nextjs/out`) pinned on IPFS. There is no server, no API route
++and no image optimizer at runtime.
++
++> Nothing has been uploaded from this repo. The commands below are the exact steps to run; every `<placeholder>`
++> is yours to fill in.
++>
++> Any `packages/nextjs/out` in your working tree was produced with the **local fork** configuration, as a smoke
++> test of this pipeline. Rebuild after step 1 before uploading anything.
++
++## 1. Point the app at a real chain first
++
++The local setup in [README.md](./README.md) targets the Anvil fork (chain 31337, RPC `http://127.0.0.1:8545`).
++Exporting that configuration would ship a site that asks every visitor's browser to reach their own localhost.
++Before building for production:
++
++1. **Deploy the jar to Base** (needs a funded keystore account — `yarn account:import` or `yarn generate`):
++
++   ```bash
++   yarn deploy --network base
++   yarn verify --network base      # optional, needs ETHERSCAN_API_KEY for BaseScan
++   ```
++
++   This rewrites `packages/nextjs/contracts/deployedContracts.ts` with the `8453` entry the frontend needs.
++   `externalContracts.ts` already carries USDC for `8453` (same address as on the fork).
++
++   The deployer becomes the owner, and the owner is the only way tips ever leave the jar. On a real deploy hand
++   that to a multisig: `transferOwnership(<safe>)` then `acceptOwnership()` from the safe (the jar uses
++   `Ownable2Step`, and `renounceOwnership` reverts, so a fat-fingered address cannot strand the balance).
++
++2. **Switch the target network** in `packages/nextjs/scaffold.config.ts`:
++
++   ```ts
++   targetNetworks: [chains.base],
++   ```
++
++3. **Set real API keys.** The scaffold defaults are shared and rate-limited. A static export inlines
++   `NEXT_PUBLIC_*` at build time, so put them in `packages/nextjs/.env.local` (or pass them on the build
++   command) *before* building:
++
++   ```bash
++   NEXT_PUBLIC_ALCHEMY_API_KEY=<your key>
++   NEXT_PUBLIC_WALLET_CONNECT_PROJECT_ID=<your project id>
++   ```
++
++## 2. Build configuration (already in this repo)
++
++Three pieces make the export work — listed here so a failed build is diagnosable, not so you have to add them.
++
++**`packages/nextjs/next.config.ts`** — static export, one directory per route, no image optimizer:
++
++```ts
++if (process.env.NEXT_PUBLIC_IPFS_BUILD === "true") {
++  nextConfig.output = "export";
++  nextConfig.trailingSlash = true;
++  nextConfig.images = { unoptimized: true };
++}
++```
++
++**`packages/nextjs/utils/scaffold-eth/getMetadata.ts`** — uses `NEXT_PUBLIC_PRODUCTION_URL` as the metadata
++base. A static export has no request context, so the origin must be baked in at build time or every Open Graph
++URL and image points at `http://localhost:3000`.
++
++**`packages/nextjs/package.json`** — the build scripts export `NODE_OPTIONS="--no-experimental-webstorage"`:
++
++```json
++"build": "yarn lint && NODE_OPTIONS=\"--no-experimental-webstorage\" next build",
++"build:ipfs": "rm -rf .next out && NEXT_PUBLIC_IPFS_BUILD=true yarn build"
++```
++
++On Node 25 the built-in `localStorage` global exists but has no methods unless a backing file is configured.
++The wallet libraries detect the global and call `getItem()` during prerender, which fails with
++`TypeError: localStorage.getItem is not a function`. Setting it in the script makes it process-level, so Next's
++build workers inherit it; putting the equivalent only in `instrumentation.ts` or `next.config.ts` does not fix
++the workers. `NODE_OPTIONS="--localstorage-file=.node-localstorage"` works too if you prefer real storage.
++
++## 3. Build
++
++```bash
++cd packages/nextjs
++NEXT_PUBLIC_PRODUCTION_URL="https://<your-domain-or-gateway-url>" yarn build:ipfs
++```
++
++From the repo root the same build is `NEXT_PUBLIC_PRODUCTION_URL="https://<...>" yarn next:build:ipfs`.
++`build:ipfs` removes `.next` and `out` first, so a stale export can never be mistaken for a fresh one.
++
++## 4. Verify `out/` before uploading
++
++```bash
++cd packages/nextjs
++
++# One directory with an index.html per route (/, /debug, /blockexplorer, ...)
++ls out/*/index.html
++test -f out/index.html && test -f out/debug/index.html && echo "routes ok"
++
++# Open Graph metadata carries the production origin, not localhost
++grep -o 'property="og:url" content="[^"]*"' out/index.html
++grep -o 'property="og:image" content="[^"]*"' out/index.html
++grep -rl "localhost:3000" out --include='*.html'          # expect no output
++
++# The chain and contract the bundle will actually talk to
++grep -rlF "<jar address from step 1>" out/_next/static | head -1   # expect a match
++grep -rl "127.0.0.1:8545" out/_next/static | head -1               # expect no output for a Base build
++
++# Smoke test the export exactly as a gateway serves it
++npx --yes serve out -l 8080 &
++curl -s -o /dev/null -w "root %{http_code}\n" http://localhost:8080/
++curl -s -o /dev/null -w "debug %{http_code}\n" -L http://localhost:8080/debug/
++```
++
++A build that still matches `127.0.0.1:8545` was made with `targetNetworks: [chains.foundry]` — that is the
++signal you skipped step 1, and every visitor would get a site pointed at their own machine.
++
++Open `http://localhost:8080` and confirm the feed and the form render before you upload anything. Serving from
++the server root like this matches how the site must be served in production — see the next section for why.
++
++## 5. Serve it from a domain root, not a path gateway
++
++The export references its assets absolutely (`<script src="/_next/static/chunks/...">`), which is what
++`next build` with `output: "export"` produces — there is no supported relative-asset mode. So the site only
++works where the CID is the root of the origin:
++
++| Serving style | Result |
++| --- | --- |
++| Subdomain gateway — `https://<cidv1>.ipfs.dweb.link/` | works |
++| ENS / DNSLink domain — `https://<name>.eth.limo/` | works |
++| Path gateway — `https://gateway/ipfs/<cid>/` | HTML returns 200, every `/_next/...` asset 404s, page renders blank |
++
++The path-gateway failure is quiet: `curl` on the HTML says 200 while the browser shows an empty page. Verify on
++a subdomain gateway or the ENS domain, and read a "200 but blank" report as this rather than as a build
++problem. (If you are pinned to a path gateway, the only fix is a two-pass build with
++`assetPrefix: "/ipfs/<cid>"` — you have to build, upload, then rebuild with the CID you just got. Prefer a
++subdomain gateway.)
++
++## 6. Upload
++
++Pick one. All three produce a CID for the `out` directory — **record it**.
++
++```bash
++# A. bgipfs (the scaffold's built-in path: builds and uploads in one step)
++yarn ipfs
++
++# B. a local Kubo node
++ipfs add -r --cid-version 1 -Q packages/nextjs/out
++ipfs pin remote add --service=<service> --name tipjar <cid>     # so it survives your node going offline
++
++# C. Storacha / web3.storage
++npx --yes @web3-storage/w3cli up packages/nextjs/out
++```
++
++## 7. Verify after uploading
++
++```bash
++CID=<cid from step 6>                      # base32 CIDv1: ipfs cid base32 <cid>
++SITE="https://$CID.ipfs.dweb.link"         # subdomain gateway, so absolute asset paths resolve
++
++curl -s -o /dev/null -w "root  %{http_code}\n" -L "$SITE/"
++curl -s -o /dev/null -w "debug %{http_code}\n" -L "$SITE/debug/"      # expect 200, not 404
++curl -s -L "$SITE/" | grep -o 'property="og:\(url\|image\)" content="[^"]*"'
++
++# The JS actually loads — this is the check a path gateway silently fails
++ASSET=$(curl -s -L "$SITE/" | grep -o 'src="/_next/static/chunks/[^"]*"' | head -1 | sed 's/src="//;s/"//')
++curl -s -o /dev/null -w "asset %{http_code}  ($ASSET)\n" -L "$SITE$ASSET"
++```
++
++- A root that loads does **not** prove the exported routes resolve — check at least one non-home route, with
++  the trailing slash, and at least one `_next` asset.
++- If the CID is unchanged after a rebuild, the uploaded bytes are identical. Check what you built and what you
++  uploaded before blaming gateway caching.
++- Finally, load the gateway URL in a browser, connect a wallet on Base, and send one small real tip. The feed
++  entry and the "In the jar" stat are the end-to-end proof.
++
++## 8. ENS content hash (only after the CID is reviewed)
++
++```bash
++ipfs cid base32 $CID                       # gateways and ENS want the base32 v1 form
++# set contenthash to ipfs://<cid> via https://app.ens.domains, or directly:
++cast send <resolver> "setContenthash(bytes32,bytes)" $(cast namehash <name>.eth) <encoded contenthash> \
++  --rpc-url mainnet --account <your keystore>
++
++# confirm the resolver returns the CID you approved, and that the public gateway serves it
++cast call <resolver> "contenthash(bytes32)(bytes)" $(cast namehash <name>.eth) --rpc-url mainnet
++curl -sI "https://<name>.eth.limo" | head -1
++```
++
++Update the content hash only after the CID above has been loaded and reviewed — the ENS record is the part
++users actually see.
+diff --git a/README.md b/README.md
+index 5badb3c..3549411 100644
+--- a/README.md
++++ b/README.md
+@@ -1,83 +1,171 @@
+-# 🏗 Scaffold-ETH 2
++# 🫙 USDC Tip Jar (Base)
+ 
+-<h4 align="center">
+-  <a href="https://docs.scaffoldeth.io">Documentation</a> |
+-  <a href="https://scaffoldeth.io">Website</a>
+-</h4>
++A [Scaffold-ETH 2](https://docs.scaffoldeth.io) dApp: a `TipJar` contract that accepts
++[USDC on Base](https://basescan.org/token/0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913) with a short public
++message, and a page with the tip feed and a form to send one.
+ 
+-🧪 An open-source, up-to-date toolkit for building decentralized applications (dapps) on the Ethereum blockchain. It's designed to make it easier for developers to create and deploy smart contracts and build user interfaces that interact with those contracts.
++- `packages/foundry/contracts/TipJar.sol` — the jar. Pulls USDC via `transferFrom`, records every tip on-chain,
++  owner withdraws the balance.
++- `packages/nextjs/app/page.tsx` — jar stats, `TipForm` (approve + tip), `TipFeed` (newest first, live).
+ 
+-> [!NOTE]
+-> 🤖 Scaffold-ETH 2 is AI-ready! It has everything agents need to build on Ethereum. Check `.agents/`, `.claude/`, `.opencode` or `.cursor/` for more info.
++Everything below runs against **real Base state on a local fork**: the real USDC contract, real holders, real
++balances — and no real money, because nothing leaves your machine.
+ 
+-⚙️ Built using NextJS, RainbowKit, Foundry, Wagmi, Viem, and Typescript.
++## Requirements
+ 
+-- ✅ **Contract Hot Reload**: Your frontend auto-adapts to your smart contract as you edit it.
+-- 🪝 **[Custom hooks](https://docs.scaffoldeth.io/hooks/)**: Collection of React hooks wrapper around [wagmi](https://wagmi.sh/) to simplify interactions with smart contracts with typescript autocompletion.
+-- 🧱 [**Components**](https://docs.scaffoldeth.io/components/): Collection of common web3 components to quickly build your frontend.
+-- 🔥 **Burner Wallet & Local Faucet**: Quickly test your application with a burner wallet and local faucet.
+-- 🔐 **Integration with Wallet Providers**: Connect to different wallet providers and interact with the Ethereum network.
++- [Node (>= v20.18.3)](https://nodejs.org/en/download/) and [Yarn](https://yarnpkg.com/getting-started/install)
++- [Foundry](https://book.getfoundry.sh/getting-started/installation) (`anvil`, `cast`, `forge`)
++- Git
+ 
+-![Debug Contracts tab](https://github.com/scaffold-eth/scaffold-eth-2/assets/55535804/b237af0c-5027-4849-a5c1-2e31495cccb1)
++```bash
++yarn install
++```
+ 
+-## Requirements
++## Local workflow (real Base state, fake money)
+ 
+-Before you begin, you need to install the following tools:
++Three terminals. Run them in order.
+ 
+-- [Node (>= v20.18.3)](https://nodejs.org/en/download/)
+-- Yarn ([v1](https://classic.yarnpkg.com/en/docs/install/) or [v2+](https://yarnpkg.com/getting-started/install))
+-- [Git](https://git-scm.com/downloads)
++### 1. Fork Base
+ 
+-## Quickstart
++```bash
++yarn fork          # anvil --fork-url base --chain-id 31337 --block-time 1
++```
+ 
+-To get started with Scaffold-ETH 2, follow the steps below:
++This is an Anvil **fork of Base mainnet**, not an empty chain. It matters:
+ 
+-1. Install dependencies if it was skipped in CLI:
++- `yarn chain` starts a blank chain where `0x8335...2913` has no code, so the jar has no USDC to accept.
++  `yarn deploy` refuses to deploy there and tells you to run `yarn fork` instead.
++- `--chain-id 31337` keeps the fork identifiable as local, so wallets and the frontend treat it as a test network.
++- `--block-time 1` mines every second. Without it Anvil only mines when a transaction arrives, so
++  `block.timestamp` freezes between tips and the feed's "3m ago" stamps stop moving until someone tips again.
+ 
+-```
+-cd my-dapp-example
+-yarn install
+-```
++The fork copies Base state at the block it started on and keeps it in memory. Restart it whenever you want a
++clean jar; you will need to re-run steps 2 and 3.
+ 
+-2. Run a local network in the first terminal:
++To fork a different upstream, pass any alias from `packages/foundry/foundry.toml`: `yarn fork baseSepolia`.
++(There is no USDC at the Base mainnet address on other chains, so the jar will not deploy there — the fork of
++Base is the supported setup.)
++The `base` alias points at the public `https://mainnet.base.org` endpoint; if it rate-limits you, put your
++own provider URL in that alias.
+ 
++### 2. Deploy the jar
++
++```bash
++yarn deploy
+ ```
+-yarn chain
+-```
+ 
+-This command starts a local Ethereum network using Foundry. The network runs on your local machine and can be used for testing and development. You can customize the network configuration in `packages/foundry/foundry.toml`.
++Deploys `TipJar` wired to canonical Base USDC and writes the address + ABI to
++`packages/nextjs/contracts/deployedContracts.ts`. The deployer — Anvil account #9,
++`0xa0Ee7A142d267C1f36714E4a8F75612F20a79720` — becomes the jar owner, the only account that can withdraw.
++
++### 3. Give your test identities USDC
+ 
+-3. On a second terminal, deploy the test contract:
++Nobody starts with USDC, so take some from an account that already holds it on Base:
+ 
++```bash
++yarn fund 0x70997970C51812dc3A010C7d01b50e0d17dc79C8        # 500 USDC (default)
++yarn fund 0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC 250    # or a specific amount
+ ```
+-yarn deploy
++
++`yarn fund` impersonates a large USDC holder on the fork, transfers real USDC to the address you name, and tops
++it up with 10 ETH for gas. Nothing is signed and nothing is broadcast — `anvil_impersonateAccount` and
++`anvil_setBalance` only exist on your local copy of Base. The real holder on Base is untouched.
++
++Under the hood it is just this, which you can also run by hand:
++
++```bash
++WHALE=0x4e65fE4DbA92790696d040ac24Aa414708F5c0AB   # Aave v3 Base aUSDC, holds millions
++USDC=0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
++
++cast rpc anvil_impersonateAccount $WHALE
++cast send $USDC "transfer(address,uint256)" 0x7099...79C8 500000000 --from $WHALE --unlocked
++cast rpc anvil_stopImpersonatingAccount $WHALE
+ ```
+ 
+-This command deploys a test smart contract to the local network. The contract is located in `packages/foundry/contracts` and can be modified to suit your needs. The `yarn deploy` command uses the deploy script located in `packages/foundry/script` to deploy the contract to the network. You can also customize the deploy script.
++If the known holders have moved their funds since this was written, pass your own:
++`WHALE=0x... yarn fund <address> <amount>` (pick any current holder from the
++[BaseScan holder chart](https://basescan.org/token/tokenholderchart/0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913)).
+ 
+-4. On a third terminal, start your NextJS app:
++### 4. Start the frontend
+ 
++```bash
++yarn start          # http://localhost:3000
+ ```
+-yarn start
++
++`packages/nextjs/scaffold.config.ts` targets `chains.foundry` (31337) — the fork — not Base itself. The app
++talks to `http://127.0.0.1:8545` only.
++
++### 5. Send a tip
++
++Connect a wallet, then tip:
++
++- **Burner wallet** (fastest): pick "Burner Wallet" in the connect modal, copy its address, run
++  `yarn fund <burner address>`, and it now holds USDC + ETH.
++- **MetaMask/Rabby**: add a network with RPC `http://127.0.0.1:8545` and chain ID `31337`, import an Anvil key
++  (e.g. account #1, `0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d`), and fund it as above.
++
++Enter an amount and an optional message and hit **Approve & send tip**. USDC needs an allowance before the jar
++can pull it and `tip()` spends that allowance exactly, so every tip is two transactions: approve, then tip. The
++tip appears in the feed and the "In the jar" stat within a few seconds.
++
++Two limits come from the contract, and the form reads both from it rather than hardcoding them: tips must be at
++least **0.01 USDC** (so nobody can bury the public feed under dust) and messages are capped at **140 bytes** —
++bytes, not characters, so an emoji costs four.
++
++Watch the balances move to prove the USDC is real:
++
++```bash
++USDC=0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
++JAR=$(jq -r '.transactions[] | select(.contractName=="TipJar") | .contractAddress' \
++  packages/foundry/broadcast/Deploy.s.sol/31337/run-latest.json)
++
++cast call $USDC "balanceOf(address)(uint256)" $JAR --rpc-url http://127.0.0.1:8545     # jar balance
++cast call $JAR "getTips(uint256,uint256)((address,uint64,uint128,string)[])" 0 5 --rpc-url http://127.0.0.1:8545
+ ```
+ 
+-Visit your app on: `http://localhost:3000`. You can interact with your smart contract using the `Debug Contracts` page. You can tweak the app config in `packages/nextjs/scaffold.config.ts`.
++The jar address is also printed at the top of the page.
+ 
+-Run smart contract test with `yarn foundry:test`
++### 6. Withdraw (optional)
+ 
+-- Edit your smart contracts in `packages/foundry/contracts`
+-- Edit your frontend homepage at `packages/nextjs/app/page.tsx`. For guidance on [routing](https://nextjs.org/docs/app/building-your-application/routing/defining-routes) and configuring [pages/layouts](https://nextjs.org/docs/app/building-your-application/routing/pages-and-layouts) checkout the Next.js documentation.
+-- Edit your deployment scripts in `packages/foundry/script`
++The owner (Anvil #9) empties the jar via `withdraw(address)`. Easiest from the **Debug Contracts** page with
++that account connected, or:
++
++```bash
++cast send $JAR "withdraw(address)" 0xa0Ee7A142d267C1f36714E4a8F75612F20a79720 \
++  --private-key 0x2a871d0798f97d79848a013d4936a73bf4cc922c825d33c1cf7073dff6d409c6 \
++  --rpc-url http://127.0.0.1:8545
++```
+ 
++The feed is history, not a balance — it survives the withdrawal.
+ 
+-## Documentation
++Ownership is `Ownable2Step` (the new owner has to call `acceptOwnership()`) and `renounceOwnership()` reverts,
++because the owner is the only path by which tips ever leave the jar.
++
++## Tests
++
++```bash
++yarn test
++```
+ 
+-Visit our [docs](https://docs.scaffoldeth.io) to learn how to start building with Scaffold-ETH 2.
++- `test/TipJar.t.sol` — unit tests against a mock 6-decimal token (no network needed).
++- `test/TipJarFork.t.sol` — the same flow against the real Base USDC contract over an RPC fork. It skips itself,
++  with a printed reason, when the Base RPC is unreachable or the whale it borrows from has moved its funds, so
++  live-state drift never turns into a red suite.
+ 
+-To know more about its features, check out our [website](https://scaffoldeth.io).
++## Deploying
+ 
+-## Contributing to Scaffold-ETH 2
++The site ships as a static export on IPFS. See **[DEPLOY.md](./DEPLOY.md)** for the build, upload and
++post-deploy verification commands, and for what has to change before the app points at Base for real.
+ 
+-We welcome contributions to Scaffold-ETH 2!
++## Useful commands
+ 
+-Please see [CONTRIBUTING.MD](https://github.com/scaffold-eth/scaffold-eth-2/blob/main/CONTRIBUTING.md) for more information and guidelines for contributing to Scaffold-ETH 2.
+\ No newline at end of file
++| Command | What it does |
++| --- | --- |
++| `yarn fork [network]` | Anvil fork of Base (default) with 1s blocks |
++| `yarn chain` | Blank local chain — **no USDC**, the jar will not deploy |
++| `yarn deploy` | Deploy `TipJar` + regenerate `deployedContracts.ts` |
++| `yarn fund <address> [amount]` | Move real USDC from a holder to a test identity on the fork |
++| `yarn start` | Next.js dev server on http://localhost:3000 |
++| `yarn test` | Foundry unit + fork tests |
++| `yarn lint` / `yarn format` | Lint / format both packages |
++| `yarn next:build:ipfs` | Static production build into `packages/nextjs/out` |
+diff --git a/package.json b/package.json
+index 62b6ea8..04885ec 100644
+--- a/package.json
++++ b/package.json
+@@ -28,19 +28,22 @@
+     "foundry:flatten": "yarn workspace @se-2/foundry flatten",
+     "foundry:fork": "yarn workspace @se-2/foundry fork",
+     "foundry:format": "yarn workspace @se-2/foundry format",
++    "foundry:fund": "yarn workspace @se-2/foundry fund",
+     "foundry:generate": "yarn workspace @se-2/foundry account:generate",
+     "foundry:lint": "yarn workspace @se-2/foundry lint",
+     "foundry:test": "yarn workspace @se-2/foundry test",
+     "foundry:verify": "yarn workspace @se-2/foundry verify",
++    "fund": "yarn foundry:fund",
+     "generate": "yarn foundry:generate",
+-    "postinstall": "husky install",
+     "ipfs": "yarn workspace @se-2/nextjs ipfs",
+     "lint": "yarn next:lint && yarn foundry:lint",
+     "next:build": "yarn workspace @se-2/nextjs build",
++    "next:build:ipfs": "yarn workspace @se-2/nextjs build:ipfs",
+     "next:check-types": "yarn workspace @se-2/nextjs check-types",
+     "next:format": "yarn workspace @se-2/nextjs format",
+     "next:lint": "yarn workspace @se-2/nextjs lint",
+     "next:serve": "yarn workspace @se-2/nextjs serve",
++    "postinstall": "husky install",
+     "precommit": "lint-staged",
+     "start": "yarn workspace @se-2/nextjs dev",
+     "test": "yarn foundry:test",
+diff --git a/packages/foundry/Makefile b/packages/foundry/Makefile
+index f709ae2..6a97344 100644
+--- a/packages/foundry/Makefile
++++ b/packages/foundry/Makefile
+@@ -11,9 +11,10 @@ setup-anvil-wallet:
+ chain: setup-anvil-wallet
+ 	anvil
+ 
+-# Start a fork
++# Start a fork. --block-time 1 keeps block.timestamp advancing, so live UI timestamps behave
++# like a real chain instead of freezing between transactions.
+ fork: setup-anvil-wallet
+-	anvil --fork-url ${FORK_URL} --chain-id 31337
++	anvil --fork-url ${FORK_URL} --chain-id 31337 --block-time 1
+ 
+ # Deploy the contracts
+ deploy:
+diff --git a/packages/foundry/contracts/TipJar.sol b/packages/foundry/contracts/TipJar.sol
+new file mode 100644
+index 0000000..da33f7f
+--- /dev/null
++++ b/packages/foundry/contracts/TipJar.sol
+@@ -0,0 +1,114 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.20;
++
++import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
++import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
++import { SafeCast } from "@openzeppelin/contracts/utils/math/SafeCast.sol";
++import { Ownable, Ownable2Step } from "@openzeppelin/contracts/access/Ownable2Step.sol";
++
++/**
++ * @title TipJar
++ * @notice Collects ERC-20 tips (USDC on Base) with a short public message, and keeps the
++ *         feed on-chain so a frontend can render it with a single `eth_call` — no log
++ *         indexing over millions of pre-fork blocks.
++ * @dev Assumes a plain, non-rebasing, non fee-on-transfer token: the amount pulled in is
++ *      the amount recorded. That holds for USDC.
++ */
++contract TipJar is Ownable2Step {
++    using SafeERC20 for IERC20;
++    using SafeCast for uint256;
++
++    struct Tip {
++        address sender;
++        uint64 timestamp;
++        uint128 amount;
++        string message;
++    }
++
++    /// @notice Message limit in bytes, not characters — one emoji costs 4.
++    uint256 public constant MAX_MESSAGE_LENGTH = 140;
++
++    /// @notice Floor on a tip, so the public feed cannot be buried under dust for free.
++    uint256 public immutable minTipAmount;
++
++    IERC20 public immutable token;
++
++    Tip[] private _tips;
++
++    /// @notice Lifetime amount tipped, per sender. Withdrawals do not reduce it.
++    mapping(address sender => uint256 total) public totalTippedBy;
++
++    /// @notice Lifetime amount tipped by everyone. Withdrawals do not reduce it.
++    uint256 public totalTipped;
++
++    error TipTooSmall(uint256 amount, uint256 minimum);
++    error MessageTooLong(uint256 length);
++    error NothingToWithdraw();
++    error InvalidRecipient();
++    error OwnershipCannotBeRenounced();
++
++    event TipReceived(address indexed sender, uint256 amount, string message, uint256 index);
++    event Withdrawn(address indexed to, uint256 amount);
++
++    constructor(IERC20 _token, uint256 _minTipAmount, address initialOwner) Ownable(initialOwner) {
++        token = _token;
++        minTipAmount = _minTipAmount;
++    }
++
++    /// @notice Pull `amount` of `token` from the caller, who must have approved this contract first.
++    function tip(uint256 amount, string calldata message) external {
++        if (amount < minTipAmount) revert TipTooSmall(amount, minTipAmount);
++        if (bytes(message).length > MAX_MESSAGE_LENGTH) revert MessageTooLong(bytes(message).length);
++
++        uint256 index = _tips.length;
++        _tips.push(
++            Tip({
++                sender: msg.sender, timestamp: uint64(block.timestamp), amount: amount.toUint128(), message: message
++            })
++        );
++        totalTippedBy[msg.sender] += amount;
++        totalTipped += amount;
++
++        token.safeTransferFrom(msg.sender, address(this), amount);
++
++        emit TipReceived(msg.sender, amount, message, index);
++    }
++
++    /// @notice Send the whole balance to `to`.
++    function withdraw(address to) external onlyOwner {
++        if (to == address(0)) revert InvalidRecipient();
++
++        uint256 balance = token.balanceOf(address(this));
++        if (balance == 0) revert NothingToWithdraw();
++
++        token.safeTransfer(to, balance);
++        emit Withdrawn(to, balance);
++    }
++
++    /// @dev The owner is the only withdrawal path, so renouncing would strand every future tip.
++    function renounceOwnership() public view override onlyOwner {
++        revert OwnershipCannotBeRenounced();
++    }
++
++    function tipCount() external view returns (uint256) {
++        return _tips.length;
++    }
++
++    /**
++     * @notice A page of the feed, newest first.
++     * @param offset How many of the newest tips to skip (0 starts at the newest).
++     * @param limit Maximum number of tips to return; the page is clamped to what exists.
++     */
++    function getTips(uint256 offset, uint256 limit) external view returns (Tip[] memory page) {
++        uint256 total = _tips.length;
++        if (offset >= total) return new Tip[](0);
++
++        uint256 remaining = total - offset;
++        uint256 count = limit < remaining ? limit : remaining;
++
++        page = new Tip[](count);
++        for (uint256 i = 0; i < count; i++) {
++            page[i] = _tips[total - 1 - offset - i];
++        }
++    }
++}
+diff --git a/packages/foundry/contracts/YourContract.sol b/packages/foundry/contracts/YourContract.sol
+deleted file mode 100644
+index 3142774..0000000
+--- a/packages/foundry/contracts/YourContract.sol
++++ /dev/null
+@@ -1,84 +0,0 @@
+-//SPDX-License-Identifier: MIT
+-pragma solidity >=0.8.0 <0.9.0;
+-
+-// Useful for debugging. Remove when deploying to a live network.
+-import "forge-std/console.sol";
+-
+-// Use openzeppelin to inherit battle-tested implementations (ERC20, ERC721, etc)
+-// import "@openzeppelin/contracts/access/Ownable.sol";
+-
+-/**
+- * A smart contract that allows changing a state variable of the contract and tracking the changes
+- * It also allows the owner to withdraw the Ether in the contract
+- * @author BuidlGuidl
+- */
+-contract YourContract {
+-  // State Variables
+-  address public immutable owner;
+-  string public greeting = "Building Unstoppable Apps!!!";
+-  bool public premium = false;
+-  uint256 public totalCounter = 0;
+-  mapping(address => uint256) public userGreetingCounter;
+-
+-  // Events: a way to emit log statements from smart contract that can be listened to by external parties
+-  event GreetingChange(
+-    address indexed greetingSetter,
+-    string newGreeting,
+-    bool premium,
+-    uint256 value
+-  );
+-
+-  // Constructor: Called once on contract deployment
+-  // Check packages/foundry/deploy/Deploy.s.sol
+-  constructor(address _owner) {
+-    owner = _owner;
+-  }
+-
+-  // Modifier: used to define a set of rules that must be met before or after a function is executed
+-  // Check the withdraw() function
+-  modifier isOwner() {
+-    // msg.sender: predefined variable that represents address of the account that called the current function
+-    require(msg.sender == owner, "Not the Owner");
+-    _;
+-  }
+-
+-  /**
+-   * Function that allows anyone to change the state variable "greeting" of the contract and increase the counters
+-   *
+-   * @param _newGreeting (string memory) - new greeting to save on the contract
+-   */
+-  function setGreeting(string memory _newGreeting) public payable {
+-    // Print data to the anvil chain console. Remove when deploying to a live network.
+-
+-    console.logString("Setting new greeting");
+-    console.logString(_newGreeting);
+-
+-    greeting = _newGreeting;
+-    totalCounter += 1;
+-    userGreetingCounter[msg.sender] += 1;
+-
+-    // msg.value: built-in global variable that represents the amount of ether sent with the transaction
+-    if (msg.value > 0) {
+-      premium = true;
+-    } else {
+-      premium = false;
+-    }
+-
+-    // emit: keyword used to trigger an event
+-    emit GreetingChange(msg.sender, _newGreeting, msg.value > 0, msg.value);
+-  }
+-
+-  /**
+-   * Function that allows the owner to withdraw all the Ether in the contract
+-   * The function can only be called by the owner of the contract as defined by the isOwner modifier
+-   */
+-  function withdraw() public isOwner {
+-    (bool success,) = owner.call{ value: address(this).balance }("");
+-    require(success, "Failed to send Ether");
+-  }
+-
+-  /**
+-   * Function that allows the contract to receive ETH
+-   */
+-  receive() external payable { }
+-}
+diff --git a/packages/foundry/foundry.toml b/packages/foundry/foundry.toml
+index 0be4e83..33d5fcc 100644
+--- a/packages/foundry/foundry.toml
++++ b/packages/foundry/foundry.toml
+@@ -34,6 +34,8 @@ pgnTestnet = "https://sepolia.publicgoods.network"
+ localhost = "http://127.0.0.1:8545"
+ 
+ [etherscan]
++base = { key = "${ETHERSCAN_API_KEY}", chain = 8453 }
++baseSepolia = { key = "${ETHERSCAN_API_KEY}", chain = 84532 }
+ polygonMumbai = { key = "${ETHERSCAN_API_KEY}" }
+ sepolia = { key = "${ETHERSCAN_API_KEY}" }
+ 
+diff --git a/packages/foundry/package.json b/packages/foundry/package.json
+index be52fdd..24465e3 100644
+--- a/packages/foundry/package.json
++++ b/packages/foundry/package.json
+@@ -12,10 +12,11 @@
+     "compile": "make compile",
+     "deploy": "node scripts-js/parseArgs.js",
+     "flatten": "make flatten",
+-    "fork": "make fork FORK_URL=${1:-mainnet}",
++    "fork": "sh -c 'make fork FORK_URL=${1:-base}' --",
+     "format": "make format",
+-    "postinstall": "shx cp -n .env.example .env",
++    "fund": "node scripts-js/fundUsdc.js",
+     "lint": "make lint",
++    "postinstall": "shx cp -n .env.example .env",
+     "test": "forge test",
+     "verify": "make verify RPC_URL=${1:-localhost}"
+   },
+diff --git a/packages/foundry/script/Deploy.s.sol b/packages/foundry/script/Deploy.s.sol
+index cdd9fde..eca90b6 100644
+--- a/packages/foundry/script/Deploy.s.sol
++++ b/packages/foundry/script/Deploy.s.sol
+@@ -2,7 +2,7 @@
+ pragma solidity ^0.8.19;
+ 
+ import "./DeployHelpers.s.sol";
+-import { DeployYourContract } from "./DeployYourContract.s.sol";
++import { DeployTipJar } from "./DeployTipJar.s.sol";
+ 
+ /**
+  * @notice Main deployment script for all contracts
+@@ -11,17 +11,8 @@ import { DeployYourContract } from "./DeployYourContract.s.sol";
+  * Example: yarn deploy # runs this script(without`--file` flag)
+  */
+ contract DeployScript is ScaffoldETHDeploy {
+-  function run() external {
+-    // Deploys all your contracts sequentially
+-    // Add new deployments here when needed
+-
+-    
+-    DeployYourContract deployYourContract = new DeployYourContract();
+-    deployYourContract.run();
+-
+-
+-    // Deploy another contract
+-    // DeployMyContract myContract = new DeployMyContract();
+-    // myContract.run();
+-  }
+-}
+\ No newline at end of file
++    function run() external {
++        DeployTipJar deployTipJar = new DeployTipJar();
++        deployTipJar.run();
++    }
++}
+diff --git a/packages/foundry/script/DeployTipJar.s.sol b/packages/foundry/script/DeployTipJar.s.sol
+new file mode 100644
+index 0000000..59ee695
+--- /dev/null
++++ b/packages/foundry/script/DeployTipJar.s.sol
+@@ -0,0 +1,30 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.19;
++
++import "./DeployHelpers.s.sol";
++import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
++import { TipJar } from "../contracts/TipJar.sol";
++
++/**
++ * @notice Deploy script for the TipJar contract
++ * @dev The jar is wired to canonical Base USDC. That address only has code on Base (8453) and on
++ *      an Anvil fork of Base, which is exactly where this app is meant to run.
++ * Example:
++ * yarn deploy --file DeployTipJar.s.sol            # local Base fork (yarn fork)
++ * yarn deploy --file DeployTipJar.s.sol --network base
++ */
++contract DeployTipJar is ScaffoldETHDeploy {
++    address public constant BASE_USDC = 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913;
++
++    /// @dev 0.01 USDC (6 decimals): enough to keep dust spam off the public feed.
++    uint256 public constant MIN_TIP_AMOUNT = 10_000;
++
++    function run() external ScaffoldEthDeployerRunner {
++        require(
++            BASE_USDC.code.length > 0,
++            "No USDC at the Base USDC address on this chain. Run `yarn fork` (an Anvil fork of Base) instead of `yarn chain`."
++        );
++
++        new TipJar(IERC20(BASE_USDC), MIN_TIP_AMOUNT, deployer);
++    }
++}
+diff --git a/packages/foundry/script/DeployYourContract.s.sol b/packages/foundry/script/DeployYourContract.s.sol
+deleted file mode 100644
+index 7f82e5a..0000000
+--- a/packages/foundry/script/DeployYourContract.s.sol
++++ /dev/null
+@@ -1,30 +0,0 @@
+-// SPDX-License-Identifier: MIT
+-pragma solidity ^0.8.19;
+-
+-import "./DeployHelpers.s.sol";
+-import "../contracts/YourContract.sol";
+-
+-/**
+- * @notice Deploy script for YourContract contract
+- * @dev Inherits ScaffoldETHDeploy which:
+- *      - Includes forge-std/Script.sol for deployment
+- *      - Includes ScaffoldEthDeployerRunner modifier
+- *      - Provides `deployer` variable
+- * Example:
+- * yarn deploy --file DeployYourContract.s.sol  # local anvil chain
+- * yarn deploy --file DeployYourContract.s.sol --network optimism # live network (requires keystore)
+- */
+-contract DeployYourContract is ScaffoldETHDeploy {
+-    /**
+-     * @dev Deployer setup based on `ETH_KEYSTORE_ACCOUNT` in `.env`:
+-     *      - "scaffold-eth-default": Uses Anvil's account #9 (0xa0Ee7A142d267C1f36714E4a8F75612F20a79720), no password prompt
+-     *      - "scaffold-eth-custom": requires password used while creating keystore
+-     *
+-     * Note: Must use ScaffoldEthDeployerRunner modifier to:
+-     *      - Setup correct `deployer` account and fund it
+-     *      - Export contract addresses & ABIs to `nextjs` packages
+-     */
+-    function run() external ScaffoldEthDeployerRunner {
+-        new YourContract(deployer);
+-    }
+-}
+diff --git a/packages/foundry/scripts-js/fundUsdc.js b/packages/foundry/scripts-js/fundUsdc.js
+new file mode 100644
+index 0000000..17d3397
+--- /dev/null
++++ b/packages/foundry/scripts-js/fundUsdc.js
+@@ -0,0 +1,153 @@
++/**
++ * Fund a local test identity with real Base USDC, taken from a real holder on the fork.
++ *
++ *   yarn fund <address> [amountInUsdc]
++ *
++ * Nothing is broadcast: impersonation and balance overrides only exist inside the local
++ * Anvil fork, so the "real" USDC that moves is a local copy of Base state.
++ */
++const RPC_URL = process.env.RPC_URL || "http://127.0.0.1:8545";
++const USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
++const FORK_CHAIN_ID = 31337n;
++const GAS_TOP_UP = 10n * 10n ** 18n; // 10 ETH, enough for any local demo
++
++// Large USDC holders on Base. The first one still holding enough wins; override with WHALE=0x...
++const WHALE_CANDIDATES = [
++  "0x4e65fE4DbA92790696d040ac24Aa414708F5c0AB", // Aave v3 Base aUSDC
++  "0x20FE51A9229EEf2cF8Ad9E89d91CAb9312cF3b7A", // Coinbase custody
++  "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf", // cbBTC / Aerodrome liquidity
++];
++
++let requestId = 0;
++
++async function rpc(method, params = []) {
++  const response = await fetch(RPC_URL, {
++    method: "POST",
++    headers: { "Content-Type": "application/json" },
++    body: JSON.stringify({ jsonrpc: "2.0", id: ++requestId, method, params }),
++  }).catch(() => {
++    throw new Error(`Cannot reach ${RPC_URL}. Start the fork first: yarn fork`);
++  });
++
++  if (!response.ok) {
++    throw new Error(
++      `${method} failed: ${RPC_URL} answered HTTP ${response.status} ${response.statusText}`
++    );
++  }
++
++  const { result, error } = await response.json();
++  if (error) throw new Error(`${method} failed: ${error.message}`);
++  return result;
++}
++
++const pad = (value) => value.replace(/^0x/, "").toLowerCase().padStart(64, "0");
++const toHex = (value) => `0x${value.toString(16)}`;
++
++const balanceOf = async (account) =>
++  BigInt(
++    await rpc("eth_call", [
++      { to: USDC, data: `0x70a08231${pad(account)}` },
++      "latest",
++    ])
++  );
++
++const formatUsdc = (units) =>
++  `${(Number(units) / 1e6).toLocaleString("en-US", {
++    maximumFractionDigits: 6,
++  })} USDC`;
++
++function parseUsdc(amount) {
++  if (!/^\d+(\.\d{1,6})?$/.test(amount)) {
++    throw new Error(
++      `Invalid amount "${amount}". Use a number with at most 6 decimals, e.g. 250 or 12.5`
++    );
++  }
++  const [whole, fraction = ""] = amount.split(".");
++  return BigInt(whole + fraction.padEnd(6, "0"));
++}
++
++async function main() {
++  const [recipient, amountArg = "500"] = process.argv.slice(2);
++
++  if (!recipient || !/^0x[0-9a-fA-F]{40}$/.test(recipient)) {
++    throw new Error("Usage: yarn fund <address> [amountInUsdc]");
++  }
++  const amount = parseUsdc(amountArg);
++
++  const chainId = BigInt(await rpc("eth_chainId"));
++  if (chainId !== FORK_CHAIN_ID) {
++    throw new Error(
++      `Expected the local fork (chain id ${FORK_CHAIN_ID}), got ${chainId}. Run: yarn fork`
++    );
++  }
++  if ((await rpc("eth_getCode", [USDC, "latest"])) === "0x") {
++    throw new Error(
++      "No USDC code at the Base USDC address. This chain is not a Base fork — run: yarn fork"
++    );
++  }
++
++  let whale = process.env.WHALE;
++  if (whale) {
++    const held = await balanceOf(whale);
++    if (held < amount)
++      throw new Error(`WHALE ${whale} only holds ${formatUsdc(held)}`);
++  } else {
++    for (const candidate of WHALE_CANDIDATES) {
++      if ((await balanceOf(candidate)) >= amount) {
++        whale = candidate;
++        break;
++      }
++    }
++    if (!whale) {
++      throw new Error(
++        `None of the known holders still has ${formatUsdc(
++          amount
++        )} at this fork block.\n` +
++          "Pick any current holder from https://basescan.org/token/tokenholderchart/" +
++          `${USDC} and rerun with WHALE=0x... yarn fund ${recipient} ${amountArg}`
++      );
++    }
++  }
++
++  await rpc("anvil_setBalance", [whale, toHex(GAS_TOP_UP)]);
++  await rpc("anvil_impersonateAccount", [whale]);
++  const txHash = await rpc("eth_sendTransaction", [
++    {
++      from: whale,
++      to: USDC,
++      data: `0xa9059cbb${pad(recipient)}${pad(toHex(amount))}`,
++    },
++  ]);
++  await rpc("anvil_stopImpersonatingAccount", [whale]);
++
++  let receipt = null;
++  for (let attempt = 0; attempt < 30 && !receipt; attempt++) {
++    receipt = await rpc("eth_getTransactionReceipt", [txHash]);
++    if (!receipt) await new Promise((resolve) => setTimeout(resolve, 300));
++  }
++  if (!receipt)
++    throw new Error(
++      `Transfer ${txHash} was not mined. Is the fork still running?`
++    );
++  if (receipt.status !== "0x1") throw new Error(`Transfer ${txHash} reverted`);
++
++  // Gas money, so a fresh browser/burner account can actually send the tip.
++  if (BigInt(await rpc("eth_getBalance", [recipient, "latest"])) < GAS_TOP_UP) {
++    await rpc("anvil_setBalance", [recipient, toHex(GAS_TOP_UP)]);
++  }
++
++  console.log(`Funded ${recipient} with ${formatUsdc(amount)} from ${whale}`);
++  console.log(`  USDC balance: ${formatUsdc(await balanceOf(recipient))}`);
++  console.log(
++    `  ETH balance:  ${
++      Number(
++        BigInt(await rpc("eth_getBalance", [recipient, "latest"])) / 10n ** 15n
++      ) / 1000
++    } ETH`
++  );
++}
++
++main().catch((error) => {
++  console.error(`\n${error.message}\n`);
++  process.exit(1);
++});
+diff --git a/packages/foundry/test/TipJar.t.sol b/packages/foundry/test/TipJar.t.sol
+new file mode 100644
+index 0000000..358281b
+--- /dev/null
++++ b/packages/foundry/test/TipJar.t.sol
+@@ -0,0 +1,205 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.19;
++
++import { Test } from "forge-std/Test.sol";
++import { ERC20 } from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
++import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
++import { IERC20Errors } from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
++import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
++import { TipJar } from "../contracts/TipJar.sol";
++
++contract MockUSDC is ERC20 {
++    constructor() ERC20("USD Coin", "USDC") { }
++
++    function decimals() public pure override returns (uint8) {
++        return 6;
++    }
++
++    function mint(address to, uint256 amount) external {
++        _mint(to, amount);
++    }
++}
++
++contract TipJarTest is Test {
++    uint256 internal constant MIN_TIP = 0.01e6;
++
++    MockUSDC internal usdc;
++    TipJar internal jar;
++
++    address internal owner = makeAddr("owner");
++    address internal alice = makeAddr("alice");
++    address internal bob = makeAddr("bob");
++
++    event TipReceived(address indexed sender, uint256 amount, string message, uint256 index);
++    event Withdrawn(address indexed to, uint256 amount);
++
++    function setUp() public {
++        usdc = new MockUSDC();
++        jar = new TipJar(IERC20(address(usdc)), MIN_TIP, owner);
++
++        usdc.mint(alice, 1000e6);
++        usdc.mint(bob, 1000e6);
++        vm.prank(alice);
++        usdc.approve(address(jar), type(uint256).max);
++        vm.prank(bob);
++        usdc.approve(address(jar), type(uint256).max);
++    }
++
++    function test_TipMovesTokensAndRecordsFeed() public {
++        vm.expectEmit(true, false, false, true, address(jar));
++        emit TipReceived(alice, 5e6, "gm", 0);
++
++        vm.prank(alice);
++        jar.tip(5e6, "gm");
++
++        assertEq(usdc.balanceOf(address(jar)), 5e6);
++        assertEq(usdc.balanceOf(alice), 995e6);
++        assertEq(jar.totalTipped(), 5e6);
++        assertEq(jar.totalTippedBy(alice), 5e6);
++        assertEq(jar.tipCount(), 1);
++
++        TipJar.Tip[] memory tips = jar.getTips(0, 10);
++        assertEq(tips.length, 1);
++        assertEq(tips[0].sender, alice);
++        assertEq(tips[0].amount, 5e6);
++        assertEq(tips[0].message, "gm");
++        assertEq(tips[0].timestamp, uint64(block.timestamp));
++    }
++
++    function test_RecentTipsAreNewestFirstAndCapped() public {
++        vm.prank(alice);
++        jar.tip(1e6, "first");
++        vm.prank(bob);
++        jar.tip(2e6, "second");
++        vm.prank(alice);
++        jar.tip(3e6, "third");
++
++        TipJar.Tip[] memory recent = jar.getTips(0, 2);
++        assertEq(recent.length, 2);
++        assertEq(recent[0].message, "third");
++        assertEq(recent[1].message, "second");
++
++        // Asking for more than exists returns everything, without reverting.
++        assertEq(jar.getTips(0, 100).length, 3);
++        assertEq(jar.totalTipped(), 6e6);
++        assertEq(jar.totalTippedBy(alice), 4e6);
++    }
++
++    function test_RevertWhen_TipIsBelowMinimum() public {
++        vm.startPrank(alice);
++        vm.expectRevert(abi.encodeWithSelector(TipJar.TipTooSmall.selector, 0, MIN_TIP));
++        jar.tip(0, "free");
++
++        vm.expectRevert(abi.encodeWithSelector(TipJar.TipTooSmall.selector, 1, MIN_TIP));
++        jar.tip(1, "dust");
++        vm.stopPrank();
++
++        // Exactly the minimum is fine.
++        vm.prank(alice);
++        jar.tip(MIN_TIP, "smallest allowed");
++        assertEq(jar.tipCount(), 1);
++    }
++
++    function test_PagesThroughOlderTips() public {
++        for (uint256 i = 0; i < 5; i++) {
++            vm.prank(alice);
++            jar.tip(1e6 + i, string.concat("tip ", vm.toString(i)));
++        }
++
++        TipJar.Tip[] memory secondPage = jar.getTips(2, 2);
++        assertEq(secondPage.length, 2);
++        assertEq(secondPage[0].message, "tip 2");
++        assertEq(secondPage[1].message, "tip 1");
++
++        // A page starting past the end is empty, not a revert.
++        assertEq(jar.getTips(5, 10).length, 0);
++        assertEq(jar.getTips(4, 10).length, 1);
++    }
++
++    function test_OwnershipTransferIsTwoStep() public {
++        vm.prank(owner);
++        jar.transferOwnership(alice);
++        assertEq(jar.owner(), owner, "owner changes only on acceptance");
++
++        vm.prank(alice);
++        jar.acceptOwnership();
++        assertEq(jar.owner(), alice);
++    }
++
++    function test_RevertWhen_RenouncingOwnership() public {
++        vm.prank(owner);
++        vm.expectRevert(TipJar.OwnershipCannotBeRenounced.selector);
++        jar.renounceOwnership();
++    }
++
++    function test_RevertWhen_MessageTooLong() public {
++        string memory long = new string(141);
++        vm.prank(alice);
++        vm.expectRevert(abi.encodeWithSelector(TipJar.MessageTooLong.selector, 141));
++        jar.tip(1e6, long);
++    }
++
++    function test_RevertWhen_TipperDidNotApprove() public {
++        address carol = makeAddr("carol");
++        usdc.mint(carol, 10e6);
++
++        vm.prank(carol);
++        vm.expectRevert(abi.encodeWithSelector(IERC20Errors.ERC20InsufficientAllowance.selector, address(jar), 0, 1e6));
++        jar.tip(1e6, "no approval");
++    }
++
++    function test_OwnerWithdrawsEverything() public {
++        vm.prank(alice);
++        jar.tip(7e6, "thanks");
++
++        vm.expectEmit(true, false, false, true, address(jar));
++        emit Withdrawn(bob, 7e6);
++
++        vm.prank(owner);
++        jar.withdraw(bob);
++
++        assertEq(usdc.balanceOf(address(jar)), 0);
++        assertEq(usdc.balanceOf(bob), 1007e6);
++        // The feed is history, not a balance: it survives the withdrawal.
++        assertEq(jar.tipCount(), 1);
++        assertEq(jar.totalTipped(), 7e6);
++    }
++
++    function test_RevertWhen_NonOwnerWithdraws() public {
++        vm.prank(alice);
++        jar.tip(1e6, "hi");
++
++        vm.prank(alice);
++        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice));
++        jar.withdraw(alice);
++    }
++
++    function test_RevertWhen_WithdrawingEmptyJar() public {
++        vm.prank(owner);
++        vm.expectRevert(TipJar.NothingToWithdraw.selector);
++        jar.withdraw(owner);
++    }
++
++    function test_RevertWhen_WithdrawingToZeroAddress() public {
++        vm.prank(alice);
++        jar.tip(1e6, "hi");
++
++        vm.prank(owner);
++        vm.expectRevert(TipJar.InvalidRecipient.selector);
++        jar.withdraw(address(0));
++    }
++
++    function testFuzz_TipAccumulates(uint96 first, uint96 second) public {
++        vm.assume(first >= MIN_TIP && second >= MIN_TIP);
++        uint256 total = uint256(first) + second;
++        usdc.mint(alice, total);
++
++        vm.startPrank(alice);
++        jar.tip(first, "a");
++        jar.tip(second, "b");
++        vm.stopPrank();
++
++        assertEq(usdc.balanceOf(address(jar)), total);
++        assertEq(jar.totalTippedBy(alice), total);
++    }
++}
+diff --git a/packages/foundry/test/TipJarFork.t.sol b/packages/foundry/test/TipJarFork.t.sol
+new file mode 100644
+index 0000000..b0248df
+--- /dev/null
++++ b/packages/foundry/test/TipJarFork.t.sol
+@@ -0,0 +1,77 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.19;
++
++import { Test, console } from "forge-std/Test.sol";
++import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
++import { IERC20Metadata } from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
++import { TipJar } from "../contracts/TipJar.sol";
++import { DeployTipJar } from "../script/DeployTipJar.s.sol";
++
++/**
++ * @notice Exercises the jar against the real Base USDC contract, the same way the local demo does:
++ *         fund a test identity from an existing holder, approve, tip.
++ * @dev Skips itself when the Base RPC is unreachable, so `yarn test` stays green offline.
++ */
++contract TipJarForkTest is Test {
++    IERC20Metadata internal constant USDC = IERC20Metadata(0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913);
++    /// @dev Aave v3 Base aUSDC holds the pool's USDC. Any large holder works.
++    address internal constant WHALE = 0x4e65fE4DbA92790696d040ac24Aa414708F5c0AB;
++    uint256 internal constant FUNDING = 100e6;
++
++    TipJar internal jar;
++    address internal owner = makeAddr("owner");
++    address internal tipper = makeAddr("tipper");
++    bool internal forked;
++
++    function setUp() public {
++        try vm.createFork("base") returns (uint256 forkId) {
++            vm.selectFork(forkId);
++        } catch {
++            console.log("Fork tests skipped: the Base RPC is unreachable.");
++            return;
++        }
++
++        // The whale is live state and can move. Skip loudly instead of failing the suite on it.
++        if (USDC.balanceOf(WHALE) < FUNDING) {
++            console.log("Fork tests skipped: whale no longer holds enough USDC. Pick another holder.");
++            return;
++        }
++
++        jar = new TipJar(USDC, 0.01e6, owner);
++
++        vm.prank(WHALE);
++        USDC.transfer(tipper, FUNDING);
++        forked = true;
++    }
++
++    function test_TipRealUsdcOnBaseFork() public {
++        if (!forked) return vm.skip(true);
++
++        assertEq(USDC.symbol(), "USDC");
++        assertEq(USDC.decimals(), 6);
++        assertEq(USDC.balanceOf(tipper), FUNDING);
++
++        vm.startPrank(tipper);
++        USDC.approve(address(jar), 25e6);
++        jar.tip(25e6, "real USDC, fake money");
++        vm.stopPrank();
++
++        assertEq(USDC.balanceOf(address(jar)), 25e6);
++        assertEq(USDC.balanceOf(tipper), 75e6);
++
++        TipJar.Tip[] memory tips = jar.getTips(0, 1);
++        assertEq(tips[0].sender, tipper);
++        assertEq(tips[0].amount, 25e6);
++
++        vm.prank(owner);
++        jar.withdraw(owner);
++        assertEq(USDC.balanceOf(owner), 25e6);
++    }
++
++    function test_DeployScriptPicksRealUsdc() public {
++        if (!forked) return vm.skip(true);
++
++        assertEq(address(USDC), new DeployTipJar().BASE_USDC());
++        assertGt(address(USDC).code.length, 0);
++    }
++}
+diff --git a/packages/foundry/test/YourContract.t.sol b/packages/foundry/test/YourContract.t.sol
+deleted file mode 100644
+index 68e6c99..0000000
+--- a/packages/foundry/test/YourContract.t.sol
++++ /dev/null
+@@ -1,20 +0,0 @@
+-// SPDX-License-Identifier: UNLICENSED
+-pragma solidity ^0.8.13;
+-
+-import "forge-std/Test.sol";
+-import "../contracts/YourContract.sol";
+-
+-contract YourContractTest is Test {
+-  YourContract public yourContract;
+-
+-  function setUp() public {
+-    yourContract = new YourContract(vm.addr(1));
+-  }
+-
+-  function testMessageOnDeployment() public view {
+-    require(
+-      keccak256(bytes(yourContract.greeting()))
+-        == keccak256("Building Unstoppable Apps!!!")
+-    );
+-  }
+-}
+diff --git a/packages/nextjs/app/_components/TipFeed.tsx b/packages/nextjs/app/_components/TipFeed.tsx
+new file mode 100644
+index 0000000..c0b6c58
+--- /dev/null
++++ b/packages/nextjs/app/_components/TipFeed.tsx
+@@ -0,0 +1,66 @@
++"use client";
++
++import { useEffect, useState } from "react";
++import { Address } from "@scaffold-ui/components";
++import { useScaffoldReadContract, useTargetNetwork } from "~~/hooks/scaffold-eth";
++import { formatRelativeTime, formatUsdc } from "~~/utils/usdc";
++
++const FEED_SIZE = 25n;
++
++export const TipFeed = () => {
++  const { targetNetwork } = useTargetNetwork();
++  const [now, setNow] = useState(() => Date.now());
++
++  useEffect(() => {
++    const interval = setInterval(() => setNow(Date.now()), 10_000);
++    return () => clearInterval(interval);
++  }, []);
++
++  const {
++    data: tips,
++    isLoading,
++    isError,
++  } = useScaffoldReadContract({
++    contractName: "TipJar",
++    functionName: "getTips",
++    args: [0n, FEED_SIZE],
++  });
++
++  return (
++    <div className="card bg-base-100 shadow-xl w-full">
++      <div className="card-body gap-4">
++        <h2 className="card-title">Recent tips</h2>
++
++        {isError ? (
++          <div className="alert alert-error">
++            <span>Could not reach the jar. Is your local chain still running?</span>
++          </div>
++        ) : isLoading && !tips ? (
++          <div className="flex flex-col gap-3">
++            {[0, 1, 2].map(row => (
++              <div key={row} className="skeleton h-16 w-full" />
++            ))}
++          </div>
++        ) : tips?.length ? (
++          <ul className="flex flex-col gap-3">
++            {tips.map((tip, index) => (
++              <li
++                key={`${tip.sender}-${tip.timestamp}-${index}`}
++                className="flex flex-col gap-2 rounded-box bg-base-200 p-4"
++              >
++                <div className="flex items-center justify-between gap-2 flex-wrap">
++                  <Address address={tip.sender} chain={targetNetwork} size="sm" />
++                  <span className="badge badge-primary badge-lg font-bold">${formatUsdc(tip.amount)}</span>
++                </div>
++                {tip.message && <p className="m-0 break-words">{tip.message}</p>}
++                <span className="text-xs opacity-60">{formatRelativeTime(tip.timestamp, now)}</span>
++              </li>
++            ))}
++          </ul>
++        ) : (
++          <p className="m-0 opacity-70">No tips yet. Be the first one.</p>
++        )}
++      </div>
++    </div>
++  );
++};
+diff --git a/packages/nextjs/app/_components/TipForm.tsx b/packages/nextjs/app/_components/TipForm.tsx
+new file mode 100644
+index 0000000..9a4d326
+--- /dev/null
++++ b/packages/nextjs/app/_components/TipForm.tsx
+@@ -0,0 +1,165 @@
++"use client";
++
++import { useMemo, useState } from "react";
++import { BaseInput } from "@scaffold-ui/components";
++import { parseUnits } from "viem";
++import { useAccount } from "wagmi";
++import { USDC_DECIMALS } from "~~/contracts/externalContracts";
++import { useDeployedContractInfo, useScaffoldReadContract, useScaffoldWriteContract } from "~~/hooks/scaffold-eth";
++import { notification } from "~~/utils/scaffold-eth";
++import { formatUsdc, messageByteLength } from "~~/utils/usdc";
++
++const QUICK_AMOUNTS = ["1", "5", "25"];
++
++export const TipForm = () => {
++  const [amount, setAmount] = useState("");
++  const [message, setMessage] = useState("");
++
++  const { address: connectedAddress } = useAccount();
++  const { data: tipJar } = useDeployedContractInfo({ contractName: "TipJar" });
++
++  const { data: maxMessageLength } = useScaffoldReadContract({
++    contractName: "TipJar",
++    functionName: "MAX_MESSAGE_LENGTH",
++  });
++  const { data: minTipAmount } = useScaffoldReadContract({ contractName: "TipJar", functionName: "minTipAmount" });
++  const { data: balance } = useScaffoldReadContract({
++    contractName: "USDC",
++    functionName: "balanceOf",
++    args: [connectedAddress],
++  });
++  const { data: allowance } = useScaffoldReadContract({
++    contractName: "USDC",
++    functionName: "allowance",
++    args: [connectedAddress, tipJar?.address],
++  });
++
++  const { writeContractAsync: writeUsdc, isMining: isApproving } = useScaffoldWriteContract({ contractName: "USDC" });
++  const { writeContractAsync: writeTipJar, isMining: isTipping } = useScaffoldWriteContract({
++    contractName: "TipJar",
++  });
++
++  const parsedAmount = useMemo(() => {
++    if (!amount) return undefined;
++    try {
++      const parsed = parseUnits(amount, USDC_DECIMALS);
++      return parsed > 0n ? parsed : undefined;
++    } catch {
++      return undefined;
++    }
++  }, [amount]);
++
++  const messageBytes = messageByteLength(message);
++  const messageLimit = Number(maxMessageLength ?? 140n);
++  const isMessageTooLong = messageBytes > messageLimit;
++  // An undefined allowance means the read has not landed yet, not that no approval is needed.
++  const isAllowanceLoading = Boolean(connectedAddress) && Boolean(tipJar) && allowance === undefined;
++  const needsApproval = parsedAmount !== undefined && allowance !== undefined && allowance < parsedAmount;
++  const isBusy = isApproving || isTipping;
++
++  const sendTip = async () => {
++    if (!parsedAmount) {
++      return notification.error("Enter a tip amount above 0");
++    }
++    if (minTipAmount !== undefined && parsedAmount < minTipAmount) {
++      return notification.error(`The smallest tip this jar accepts is ${formatUsdc(minTipAmount)} USDC`);
++    }
++    if (balance !== undefined && parsedAmount > balance) {
++      return notification.error(`You only have ${formatUsdc(balance)} USDC`);
++    }
++    if (isMessageTooLong) {
++      return notification.error(`Your message is ${messageBytes} bytes; the limit is ${messageLimit}`);
++    }
++    if (!tipJar) {
++      return notification.error("TipJar is not deployed on this network. Did you run `yarn deploy`?");
++    }
++
++    try {
++      if (needsApproval) {
++        await writeUsdc({ functionName: "approve", args: [tipJar.address, parsedAmount] });
++      }
++      await writeTipJar({ functionName: "tip", args: [parsedAmount, message] });
++      setAmount("");
++      setMessage("");
++    } catch (error) {
++      // useScaffoldWriteContract already surfaces the reason as a notification.
++      console.error("Tip failed:", error);
++    }
++  };
++
++  return (
++    <div className="card bg-base-100 shadow-xl w-full">
++      <div className="card-body gap-4">
++        <div className="flex items-baseline justify-between gap-2 flex-wrap">
++          <h2 className="card-title m-0">Send a tip</h2>
++          {connectedAddress && (
++            <span className="text-sm opacity-70">
++              Balance: {balance === undefined ? "…" : `${formatUsdc(balance)} USDC`}
++            </span>
++          )}
++        </div>
++
++        <div className="flex flex-col gap-2">
++          <BaseInput
++            name="amount"
++            value={amount}
++            onChange={setAmount}
++            placeholder="0.00"
++            prefix={<span className="pl-4 text-accent self-center">$</span>}
++            suffix={<span className="pr-4 self-center opacity-60">USDC</span>}
++            error={amount !== "" && parsedAmount === undefined}
++            disabled={isBusy}
++          />
++          <div className="flex gap-2 items-center">
++            {QUICK_AMOUNTS.map(quickAmount => (
++              <button
++                key={quickAmount}
++                type="button"
++                className="btn btn-xs btn-outline"
++                onClick={() => setAmount(quickAmount)}
++                disabled={isBusy}
++              >
++                ${quickAmount}
++              </button>
++            ))}
++            {minTipAmount !== undefined && <span className="text-xs opacity-60">min ${formatUsdc(minTipAmount)}</span>}
++          </div>
++        </div>
++
++        <div className="flex flex-col gap-1">
++          <textarea
++            className={`textarea textarea-bordered w-full ${isMessageTooLong ? "textarea-error" : ""}`}
++            placeholder="Say something nice (optional)"
++            value={message}
++            onChange={event => setMessage(event.target.value)}
++            disabled={isBusy}
++          />
++          <span className={`text-xs self-end ${isMessageTooLong ? "text-error" : "opacity-60"}`}>
++            {messageBytes}/{messageLimit} bytes
++          </span>
++        </div>
++
++        <button
++          className="btn btn-primary"
++          onClick={sendTip}
++          disabled={!connectedAddress || isBusy || isAllowanceLoading || isMessageTooLong}
++        >
++          {isBusy && <span className="loading loading-spinner loading-sm" />}
++          {!connectedAddress
++            ? "Connect a wallet to tip"
++            : isApproving
++              ? "Approving USDC…"
++              : isTipping
++                ? "Sending tip…"
++                : needsApproval
++                  ? "Approve & send tip"
++                  : "Send tip"}
++        </button>
++
++        <p className="m-0 text-xs opacity-60">
++          Each tip spends its USDC approval exactly, so sending one is always two transactions: approve, then tip.
++        </p>
++      </div>
++    </div>
++  );
++};
+diff --git a/packages/nextjs/app/layout.tsx b/packages/nextjs/app/layout.tsx
+index 4532506..03bee32 100644
+--- a/packages/nextjs/app/layout.tsx
++++ b/packages/nextjs/app/layout.tsx
+@@ -8,8 +8,8 @@ import { getMetadata } from "~~/utils/scaffold-eth/getMetadata";
+ 
+ 
+ export const metadata = getMetadata({
+-  title: 'Scaffold-ETH 2 App',
+-  description: 'Built with 🏗 Scaffold-ETH 2'
++  title: 'USDC Tip Jar',
++  description: 'Tip in USDC on Base'
+ });
+ 
+ const ScaffoldEthApp = ({ children }: { children: React.ReactNode }) => {
+diff --git a/packages/nextjs/app/page.tsx b/packages/nextjs/app/page.tsx
+index 05a7d29..b2ad6d3 100644
+--- a/packages/nextjs/app/page.tsx
++++ b/packages/nextjs/app/page.tsx
+@@ -1,77 +1,57 @@
+-
+ "use client";
+ 
+-import { useAccount } from "wagmi";
++import { TipFeed } from "./_components/TipFeed";
++import { TipForm } from "./_components/TipForm";
+ import { Address } from "@scaffold-ui/components";
+ import type { NextPage } from "next";
+-import Link from "next/link";
+-import { BugAntIcon, MagnifyingGlassIcon } from "@heroicons/react/24/outline";
+-import { useTargetNetwork } from "~~/hooks/scaffold-eth";
+-
++import { useDeployedContractInfo, useScaffoldReadContract, useTargetNetwork } from "~~/hooks/scaffold-eth";
++import { formatUsdc } from "~~/utils/usdc";
+ 
+ const Home: NextPage = () => {
+-  const { address: connectedAddress } = useAccount();
+   const { targetNetwork } = useTargetNetwork();
++  const { data: tipJar } = useDeployedContractInfo({ contractName: "TipJar" });
++
++  const { data: jarBalance } = useScaffoldReadContract({
++    contractName: "USDC",
++    functionName: "balanceOf",
++    args: [tipJar?.address],
++  });
++  const { data: totalTipped } = useScaffoldReadContract({ contractName: "TipJar", functionName: "totalTipped" });
++  const { data: tipCount } = useScaffoldReadContract({ contractName: "TipJar", functionName: "tipCount" });
+ 
+   return (
+-    <>
+-      <div className="flex items-center flex-col grow pt-10">
+-        <div className="px-5">
+-          <h1 className="text-center">
+-            <span className="block text-2xl mb-2">Welcome to</span>
+-            <span className="block text-4xl font-bold">Scaffold-ETH 2</span>
+-            
+-          </h1>
+-          <div className="flex justify-center items-center space-x-2 flex-col">
+-            <p className="my-2 font-medium">Connected Address:</p>
+-            <Address address={connectedAddress} chain={targetNetwork} />
++    <div className="flex flex-col grow items-center px-5 py-10 gap-8">
++      <div className="text-center max-w-2xl">
++        <h1 className="text-4xl font-bold mb-2">USDC Tip Jar</h1>
++        <p className="text-lg m-0">Tips are paid in USDC on Base and land in the feed as soon as they confirm.</p>
++        {tipJar && (
++          <div className="flex justify-center items-center gap-2 mt-3 text-sm">
++            <span className="opacity-70">Jar:</span>
++            <Address address={tipJar.address} chain={targetNetwork} size="sm" />
+           </div>
+-          
+-<p className="text-center text-lg">
+-  Get started by editing{" "}
+-  <code className="italic bg-base-300 text-base font-bold max-w-full break-words break-all inline-block">
+-    packages/nextjs/app/page.tsx
+-  </code>
+-</p>
+-<p className="text-center text-lg">
+-  Edit your smart contract{" "}
+-  <code className="italic bg-base-300 text-base font-bold max-w-full break-words break-all inline-block">
+-    YourContract.sol
+-  </code>{" "}
+-  in{" "}
+-  <code className="italic bg-base-300 text-base font-bold max-w-full break-words break-all inline-block">
+-    packages/hardhat/contracts
+-  </code>
+-</p>
+-
+-        </div>
++        )}
++      </div>
+ 
+-        <div className="grow bg-base-300 w-full mt-16 px-8 py-12">
+-          <div className="flex justify-center items-center gap-12 flex-col md:flex-row">
+-            <div className="flex flex-col bg-base-100 border border-base-300 px-10 py-10 text-center items-center max-w-xs">
+-              <BugAntIcon className="h-8 w-8" />
+-              <p>
+-                Tinker with your smart contract using the{" "}
+-                <Link href="/debug" passHref className="link">
+-                  Debug Contracts
+-                </Link>{" "}
+-                tab.
+-              </p>
+-            </div>
+-            <div className="flex flex-col bg-base-100 border border-base-300 px-10 py-10 text-center items-center max-w-xs">
+-              <MagnifyingGlassIcon className="h-8 w-8" />
+-              <p>
+-                Explore your local transactions with the{" "}
+-                <Link href="/blockexplorer" passHref className="link">
+-                  Block Explorer
+-                </Link>{" "}
+-                tab.
+-              </p>
+-            </div>
++      <div className="stats stats-vertical sm:stats-horizontal shadow bg-base-100">
++        <div className="stat place-items-center">
++          <div className="stat-title">In the jar</div>
++          <div className="stat-value text-primary text-3xl">
++            ${jarBalance === undefined ? "—" : formatUsdc(jarBalance)}
+           </div>
++          <div className="stat-desc">USDC held right now</div>
++        </div>
++        <div className="stat place-items-center">
++          <div className="stat-title">Tipped all time</div>
++          <div className="stat-value text-3xl">${totalTipped === undefined ? "—" : formatUsdc(totalTipped)}</div>
++          <div className="stat-desc">Across {tipCount === undefined ? "—" : tipCount.toString()} tips</div>
+         </div>
+       </div>
+-    </>
++
++      <div className="grid w-full max-w-5xl gap-8 lg:grid-cols-2 items-start">
++        <TipForm />
++        <TipFeed />
++      </div>
++    </div>
+   );
+ };
+ 
+diff --git a/packages/nextjs/components/Header.tsx b/packages/nextjs/components/Header.tsx
+index bc63eb4..c0ed80e 100644
+--- a/packages/nextjs/components/Header.tsx
++++ b/packages/nextjs/components/Header.tsx
+@@ -19,7 +19,7 @@ type HeaderMenuLink = {
+ 
+ export const menuLinks: HeaderMenuLink[] = [
+   {
+-    label: 'Home',
++    label: 'Tip Jar',
+     href: '/'
+   },
+   {
+diff --git a/packages/nextjs/contracts/deployedContracts.ts b/packages/nextjs/contracts/deployedContracts.ts
+index 008d4eb..5276eaa 100644
+--- a/packages/nextjs/contracts/deployedContracts.ts
++++ b/packages/nextjs/contracts/deployedContracts.ts
+@@ -4,6 +4,430 @@
+  */
+ import { GenericContractsDeclaration } from "~~/utils/scaffold-eth/contract";
+ 
+-const deployedContracts = {} as const;
++const deployedContracts = {
++  31337: {
++    TipJar: {
++      address: "0xf9be26ad5ab7f73fe1307c82b1e945c62c4d2b55",
++      abi: [
++        {
++          type: "constructor",
++          inputs: [
++            {
++              name: "_token",
++              type: "address",
++              internalType: "contract IERC20",
++            },
++            {
++              name: "_minTipAmount",
++              type: "uint256",
++              internalType: "uint256",
++            },
++            {
++              name: "initialOwner",
++              type: "address",
++              internalType: "address",
++            },
++          ],
++          stateMutability: "nonpayable",
++        },
++        {
++          type: "function",
++          name: "MAX_MESSAGE_LENGTH",
++          inputs: [],
++          outputs: [
++            {
++              name: "",
++              type: "uint256",
++              internalType: "uint256",
++            },
++          ],
++          stateMutability: "view",
++        },
++        {
++          type: "function",
++          name: "acceptOwnership",
++          inputs: [],
++          outputs: [],
++          stateMutability: "nonpayable",
++        },
++        {
++          type: "function",
++          name: "getTips",
++          inputs: [
++            {
++              name: "offset",
++              type: "uint256",
++              internalType: "uint256",
++            },
++            {
++              name: "limit",
++              type: "uint256",
++              internalType: "uint256",
++            },
++          ],
++          outputs: [
++            {
++              name: "page",
++              type: "tuple[]",
++              internalType: "struct TipJar.Tip[]",
++              components: [
++                {
++                  name: "sender",
++                  type: "address",
++                  internalType: "address",
++                },
++                {
++                  name: "timestamp",
++                  type: "uint64",
++                  internalType: "uint64",
++                },
++                {
++                  name: "amount",
++                  type: "uint128",
++                  internalType: "uint128",
++                },
++                {
++                  name: "message",
++                  type: "string",
++                  internalType: "string",
++                },
++              ],
++            },
++          ],
++          stateMutability: "view",
++        },
++        {
++          type: "function",
++          name: "minTipAmount",
++          inputs: [],
++          outputs: [
++            {
++              name: "",
++              type: "uint256",
++              internalType: "uint256",
++            },
++          ],
++          stateMutability: "view",
++        },
++        {
++          type: "function",
++          name: "owner",
++          inputs: [],
++          outputs: [
++            {
++              name: "",
++              type: "address",
++              internalType: "address",
++            },
++          ],
++          stateMutability: "view",
++        },
++        {
++          type: "function",
++          name: "pendingOwner",
++          inputs: [],
++          outputs: [
++            {
++              name: "",
++              type: "address",
++              internalType: "address",
++            },
++          ],
++          stateMutability: "view",
++        },
++        {
++          type: "function",
++          name: "renounceOwnership",
++          inputs: [],
++          outputs: [],
++          stateMutability: "view",
++        },
++        {
++          type: "function",
++          name: "tip",
++          inputs: [
++            {
++              name: "amount",
++              type: "uint256",
++              internalType: "uint256",
++            },
++            {
++              name: "message",
++              type: "string",
++              internalType: "string",
++            },
++          ],
++          outputs: [],
++          stateMutability: "nonpayable",
++        },
++        {
++          type: "function",
++          name: "tipCount",
++          inputs: [],
++          outputs: [
++            {
++              name: "",
++              type: "uint256",
++              internalType: "uint256",
++            },
++          ],
++          stateMutability: "view",
++        },
++        {
++          type: "function",
++          name: "token",
++          inputs: [],
++          outputs: [
++            {
++              name: "",
++              type: "address",
++              internalType: "contract IERC20",
++            },
++          ],
++          stateMutability: "view",
++        },
++        {
++          type: "function",
++          name: "totalTipped",
++          inputs: [],
++          outputs: [
++            {
++              name: "",
++              type: "uint256",
++              internalType: "uint256",
++            },
++          ],
++          stateMutability: "view",
++        },
++        {
++          type: "function",
++          name: "totalTippedBy",
++          inputs: [
++            {
++              name: "sender",
++              type: "address",
++              internalType: "address",
++            },
++          ],
++          outputs: [
++            {
++              name: "total",
++              type: "uint256",
++              internalType: "uint256",
++            },
++          ],
++          stateMutability: "view",
++        },
++        {
++          type: "function",
++          name: "transferOwnership",
++          inputs: [
++            {
++              name: "newOwner",
++              type: "address",
++              internalType: "address",
++            },
++          ],
++          outputs: [],
++          stateMutability: "nonpayable",
++        },
++        {
++          type: "function",
++          name: "withdraw",
++          inputs: [
++            {
++              name: "to",
++              type: "address",
++              internalType: "address",
++            },
++          ],
++          outputs: [],
++          stateMutability: "nonpayable",
++        },
++        {
++          type: "event",
++          name: "OwnershipTransferStarted",
++          inputs: [
++            {
++              name: "previousOwner",
++              type: "address",
++              indexed: true,
++              internalType: "address",
++            },
++            {
++              name: "newOwner",
++              type: "address",
++              indexed: true,
++              internalType: "address",
++            },
++          ],
++          anonymous: false,
++        },
++        {
++          type: "event",
++          name: "OwnershipTransferred",
++          inputs: [
++            {
++              name: "previousOwner",
++              type: "address",
++              indexed: true,
++              internalType: "address",
++            },
++            {
++              name: "newOwner",
++              type: "address",
++              indexed: true,
++              internalType: "address",
++            },
++          ],
++          anonymous: false,
++        },
++        {
++          type: "event",
++          name: "TipReceived",
++          inputs: [
++            {
++              name: "sender",
++              type: "address",
++              indexed: true,
++              internalType: "address",
++            },
++            {
++              name: "amount",
++              type: "uint256",
++              indexed: false,
++              internalType: "uint256",
++            },
++            {
++              name: "message",
++              type: "string",
++              indexed: false,
++              internalType: "string",
++            },
++            {
++              name: "index",
++              type: "uint256",
++              indexed: false,
++              internalType: "uint256",
++            },
++          ],
++          anonymous: false,
++        },
++        {
++          type: "event",
++          name: "Withdrawn",
++          inputs: [
++            {
++              name: "to",
++              type: "address",
++              indexed: true,
++              internalType: "address",
++            },
++            {
++              name: "amount",
++              type: "uint256",
++              indexed: false,
++              internalType: "uint256",
++            },
++          ],
++          anonymous: false,
++        },
++        {
++          type: "error",
++          name: "InvalidRecipient",
++          inputs: [],
++        },
++        {
++          type: "error",
++          name: "MessageTooLong",
++          inputs: [
++            {
++              name: "length",
++              type: "uint256",
++              internalType: "uint256",
++            },
++          ],
++        },
++        {
++          type: "error",
++          name: "NothingToWithdraw",
++          inputs: [],
++        },
++        {
++          type: "error",
++          name: "OwnableInvalidOwner",
++          inputs: [
++            {
++              name: "owner",
++              type: "address",
++              internalType: "address",
++            },
++          ],
++        },
++        {
++          type: "error",
++          name: "OwnableUnauthorizedAccount",
++          inputs: [
++            {
++              name: "account",
++              type: "address",
++              internalType: "address",
++            },
++          ],
++        },
++        {
++          type: "error",
++          name: "OwnershipCannotBeRenounced",
++          inputs: [],
++        },
++        {
++          type: "error",
++          name: "SafeCastOverflowedUintDowncast",
++          inputs: [
++            {
++              name: "bits",
++              type: "uint8",
++              internalType: "uint8",
++            },
++            {
++              name: "value",
++              type: "uint256",
++              internalType: "uint256",
++            },
++          ],
++        },
++        {
++          type: "error",
++          name: "SafeERC20FailedOperation",
++          inputs: [
++            {
++              name: "token",
++              type: "address",
++              internalType: "address",
++            },
++          ],
++        },
++        {
++          type: "error",
++          name: "TipTooSmall",
++          inputs: [
++            {
++              name: "amount",
++              type: "uint256",
++              internalType: "uint256",
++            },
++            {
++              name: "minimum",
++              type: "uint256",
++              internalType: "uint256",
++            },
++          ],
++        },
++      ],
++      inheritedFunctions: {},
++      deployedOnBlock: 50895473,
++    },
++  },
++} as const;
+ 
+ export default deployedContracts satisfies GenericContractsDeclaration;
+diff --git a/packages/nextjs/contracts/externalContracts.ts b/packages/nextjs/contracts/externalContracts.ts
+index ab6daa8..9b98397 100644
+--- a/packages/nextjs/contracts/externalContracts.ts
++++ b/packages/nextjs/contracts/externalContracts.ts
+@@ -1,16 +1,90 @@
+ import { GenericContractsDeclaration } from "~~/utils/scaffold-eth/contract";
+ 
+ /**
+- * @example
+- * const externalContracts = {
+- *   1: {
+- *     DAI: {
+- *       address: "0x...",
+- *       abi: [...],
+- *     },
+- *   },
+- * } as const;
++ * Canonical USDC on Base. The same address is used for chain 31337 because the local chain is an
++ * Anvil fork of Base (`yarn fork`), so the real token contract is there with its real state.
+  */
+-const externalContracts = {} as const;
++export const USDC_ADDRESS = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
++
++export const USDC_DECIMALS = 6;
++
++const usdcAbi = [
++  {
++    type: "function",
++    name: "allowance",
++    stateMutability: "view",
++    inputs: [
++      { name: "owner", type: "address" },
++      { name: "spender", type: "address" },
++    ],
++    outputs: [{ name: "", type: "uint256" }],
++  },
++  {
++    type: "function",
++    name: "approve",
++    stateMutability: "nonpayable",
++    inputs: [
++      { name: "spender", type: "address" },
++      { name: "value", type: "uint256" },
++    ],
++    outputs: [{ name: "", type: "bool" }],
++  },
++  {
++    type: "function",
++    name: "balanceOf",
++    stateMutability: "view",
++    inputs: [{ name: "account", type: "address" }],
++    outputs: [{ name: "", type: "uint256" }],
++  },
++  {
++    type: "function",
++    name: "decimals",
++    stateMutability: "view",
++    inputs: [],
++    outputs: [{ name: "", type: "uint8" }],
++  },
++  {
++    type: "function",
++    name: "symbol",
++    stateMutability: "view",
++    inputs: [],
++    outputs: [{ name: "", type: "string" }],
++  },
++  {
++    type: "event",
++    name: "Approval",
++    inputs: [
++      { name: "owner", type: "address", indexed: true },
++      { name: "spender", type: "address", indexed: true },
++      { name: "value", type: "uint256", indexed: false },
++    ],
++    anonymous: false,
++  },
++  {
++    type: "event",
++    name: "Transfer",
++    inputs: [
++      { name: "from", type: "address", indexed: true },
++      { name: "to", type: "address", indexed: true },
++      { name: "value", type: "uint256", indexed: false },
++    ],
++    anonymous: false,
++  },
++] as const;
++
++const externalContracts = {
++  31337: {
++    USDC: {
++      address: USDC_ADDRESS,
++      abi: usdcAbi,
++    },
++  },
++  8453: {
++    USDC: {
++      address: USDC_ADDRESS,
++      abi: usdcAbi,
++    },
++  },
++} as const;
+ 
+ export default externalContracts satisfies GenericContractsDeclaration;
+diff --git a/packages/nextjs/package.json b/packages/nextjs/package.json
+index c36d6a0..42794d3 100644
+--- a/packages/nextjs/package.json
++++ b/packages/nextjs/package.json
+@@ -3,14 +3,15 @@
+   "version": "0.1.0",
+   "private": true,
+   "scripts": {
+-    "build": "yarn lint && next build",
++    "build": "yarn lint && NODE_OPTIONS=\"--no-experimental-webstorage\" next build",
++    "build:ipfs": "rm -rf .next out && NEXT_PUBLIC_IPFS_BUILD=true yarn build",
+     "check-types": "tsc --noEmit --incremental",
+-    "dev": "next dev",
++    "dev": "NODE_OPTIONS=\"--no-experimental-webstorage\" next dev",
+     "format": "prettier --write . '!(node_modules|.next)/**/*'",
+-    "ipfs": "NEXT_PUBLIC_IPFS_BUILD=true yarn build && yarn bgipfs upload config init -u https://upload.bgipfs.com && CID=$(yarn bgipfs upload out | grep -o 'CID: [^ ]*' | cut -d' ' -f2) && [ ! -z \"$CID\" ] && echo '🚀 Upload complete! Your site is now available at: https://community.bgipfs.com/ipfs/'$CID || echo '❌ Upload failed'",
++    "ipfs": "yarn build:ipfs && yarn bgipfs upload config init -u https://upload.bgipfs.com && CID=$(yarn bgipfs upload out | grep -o 'CID: [^ ]*' | cut -d' ' -f2) && [ ! -z \"$CID\" ] && echo '\ud83d\ude80 Upload complete! Your site is now available at: https://community.bgipfs.com/ipfs/'$CID || echo '\u274c Upload failed'",
+     "lint": "yarn eslint .",
+-    "serve": "next start",
+-    "start": "next dev",
++    "serve": "NODE_OPTIONS=\"--no-experimental-webstorage\" next start",
++    "start": "NODE_OPTIONS=\"--no-experimental-webstorage\" next dev",
+     "vercel": "vercel --build-env YARN_ENABLE_IMMUTABLE_INSTALLS=false --build-env ENABLE_EXPERIMENTAL_COREPACK=1 --build-env VERCEL_TELEMETRY_DISABLED=1",
+     "vercel:login": "vercel login",
+     "vercel:yolo": "vercel --build-env YARN_ENABLE_IMMUTABLE_INSTALLS=false --build-env ENABLE_EXPERIMENTAL_COREPACK=1 --build-env NEXT_PUBLIC_IGNORE_BUILD_ERROR=true --build-env VERCEL_TELEMETRY_DISABLED=1"
+diff --git a/packages/nextjs/scaffold.config.ts b/packages/nextjs/scaffold.config.ts
+index cc2155a..0f9aa31 100644
+--- a/packages/nextjs/scaffold.config.ts
++++ b/packages/nextjs/scaffold.config.ts
+@@ -16,7 +16,9 @@ export type ScaffoldConfig = BaseConfig ;
+ export const DEFAULT_ALCHEMY_API_KEY = "IZYEU2cWBgnFmgiTAgpWD";
+ 
+ const scaffoldConfig = {
+-  // The networks on which your DApp is live
++  // The networks on which your DApp is live.
++  // chains.foundry (31337) is the local Anvil fork of Base started by `yarn fork`: same USDC
++  // contract and state as Base, no real money. Switch to chains.base for a production build.
+   targetNetworks: [
+     chains.foundry
+   ],
+diff --git a/packages/nextjs/utils/scaffold-eth/getMetadata.ts b/packages/nextjs/utils/scaffold-eth/getMetadata.ts
+index 515ca10..ebd043a 100644
+--- a/packages/nextjs/utils/scaffold-eth/getMetadata.ts
++++ b/packages/nextjs/utils/scaffold-eth/getMetadata.ts
+@@ -2,10 +2,15 @@
+ import type { Metadata } from "next";
+ 
+ 
+-const baseUrl = process.env.VERCEL_PROJECT_PRODUCTION_URL
+-  ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
++// NEXT_PUBLIC_PRODUCTION_URL is what the IPFS build uses: a static export has no request context,
++// so the production origin has to be baked in at build time or Open Graph tags point at localhost.
++const productionUrl = process.env.NEXT_PUBLIC_PRODUCTION_URL || process.env.VERCEL_PROJECT_PRODUCTION_URL;
++const baseUrl = productionUrl
++  ? productionUrl.startsWith("http")
++    ? productionUrl
++    : `https://${productionUrl}`
+   : `http://localhost:${process.env.PORT || 3000}`;
+-const titleTemplate = "%s | Scaffold-ETH 2";
++const titleTemplate = "%s | USDC Tip Jar";
+ 
+ export const getMetadata = ({
+   title,
+@@ -26,6 +31,7 @@ export const getMetadata = ({
+   },
+   description: description,
+   openGraph: {
++    url: baseUrl,
+     title: {
+       default: title,
+       template: titleTemplate
+diff --git a/packages/nextjs/utils/usdc.ts b/packages/nextjs/utils/usdc.ts
+new file mode 100644
+index 0000000..5789474
+--- /dev/null
++++ b/packages/nextjs/utils/usdc.ts
+@@ -0,0 +1,21 @@
++import { formatUnits } from "viem";
++import { USDC_DECIMALS } from "~~/contracts/externalContracts";
++
++/** Two decimals for normal amounts, more for sub-cent ones so dust never renders as "0.00". */
++export const formatUsdc = (amount: bigint) =>
++  Number(formatUnits(amount, USDC_DECIMALS)).toLocaleString("en-US", {
++    minimumFractionDigits: 2,
++    maximumFractionDigits: amount > 0n && amount < 10_000n ? USDC_DECIMALS : 2,
++  });
++
++/** The contract limits messages in bytes, not characters — one emoji costs four. */
++export const messageByteLength = (message: string) => new TextEncoder().encode(message).length;
++
++/** Short "3m ago" style stamp. `now` is passed in so a list of tips shares one clock. */
++export const formatRelativeTime = (timestamp: bigint, now: number) => {
++  const seconds = Math.max(0, Math.floor(now / 1000) - Number(timestamp));
++  if (seconds < 60) return `${seconds}s ago`;
++  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
++  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
++  return `${Math.floor(seconds / 86400)}d ago`;
++};
+
+# Untracked files and status
+ A DEPLOY.md
+ M README.md
+ M package.json
+ M packages/foundry/Makefile
+ A packages/foundry/contracts/TipJar.sol
+D  packages/foundry/contracts/YourContract.sol
+ M packages/foundry/foundry.toml
+ M packages/foundry/package.json
+ M packages/foundry/script/Deploy.s.sol
+ A packages/foundry/script/DeployTipJar.s.sol
+D  packages/foundry/script/DeployYourContract.s.sol
+ A packages/foundry/scripts-js/fundUsdc.js
+ A packages/foundry/test/TipJar.t.sol
+ A packages/foundry/test/TipJarFork.t.sol
+D  packages/foundry/test/YourContract.t.sol
+ A packages/nextjs/app/_components/TipFeed.tsx
+ A packages/nextjs/app/_components/TipForm.tsx
+ M packages/nextjs/app/layout.tsx
+ M packages/nextjs/app/page.tsx
+ M packages/nextjs/components/Header.tsx
+ M packages/nextjs/contracts/deployedContracts.ts
+ M packages/nextjs/contracts/externalContracts.ts
+ M packages/nextjs/package.json
+ M packages/nextjs/scaffold.config.ts
+ M packages/nextjs/utils/scaffold-eth/getMetadata.ts
+ A packages/nextjs/utils/usdc.ts

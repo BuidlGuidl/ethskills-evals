@@ -3,7 +3,7 @@ import { useMemo, useState, useSyncExternalStore } from "react";
 import { Link, useParams } from "react-router-dom";
 import { PassCount, passRate, ResultsLegend } from "../components/PassCount.js";
 import { compareEntry, type Cell, type UsageMedians } from "../lib/compare.js";
-import { useIndex } from "../lib/data.js";
+import { useDocs, useIndex } from "../lib/data.js";
 import { patchBetween } from "../lib/diff.js";
 import { cost, duration, tokens } from "../lib/format.js";
 import type { Entry } from "../lib/types.js";
@@ -27,11 +27,20 @@ const EntryResults = ({ entry }: {
   entry: Entry;
 }) => {
   const index = useIndex();
+  const { docs, error: docsError } = useDocs();
   const comparison = useMemo(() => compareEntry(entry, index), [entry, index]);
   const phone = useSyncExternalStore(subscribeViewport, phoneViewport);
   const [showDiff, setShowDiff] = useState(true);
   const { before, after, rows, totals, usage } = comparison;
-  const patch = useMemo(() => before && after ? patchBetween(before, after) : null, [before, after]);
+  // The skill texts live in docs.json, fetched once when the first skill page opens.
+  const patch = useMemo(() => {
+    const beforeText = before && docs ? docs.skills[before.id] : undefined;
+    const afterText = after && docs ? docs.skills[after.id] : undefined;
+
+    return before && after && beforeText !== undefined && afterText !== undefined
+      ? patchBetween({ sha: before.sha, text: beforeText }, { sha: after.sha, text: afterText })
+      : null;
+  }, [before, after, docs]);
   const columns = [{ label: "Without skill", value: usage.noSkill }, { label: "With skill, before rewrite", value: usage.before }, { label: "With skill, after rewrite", value: usage.after }];
   const hasUsage = (value: UsageMedians) => Object.values(value.recorded).some(count => count > 0);
   const diffId = `diff-${entry.skill}-${entry.model}`;
@@ -139,7 +148,7 @@ const EntryResults = ({ entry }: {
               }
             },
           }} />
-        </div> : <p className="muted">Skill text unavailable.</p>}
+        </div> : <p className="muted">{docsError ?? (docs === null && before && after ? "Loading the skill text." : "Skill text unavailable.")}</p>}
       </div>}
     </section>
   </article>);

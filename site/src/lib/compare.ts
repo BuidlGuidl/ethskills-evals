@@ -7,13 +7,19 @@ export type Cell = { passed: number; total: number; rubrics: string[] };
 // never reached the judge. The record stays on the task page and says why; no count has it.
 const measured = (run: Run) => run.retracted === null;
 
-// A regrade and the run it re-read are one run read twice. Whenever both are in the set
-// being counted, the newer reading wins; a set holding only the source still counts it,
-// which is what makes a per-rubric column come out right.
+// A regrade and the run it re-read are one run read twice. Of the readings present in the
+// set being counted, only the newest wins, however many hops apart they are; a set holding
+// only the source still counts it, which is what makes a per-rubric column come out right.
 const newest = (runs: Run[]) => {
-  const present = new Set(runs.map(run => `${run.task}/${run.run}`));
+  const latest = new Map<string, number>();
 
-  return runs.filter(run => !(run.superseded_by !== null && present.has(`${run.task}/${run.superseded_by}`)));
+  for (const run of runs) {
+    const key = `${run.task}/${run.lineage}`;
+
+    latest.set(key, Math.max(latest.get(key) ?? 0, run.reading));
+  }
+
+  return runs.filter(run => run.reading === latest.get(`${run.task}/${run.lineage}`));
 };
 
 export const tally = (runs: Run[]): Cell | null => {
@@ -30,12 +36,13 @@ export const tally = (runs: Run[]): Cell | null => {
   };
 };
 
-// Every run must name the same checks; overlap cannot make a mixed column comparable.
-export const sameRubric = (columns: { rubric: string | null }[][]) => {
-  const rubric = columns[0]?.[0]?.rubric;
+// Every run must name the same checks and the same prompt; a reworded prompt is another
+// task, and overlap cannot make a mixed column comparable.
+export const sameRubric = (columns: { rubric: string | null; prompt: string | null }[][]) => {
+  const first = columns[0]?.[0];
 
-  return typeof rubric === "string" && columns.every(runs =>
-    runs.length > 0 && runs.every(run => run.rubric === rubric));
+  return first !== undefined && typeof first.rubric === "string" && typeof first.prompt === "string" &&
+    columns.every(runs => runs.length > 0 && runs.every(run => run.rubric === first.rubric && run.prompt === first.prompt));
 };
 
 export const versionById = (skill: Skill, id: string | null) =>

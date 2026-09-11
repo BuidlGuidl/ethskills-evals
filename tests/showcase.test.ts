@@ -10,13 +10,13 @@ import type { Entry, Index } from "../site/src/lib/types.js";
 
 const entry: Entry = { skill: "addresses", model: "claude-opus-5", before: "big", after: "small" };
 const run = (id: string, content: string | null) => ({
-  rubric: "checks" as string | null, task: "addresses-quiz-001", skill: "addresses", run: id, model: entry.model,
+  rubric: "checks" as string | null, prompt: "prompt" as string | null, task: "addresses-quiz-001", skill: "addresses", run: id, model: entry.model,
   variant: content === null ? "no_skill" : "with_skill", skill_content: content,
   superseded_by: null as string | null, retracted: null as string | null, pass: true as boolean | null,
 });
 const data = {
   skills: [
-    { name: "addresses", versions: ["big", "small", "other"].map(id => ({ id, runs: 99, text: id })) },
+    { name: "addresses", versions: ["big", "small", "other"].map(id => ({ id, runs: 99 })) },
     { name: "gas", versions: [] },
   ],
   tasks: [
@@ -70,7 +70,7 @@ test("selection drops old readings, retractions, ungraded runs, retired tasks an
   const result = selectShowcase({ ...data, runs: [...data.runs, ...excluded] }, [entry]);
   assert.deepEqual(result.runs, data.runs);
   assert.deepEqual(result.tasks.map(task => task.id), ["addresses-quiz-001"]);
-  assert.deepEqual(result.skills, [{ name: "addresses", versions: [{ id: "big", runs: 1, text: "big" }, { id: "small", runs: 1, text: "small" }] }]);
+  assert.deepEqual(result.skills, [{ name: "addresses", versions: [{ id: "big", runs: 1 }, { id: "small", runs: 1 }] }]);
   assert.deepEqual(result.reports, [{ skill: "addresses" }, { skill: "addresses" }]);
   assert.deepEqual(result.prs, [{ skill: "addresses" }]);
   assert.deepEqual(result.warnings, []);
@@ -92,6 +92,7 @@ test("exclusions warn per model when missing, mixed or unknown checks leave no t
     data.runs.filter(run => run.variant !== "no_skill"),
     data.runs.map(run => ({ ...run, rubric: null })),
     [...data.runs, { ...run("extra", null), rubric: "other" }],
+    [...data.runs, { ...run("extra", null), prompt: "other" }],
   ]) {
     const result = selectShowcase({ ...data, runs: [...changed, ...data.runs.map(run => ({ ...run, model: other.model }))] }, [entry, other]);
     assert.deepEqual(result.tasks.map(task => task.id), ["addresses-quiz-001"]);
@@ -99,7 +100,7 @@ test("exclusions warn per model when missing, mixed or unknown checks leave no t
     assert.ok(result.runs.every(run => run.model === other.model));
     assert.deepEqual(result.warnings, ["showcase addresses (claude-opus-5): selects no tasks after exclusion"]);
     assert.equal(result.notes.length, 2);
-    assert.match(result.notes[0], /addresses-quiz-001 \((no runs without skill|checks unknown|checks rewritten between rounds)\)/);
+    assert.match(result.notes[0], /addresses-quiz-001 \((no runs without skill|checks or prompt unknown|checks rewritten between rounds|prompt rewritten between rounds)\)/);
     assert.ok(!result.notes[1].includes("addresses-quiz-001"));
   }
 });

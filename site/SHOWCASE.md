@@ -158,7 +158,7 @@ type Entry = { skill: string; model: string; before: string; after: string };
 
 type Run = {
   // existing fields stay: task, skill, run, variant, executor, created, pass, expects,
-  // skill_content, rubric, rubric_expects, transcript_url …
+  // skill_content, rubric, prompt, lineage, reading, rubric_expects, transcript_url …
   model: string;                  // D4, always set
   usage: {                        // D7; a field is null when not recorded, never 0
     tokens: number | null;
@@ -174,8 +174,8 @@ the run is the newest reading of itself (not superseded), it is not retracted, i
 its task is live, and either `variant === "no_skill"` or `skill_content` is the entry's
 `before` or `after`. Drop `regrade_of` / `superseded_by` / `retracted` from the emitted run
 if they are always null after selection; keep `judge` out of the UI but it may stay in the
-JSON. `Skill.versions` should contain the before and after versions (with text, lines,
-words, sha) — the diff needs the text.
+JSON. `Skill.versions` should contain the before and after versions (with lines, words,
+sha). The text lives in `docs.json` since section 14; the diff fetches it from there.
 
 `build-index` should warn (and therefore fail `--strict`) when an entry names a skill,
 version or model that selects zero runs on either side, so a typo in the manifest cannot
@@ -435,3 +435,41 @@ meaning of a legend. Curly quotes become straight quotes everywhere in JSX text.
 Headings in sentence case. No em dashes; the "→" between two numbers in a cell stays.
 Where a sentence could sit unchanged on any benchmark site, make it specific to this one
 or delete it.
+
+## 14. Back-merge of Rinat's branch (2026-09-11)
+
+`origin/site/results-frontend` moved 30+ commits past our fork point: two merges of `main`
+(new runs for audit, frontend-playbook, qa, testing) and two review rounds that changed the
+data contract. Merged at his `215e243e`. What was taken from each side:
+
+- **His, wholesale:** `site/derived.json` (never hand-merge it), `site/yarn.lock`, everything
+  under `artifacts/`, `tasks/`, `skills/`, `reports/`, `mistakes/`, `site/src/lib/data.ts`
+  (plus our two copy strings), `site/src/pages/Doc.tsx`, `scripts/build-index.ts` with our
+  hook re-applied on top.
+- **Ours:** `lib/showcase.ts`, `site/src/lib/compare.ts`, the four pages, `styles.css`, the
+  tests, the manifest. `Marker.tsx`, `notes.ts` and `Writeups.tsx` stay deleted.
+
+Contract changes absorbed:
+
+- A rubric is two fingerprints. `Run.rubric` is the checks (`expect_sha`), `Run.prompt` is
+  the prompt (`input_sha`); `Task` carries both for today's file. `sameRubric` requires both
+  to match across the three columns, since a reworded prompt is not the same task either.
+  The exclusion note says "prompt rewritten between rounds" when only the prompt moved.
+- `Run.lineage` and `Run.reading` name a reading's source run and its place in the order.
+  `newest` in `compare.ts` keeps the newest reading present, however many hops apart, and no
+  longer needs `superseded_by`.
+- Prose left `index.json`. Skill texts, report markdown and PR bodies live in
+  `site/public/docs.json`, fetched once by `useDocs()` when a skill or document page opens.
+  The Skill page builds its diff from there. `docs.json` is written unfiltered.
+- `index.json` is written compact.
+
+Kept as decided, against his side: `runModel` (D4) rather than his `modelOf`. His compare
+labels a run without `executor_model` as "(model unrecorded)" and marks a model mismatch
+with a `◊`. Ours infers the model from the judge when the record says the judge was the
+same agent, and the manifest names the model, so there is nothing to mark. The tension is
+noted in the PR description for him to see.
+
+Checks after the merge: tsc at root and in `site/`, 79 tests, `yarn build-index --strict
+--no-prs` with no warnings and `site/derived.json` byte-identical to his, `site/` build,
+375px viewport check on `/`, `/skill/wallets`, `/task/wallets-goal-001`. Selection
+unchanged: 22 tasks, 234 runs.

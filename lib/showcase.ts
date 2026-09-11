@@ -65,7 +65,7 @@ export const runUsage = (text: string, value: unknown): Run["usage"] => {
   };
 };
 
-type SelectionRun = Pick<Run, "task" | "skill" | "model" | "variant" | "skill_content" | "superseded_by" | "retracted" | "pass" | "rubric">;
+type SelectionRun = Pick<Run, "task" | "skill" | "model" | "variant" | "skill_content" | "superseded_by" | "retracted" | "pass" | "rubric" | "prompt">;
 
 type ShowcaseData = {
   skills: { name: string; versions: { id: string; runs: number }[] }[];
@@ -116,7 +116,9 @@ export const selectShowcase = <Data extends ShowcaseData>(index: Data, entries: 
         const labels = ["without skill", "before the rewrite", "after the rewrite"];
         const missing = columns.flatMap((runs, i) => runs.length === 0 ? [`no runs ${labels[i]}`] : []);
         const reason = missing.length > 0 ? missing.join("; ")
-          : mine.some(run => run.rubric === null) ? "checks unknown" : "checks rewritten between rounds";
+          : mine.some(run => run.rubric === null || run.prompt === null) ? "checks or prompt unknown"
+          : new Set(mine.map(run => run.rubric)).size > 1 ? "checks rewritten between rounds"
+          : "prompt rewritten between rounds";
         excluded.push(`${task.id} (${reason})`);
       }
     }

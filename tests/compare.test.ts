@@ -15,7 +15,6 @@ const version = (id: string, lines: number, runs: number) => ({
   words: lines * 5,
   runs,
   in_repo: false,
-  text: `# ${id}\n`,
 });
 
 const skill: Skill = {
@@ -34,6 +33,7 @@ const task = (id: string, kind: "quiz" | "goal"): Task => ({
   input: "do it",
   expect: ["a"],
   rubric: null,
+  prompt: null,
   runs: 3,
   template: null,
   notes: null,
@@ -42,10 +42,12 @@ const task = (id: string, kind: "quiz" | "goal"): Task => ({
 const tasks = [task("addresses-quiz-001", "quiz"), task("addresses-quiz-002", "quiz")];
 
 let nextRun = 0;
-const run = (task: string, content: string | null, rubric: string, pass: boolean): Run => ({
+const run = (task: string, content: string | null, rubric: string, pass: boolean, id = `${task}-${content ?? "none"}-${rubric}-${pass}-${nextRun++}`): Run => ({
   task,
   skill: "addresses",
-  run: `${task}-${content ?? "none"}-${rubric}-${pass}-${nextRun++}`,
+  run: id,
+  lineage: id,
+  reading: 0,
   variant: content === null ? "no_skill" : "with_skill",
   executor: "claude",
   executor_model: "claude-opus-5",
@@ -62,6 +64,7 @@ const run = (task: string, content: string | null, rubric: string, pass: boolean
   superseded_by: null,
   retracted: null,
   rubric,
+  prompt: "prompt",
   rubric_expects: 1,
   transcript_url: null,
 });
@@ -98,14 +101,14 @@ test("ungraded runs are left out of a tally instead of counting as failures", ()
 });
 
 test("a regrade replaces the run it re-read instead of being counted beside it", () => {
-  const source = { ...run("addresses-quiz-002", "small", "rubric-old", false), run: "r1", superseded_by: "r1-regrade-1" };
-  const regrade = { ...run("addresses-quiz-002", "small", "rubric-new", true), run: "r1-regrade-1", regrade_of: "r1" };
+  const source = { ...run("addresses-quiz-002", "small", "rubric-old", false, "r1"), superseded_by: "r1-regrade-1" };
+  const regrade = { ...run("addresses-quiz-002", "small", "rubric-new", true, "r1-regrade-1"), lineage: "r1", reading: 1, regrade_of: "r1" };
 
   assert.deepEqual(tally([source, regrade]), { passed: 1, total: 1, rubrics: ["rubric-new"] });
 });
 
 test("a superseded run still counts where its regrade is not in the set", () => {
-  const source = { ...run("addresses-quiz-002", "small", "rubric-old", false), run: "r1", superseded_by: "r1-regrade-1" };
+  const source = { ...run("addresses-quiz-002", "small", "rubric-old", false, "r1"), superseded_by: "r1-regrade-1" };
 
   assert.deepEqual(tally([source]), { passed: 0, total: 1, rubrics: ["rubric-old"] });
   const comparison = compareEntry(entry, { ...index, runs: [source] });
@@ -114,17 +117,19 @@ test("a superseded run still counts where its regrade is not in the set", () => 
 });
 
 test("a run read three times counts once, as its newest reading", () => {
-  const source = { ...run("addresses-quiz-002", "small", "rubric-old", false), run: "r1", superseded_by: "r1-regrade-1" };
+  const source = { ...run("addresses-quiz-002", "small", "rubric-old", false, "r1"), superseded_by: "r1-regrade-1" };
   const first = {
-    ...run("addresses-quiz-002", "small", "rubric-mid", false),
-    run: "r1-regrade-1",
+    ...run("addresses-quiz-002", "small", "rubric-mid", false, "r1-regrade-1"),
+    lineage: "r1",
+    reading: 1,
     regrade_of: "r1",
     superseded_by: "r1-regrade-2",
   };
-  const second = { ...run("addresses-quiz-002", "small", "rubric-new", true), run: "r1-regrade-2", regrade_of: "r1" };
+  const second = { ...run("addresses-quiz-002", "small", "rubric-new", true, "r1-regrade-2"), lineage: "r1", reading: 2, regrade_of: "r1" };
 
   assert.deepEqual(tally([source, first, second]), { passed: 1, total: 1, rubrics: ["rubric-new"] });
   assert.deepEqual(tally([source, first]), { passed: 0, total: 1, rubrics: ["rubric-mid"] });
+  assert.deepEqual(tally([source, second]), { passed: 1, total: 1, rubrics: ["rubric-new"] });
 });
 
 test("a retracted grade is kept out of every count", () => {
@@ -159,11 +164,15 @@ test("selection removes changed checks before comparison totals and usage", () =
   assert.deepEqual(none.runs, []);
 });
 
-test("all columns need runs on one known rubric, including every baseline", () => {
-  const columns = [[{ rubric: "kept" }], [{ rubric: "kept" }], [{ rubric: "kept" }]];
+test("all columns need runs on one known rubric and prompt, including every baseline", () => {
+  const kept = { rubric: "kept", prompt: "kept" };
+  const columns = [[kept], [kept], [kept]];
   assert.equal(sameRubric(columns), true);
   for (let column = 0; column < 3; column++) {
-    for (const replacement of [[], [{ rubric: null }], [{ rubric: "other" }], [{ rubric: "kept" }, { rubric: "other" }], [{ rubric: "kept" }, { rubric: null }]]) {
+    for (const replacement of [
+      [], [{ ...kept, rubric: null }], [{ ...kept, rubric: "other" }], [kept, { ...kept, rubric: "other" }], [kept, { ...kept, rubric: null }],
+      [{ ...kept, prompt: null }], [{ ...kept, prompt: "other" }], [kept, { ...kept, prompt: "other" }],
+    ]) {
       assert.equal(sameRubric(columns.map((runs, i) => i === column ? replacement : runs)), false);
     }
   }
@@ -185,9 +194,9 @@ test("entry selection uses the named model and versions, ignoring version order 
 });
 
 test("comparison counts only the newest reading, even when an older reading belongs to another column", () => {
-  const source = { ...run(tasks[1].id, "big", "old", false), run: "source", superseded_by: "middle" };
-  const middle = { ...source, run: "middle", superseded_by: "last", regrade_of: "source" };
-  const last = { ...run(tasks[1].id, "small", "rubric-kept", true), run: "last", regrade_of: "middle" };
+  const source = { ...run(tasks[1].id, "big", "old", false, "source"), superseded_by: "middle" };
+  const middle = { ...source, run: "middle", reading: 1, superseded_by: "last", regrade_of: "source" };
+  const last = { ...run(tasks[1].id, "small", "rubric-kept", true, "last"), lineage: "source", reading: 2, regrade_of: "middle" };
   const result = compareEntry(entry, { ...index, runs: [...runs, source, middle, last] });
   assert.equal(result.usage.before.runs, 3);
   assert.equal(result.usage.after.runs, 4);

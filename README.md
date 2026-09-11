@@ -100,7 +100,7 @@ Then run `yarn build-index` and commit the manifest and `site/derived.json` if i
 If the manifest is absent, the index includes all results.
 
 ```bash
-yarn build-index          # writes site/public/index.json from artifacts/, tasks/, skills/, reports/ and the eval PRs
+yarn build-index          # writes site/public/index.json (and docs.json, the prose) from artifacts/, tasks/, skills/, reports/ and the eval PRs
 cd site && yarn install && yarn dev
 ```
 
@@ -110,7 +110,11 @@ which revision of a task's `expect:` lines it was graded against. Both come out 
 history, and history is not durable enough to depend on — a `skill_version` sha can live
 only on a branch that gets squash-merged and deleted, and the deploy host clones a single
 branch shallowly. Resolve once here, commit the answer, and the site builds without git.
-That is what `yarn build-index --no-git` checks: it must produce the same file.
+That is what `yarn build-index --no-git --no-prs` checks: it must leave `site/derived.json`
+unchanged and warn about nothing. `--no-prs` because a plain run also refetches the pull
+request table from GitHub, and on an active repo that rewrites `prs` every time — expected
+movement, not a cache hole. (index.json itself differs in `generated` and in the sha label
+of a version no run has measured, which reads `worktree` without git.)
 
 Commit `site/derived.json` whenever a benchmark adds runs on a new skill version or a task's
 `expect:` lines change, and after a transcript is rewritten — its link is pinned to the

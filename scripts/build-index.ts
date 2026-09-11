@@ -1,5 +1,4 @@
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -8,10 +7,12 @@ import yaml from "js-yaml";
 import { loadShowcase, runModel, runUsage, selectShowcase } from "../lib/showcase.js";
 import { orderReadings } from "../lib/readings.js";
 import { normalizeSkillText, skillContentId } from "../lib/skill.js";
-import { expectSha, isRecord, loadTaskSpec, loadYamlFile, parseArgs, requireString } from "../lib/task.js";
+import { expectSha, inputSha, isRecord, loadTaskSpec, loadYamlFile, parseArgs, requireString } from "../lib/task.js";
 
-// Builds the json the results site reads: site/public/index.json, one file, regenerated
-// from the repo in a single pass and gitignored.
+// Builds the json the results site reads, regenerated from the repo in a single pass and
+// gitignored: site/public/index.json, everything the tables need, and docs.json beside it
+// with the prose — report markdown, pull request bodies, skill texts — which only a report
+// or skill page needs and which would otherwise be most of the first fetch.
 //
 // Two of the three tables it feeds need facts that are in no record:
 //
@@ -43,10 +44,18 @@ const INDEX_ARGS = new Set(["out", "cache", "no-prs", "no-git", "strict", "showc
 const DEFAULT_OUT = path.join("site", "public", "index.json");
 const DEFAULT_CACHE = path.join("site", "derived.json");
 
-// expect_sha is the fingerprint verify writes into a record; it is kept beside the rubric so
-// the cache can be checked against the record instead of trusted. Absent on entries resolved
-// for runs that predate the field.
-type Rubric = { id: string; expects: number; expect_sha?: string };
+// What a run was graded against, as two fingerprints: the expect lines (expect_sha, the one
+// verify writes into a record) and the prompt (input_sha, the one setup writes). Two ids
+// rather than one hash over both, because they move separately and mean different things —
+// 9 tasks have revisions whose expect lines stand still while the prompt was reworded — and
+// so the cache can be checked against the record instead of trusted.
+type Rubric = { expect_sha: string; expects: number; input_sha: string };
+
+const isRubric = (value: unknown): value is Rubric =>
+  isRecord(value) &&
+  typeof value.expect_sha === "string" &&
+  typeof value.input_sha === "string" &&
+  typeof value.expects === "number";
 
 type PullRequest = {
   number: number;
@@ -74,8 +83,12 @@ const git = (...args: string[]) =>
   }).trim();
 
 // --no-git makes every lookup miss, which is what a deploy host's shallow single-branch
-// clone looks like. Run it before shipping: if the output still matches, the cache is
-// complete and the build does not depend on history it will not have.
+// clone looks like. Run it with --no-prs before shipping: if site/derived.json comes out
+// byte-identical and there are no warnings, the cache is complete and the build does not
+// depend on history it will not have. Without --no-prs the pull request table is refetched
+// and moves on any active repo, which is not a cache hole. index.json is not the thing to
+// diff either: `generated` carries the time and the commit, and the sha label on a version
+// no run has measured reads "worktree" without git, where a clean tree with git names HEAD.
 let gitAvailable = true;
 
 const gitOrNull = (...args: string[]) => {
@@ -120,8 +133,6 @@ const fetchPullRequests = (): PullRequest[] | null => {
   }
 };
 
-const hash = (value: string) => createHash("sha256").update(value).digest("hex").slice(0, 12);
-
 const countLines = (text: string) => text.replace(/\n$/, "").split("\n").length;
 const countWords = (text: string) => text.split(/\s+/).filter(Boolean).length;
 
@@ -165,9 +176,9 @@ const loadDerived = (cachePath: string): Derived => {
 };
 
 const rubricFrom = (input: string, expect: string[]): Rubric => ({
-  id: hash([input, ...expect].join("\n\x00\n")),
-  expects: expect.length,
   expect_sha: expectSha(expect),
+  expects: expect.length,
+  input_sha: inputSha(input),
 });
 
 // Deliberately lenient, unlike loadTaskSpec: this parses historical revisions of a task,
@@ -225,9 +236,10 @@ const main = async () => {
         runs: spec.runs,
         template: spec.template ?? null,
         notes: spec.notes ?? null,
-        // The rubric as it stands today, so a page can tell which runs were graded on it and
-        // which on an earlier revision.
-        rubric: rubricFrom(spec.input, spec.expect).id,
+        // The rubric and prompt as they stand today, so a page can tell which runs were
+        // graded on them and which on an earlier revision.
+        rubric: expectSha(spec.expect),
+        prompt: inputSha(spec.input),
       };
     });
 
@@ -312,34 +324,38 @@ const main = async () => {
   };
 
   // Pinned to the revision the run was graded on, because a task's expect lines get rewritten
-  // afterwards and the run was not graded on the rewrite. A record that carries expect_sha
-  // names that revision itself and the cache is trusted only when it agrees: pinning by the
-  // commit that added the record gave regrade-1 and regrade-2 of every gas-goal-001 run one
-  // rubric, since both landed in a merge where the task already held the second rewrite. A
-  // record without expect_sha is pinned to the commit that added it. Falling back to the file
-  // as it stands is right for a run that is not committed yet and wrong for every other
-  // reason the commit could be missing — so the fallback says so, and --strict refuses it.
-  // Reading today's expect lines onto an old run is what would make two incomparable columns
-  // look like a comparison, which is the one thing this file exists to prevent.
-  const rubricFor = (taskId: string, runId: string, recordedSha: string | null) => {
+  // afterwards and the run was not graded on the rewrite. A record names that revision itself
+  // through the fingerprints it carries — expect_sha from verify, input_sha from setup — and
+  // the cache is trusted only when it agrees with both: pinning by the commit that added the
+  // record gave regrade-1 and regrade-2 of every gas-goal-001 run one rubric, since both
+  // landed in a merge where the task already held the second rewrite. A record with neither
+  // fingerprint is pinned to the commit that added it. Falling back to the file as it stands
+  // is right for a run that is not committed yet and wrong for every other reason the commit
+  // could be missing — so the fallback says so, and --strict refuses it. Reading today's
+  // expect lines onto an old run is what would make two incomparable columns look like a
+  // comparison, which is the one thing this file exists to prevent.
+  const rubricFor = (taskId: string, runId: string, recorded: { expect: string | null; input: string | null }) => {
     const key = `${taskId}/${runId}`;
-    const cached = derived.run_rubrics[key];
+    const cached: unknown = derived.run_rubrics[key];
+    const agrees = (rubric: Rubric | null): rubric is Rubric =>
+      rubric !== null &&
+      (recorded.expect === null || rubric.expect_sha === recorded.expect) &&
+      (recorded.input === null || rubric.input_sha === recorded.input);
+    const fingerprints = `expect_sha ${recorded.expect ?? "unrecorded"}, input_sha ${recorded.input ?? "unrecorded"}`;
 
-    if (cached && (recordedSha === null || cached.expect_sha === recordedSha)) {
+    if (isRubric(cached) && agrees(cached)) {
       return { rubric: cached, pinned: true };
     }
 
     const commit = addingCommit(`artifacts/${taskId}/${runId}/result.yaml`);
+    const atAdding = commit === null ? null : rubricAt(commit, taskId);
 
-    if (recordedSha !== null) {
+    if (recorded.expect !== null || recorded.input !== null) {
       // The adding commit first — it is right for every record graded just before it was
       // committed — then anything older the file went through.
-      const revisions = taskRevisions(taskId);
-      const atAdding = commit === null ? null : rubricAt(commit, taskId);
-      const matched =
-        atAdding?.expect_sha === recordedSha
-          ? atAdding
-          : (revisions.find(revision => revision.rubric?.expect_sha === recordedSha)?.rubric ?? null);
+      const matched = agrees(atAdding)
+        ? atAdding
+        : (taskRevisions(taskId).find(revision => agrees(revision.rubric))?.rubric ?? null);
 
       if (matched !== null) {
         derived.run_rubrics[key] = matched;
@@ -348,24 +364,18 @@ const main = async () => {
       }
 
       if (historyAvailable) {
-        warnings.push(
-          `artifacts/${key}: graded against expect_sha ${recordedSha}, which matches no revision of tasks/${taskId}.yaml`,
-        );
-      } else if (cached) {
-        warnings.push(`artifacts/${key}: cached rubric was not resolved against the record's expect_sha ${recordedSha}`);
+        warnings.push(`artifacts/${key}: graded against ${fingerprints}, which matches no revision of tasks/${taskId}.yaml`);
+      } else if (isRubric(cached)) {
+        warnings.push(`artifacts/${key}: cached rubric was not resolved against the record's ${fingerprints}`);
 
         return { rubric: cached, pinned: true };
       }
     }
 
     const taskPath = path.join(ROOT, "tasks", `${taskId}.yaml`);
-    const rubric = commit
-      ? rubricAt(commit, taskId)
-      : existsSync(taskPath)
-        ? rubricOf(readFileSync(taskPath, "utf8"))
-        : null;
+    const rubric = commit ? atAdding : existsSync(taskPath) ? rubricOf(readFileSync(taskPath, "utf8")) : null;
 
-    if (rubric !== null && commit !== null && recordedSha === null) {
+    if (rubric !== null && commit !== null && recorded.expect === null && recorded.input === null) {
       derived.run_rubrics[key] = rubric;
     }
 
@@ -427,8 +437,12 @@ const main = async () => {
   // version's name, permanently, since nothing here is ever rewritten. In that case the text
   // is in neither place but in a commit that touched the file, so those are walked last.
   const textFor = (skill: string, id: string, sha: string) => {
-    if (derived.skill_texts[id]) {
-      return derived.skill_texts[id];
+    // Checked, not trusted: a cache entry that arrived wrong — a hand edit, an older version
+    // of this script — would otherwise be served permanently, since nothing here deletes.
+    const cached = derived.skill_texts[id];
+
+    if (cached !== undefined && skillContentId(cached) === id) {
+      return cached;
     }
 
     const keep = (candidate: string | null) => {
@@ -486,7 +500,12 @@ const main = async () => {
     regraded_at: string | null;
     superseded_by: string | null;
     retracted: string | null;
+    /** the source run this record is a reading of — itself, for a run read once */
+    lineage: string;
+    /** 0 for the source, then each regrade in the order it was made */
+    reading: number;
     rubric: string | null;
+    prompt: string | null;
     rubric_expects: number | null;
     transcript_url: string | null;
   };
@@ -506,7 +525,10 @@ const main = async () => {
       const loaded = loadYamlFile(resultPath);
       const skill = taskSkill.get(taskId) ?? null;
       const skillVersion = typeof loaded.skill_version === "string" ? loaded.skill_version : null;
-      const { rubric, pinned } = rubricFor(taskId, runId, typeof loaded.expect_sha === "string" ? loaded.expect_sha : null);
+      const { rubric, pinned } = rubricFor(taskId, runId, {
+        expect: typeof loaded.expect_sha === "string" ? loaded.expect_sha : null,
+        input: typeof loaded.input_sha === "string" ? loaded.input_sha : null,
+      });
 
       if (rubric === null) {
         warnings.push(`${runDir}: no readable task rubric; comparisons disabled for this run`);
@@ -578,7 +600,10 @@ const main = async () => {
         // A grade that measured the harness rather than the model — a killed CLI, a
         // deliverable that never reached the judge. The record stays, the tallies leave it out.
         retracted: typeof loaded.retracted === "string" ? loaded.retracted : null,
-        rubric: rubric?.id ?? null,
+        lineage: runId,
+        reading: 0,
+        rubric: rubric?.expect_sha ?? null,
+        prompt: rubric?.input_sha ?? null,
         rubric_expects: rubric?.expects ?? null,
         transcript_url: commit ? `https://github.com/${REPO}/blob/${commit}/${runDir}/transcript.md` : null,
       });
@@ -595,6 +620,9 @@ const main = async () => {
 
   warnings.push(...readings.warnings);
 
+  // Each reading names its source and its place in the order, so a tally that holds only some
+  // of a run's readings — a column filtered to one rubric — can still keep just the newest of
+  // those it holds, however many hops apart they are.
   for (const lineage of readings.lineages) {
     // Regrades have no executor transcript: wallets-quiz-006's newest readings would lose
     // the cost of their original runs. Usage belongs to that run, not to its later judge.
@@ -602,9 +630,11 @@ const main = async () => {
       reading.usage = lineage[0].usage;
     }
 
-    for (let position = 0; position < lineage.length - 1; position++) {
-      lineage[position].superseded_by = lineage[position + 1].run;
-    }
+    lineage.forEach((record, position) => {
+      record.lineage = lineage[0].run;
+      record.reading = position;
+      record.superseded_by = position < lineage.length - 1 ? lineage[position + 1].run : null;
+    });
   }
 
   // Runs, not records: a version's count is read beside tables that count a regraded run
@@ -618,6 +648,8 @@ const main = async () => {
       }
     }
   }
+
+  const docs = { reports: {} as Record<string, string>, prs: {} as Record<string, string>, skills: {} as Record<string, string> };
 
   // Ordered oldest first by the runs that used them, with the file as it stands now
   // appended if no run saw it. Three pointers rather than two, because they come apart:
@@ -655,15 +687,18 @@ const main = async () => {
       original: measured.length > 0 ? measured[0].id : (versions[0]?.id ?? null),
       latest_measured: measured.length > 0 ? measured[measured.length - 1].id : null,
       current: currentId,
-      versions: versions.map(entry => ({
-        id: entry.id,
-        sha: entry.sha,
-        lines: countLines(entry.text),
-        words: countWords(entry.text),
-        runs: entry.runs,
-        in_repo: entry.id === currentId,
-        text: entry.text,
-      })),
+      versions: versions.map(entry => {
+        docs.skills[entry.id] = entry.text;
+
+        return {
+          id: entry.id,
+          sha: entry.sha,
+          lines: countLines(entry.text),
+          words: countWords(entry.text),
+          runs: entry.runs,
+          in_repo: entry.id === currentId,
+        };
+      }),
     };
   });
 
@@ -675,13 +710,14 @@ const main = async () => {
       const title = markdown.split("\n").find(line => line.startsWith("# "));
       const date = /(\d{4}-\d{2}-\d{2})\.md$/.exec(name);
 
+      docs.reports[name] = markdown;
+
       return {
         file: name,
         title: title ? title.slice(2).trim() : name,
         date: date ? date[1] : null,
         skill: date ? name.slice(0, date.index).replace(/-$/, "") : name.replace(/\.md$/, ""),
         url: `https://github.com/${REPO}/blob/main/reports/${name}`,
-        markdown,
       };
     });
 
@@ -714,7 +750,7 @@ const main = async () => {
   // task id of one, counts. Matching only `<verb>: <skill>` left the rewrite PRs — the ones a
   // skill page exists to link under "why it changed" — attributed to nothing. The body is not
   // read: a harness PR cites eval reports without being about their skill.
-  const skillOf = (pr: PullRequest) => {
+  const skillOf = (pr: { title: string }) => {
     for (const token of pr.title.toLowerCase().split(/[^a-z0-9-]+/)) {
       if (skillNames.has(token)) {
         return token;
@@ -727,16 +763,24 @@ const main = async () => {
       }
     }
 
-    return null;
+    // `fix: sharpen frontend UX guidance` spells the skill with a space; slugged, the title
+    // holds `-frontend-ux-` and the hyphens keep `ship` from matching inside a word.
+    const slug = `-${pr.title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-`;
+
+    return [...skillNames].find(name => slug.includes(`-${name}-`)) ?? null;
   };
 
   const prs = Object.values(derived.prs)
     .sort((a, b) => a.number - b.number)
-    .map(pr => ({
-      ...pr,
-      skill: skillOf(pr),
-      reports: [...new Set([...pr.body.matchAll(/reports\/([a-z0-9.-]+\.md)/g)].map(match => match[1]))],
-    }));
+    .map(({ body, ...pr }) => {
+      docs.prs[String(pr.number)] = body;
+
+      return {
+        ...pr,
+        skill: skillOf(pr),
+        reports: [...new Set([...body.matchAll(/reports\/([a-z0-9.-]+\.md)/g)].map(match => match[1]))],
+      };
+    });
 
   const index = {
     generated: { at: new Date().toISOString(), commit: head, dirty, repo: REPO },
@@ -787,8 +831,11 @@ const main = async () => {
   }
   const output = { ...index, ...selection, warnings };
 
+  // Compact: nobody reads these by eye, and the indentation was a third of the download.
+  // docs.json stays unfiltered: it is fetched only when a report or skill page opens.
   await mkdir(path.dirname(outPath), { recursive: true });
-  await writeFile(outPath, `${JSON.stringify(output, null, 2)}\n`, "utf8");
+  await writeFile(outPath, `${JSON.stringify(output)}\n`, "utf8");
+  await writeFile(path.join(path.dirname(outPath), "docs.json"), `${JSON.stringify(docs)}\n`, "utf8");
 
   for (const warning of warnings) {
     process.stderr.write(`warning: ${warning}\n`);
