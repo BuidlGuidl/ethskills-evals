@@ -242,7 +242,7 @@ test("real showcase entries contain only comparable tasks and their runs", () =>
   writeFileSync(cache, readFileSync("site/derived.json", "utf8"));
   execFileSync(process.execPath, ["--import", "tsx", "scripts/build-index.ts", "--no-git", "--no-prs", "--strict", "--out", out, "--cache", cache], { encoding: "utf8" });
   const real: Index = JSON.parse(readFileSync(out, "utf8"));
-  assert.equal(real.showcase?.length, 6);
+  assert.equal(real.showcase?.length, 7);
   const results = real.showcase!.map(entry => compareEntry(entry, real));
   assert.deepEqual(results.map((result, i) => [real.showcase![i].skill, result.usage.before.runs, result.usage.after.runs, result.usage.noSkill.runs]), [
     ["addresses", 12, 12, 12], ["l2s", 12, 12, 12], ["protocol", 6, 6, 12],

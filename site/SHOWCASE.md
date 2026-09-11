@@ -114,7 +114,8 @@ the past. Concretely:
     { "skill": "protocol",      "model": "claude-opus-5",  "before": "100b87c78a9e", "after": "76d1dc80c748" },
     { "skill": "wallets",       "model": "claude-opus-5",  "before": "ae147e09a230", "after": "fc965d17a92a" },
     { "skill": "security",      "model": "gpt-5.4",        "before": "dd988d2f4172", "after": "662e68fa0226" },
-    { "skill": "orchestration", "model": "gpt-5.6-terra",  "before": "524ef0810e78", "after": "60b3a1402947" }
+    { "skill": "orchestration", "model": "gpt-5.6-terra",  "before": "524ef0810e78", "after": "60b3a1402947" },
+    { "skill": "frontend-playbook", "model": "claude-opus-5", "before": "13df4b400c54", "after": "95a2e7035710" }
   ]
 }
 ```
@@ -131,6 +132,7 @@ retracted, graded):
 | wallets | claude-opus-5 | 169 lines, 21 / 7 | 26 lines, 25 / 7 | 46 |
 | security | gpt-5.4 | 487 lines, 24 / 8 | 56 lines, 24 / 8 | 48 |
 | orchestration | gpt-5.6-terra | 225 lines, 15 / 4 of 5 | 34 lines, 15 / 5 | 21 |
+| frontend-playbook | claude-opus-5 | 394 lines, 24 / 8 | 93 lines, 24 / 8 | 24 |
 
 Known wrinkles in this data that D10 covers: `orchestration-quiz-004` has no before runs;
 `addresses` (2 tasks), `concepts` (2), `security` (2), `wallets` (2) and `l2s` (1)
@@ -473,3 +475,23 @@ Checks after the merge: tsc at root and in `site/`, 79 tests, `yarn build-index 
 --no-prs` with no warnings and `site/derived.json` byte-identical to his, `site/` build,
 375px viewport check on `/`, `/skill/wallets`, `/task/wallets-goal-001`. Selection
 unchanged: 22 tasks, 234 runs.
+
+### Entries checked after the back-merge
+
+The runs that arrived from `main` were checked for a clean before/after on one model:
+
+- **frontend-playbook, claude-opus-5: added.** Two versions measured on the same model across
+  all 8 live tasks, nothing excluded, same checks and prompt throughout. Caveat for the copy:
+  the `before` version (`13df4b400c54`, 394 lines) is the long arm from
+  `reports/frontend-playbook-opus5-2026-09-05.md`, the full structure with the #56
+  corrections applied, not the 362-line pre-cut original (`c00a0bedc1b8`), which was never
+  run on opus-5. The report chose it so that length is the only difference between the arms.
+  The skill page's "original" wording is loose for this entry.
+- **frontend-playbook, claude-opus-4-8: not added.** The original and the rewrite were both
+  run on opus-4.8, but exclusions remove goal-001 (no runs after the rewrite), goal-002 and
+  quiz-005 (checks rewritten). Those are exactly the three tasks the skill changes the
+  outcome on; the five that survive are all passes in every column.
+- **qa: not added.** The original (439 lines) has runs only on opus-4.8, the minimal version
+  (66 lines) only on opus-5, and there on two goals only.
+- **testing: not added.** One version measured (379 lines); the 59-line minimal has no runs.
+- **audit: not added.** One version measured (72 lines).
