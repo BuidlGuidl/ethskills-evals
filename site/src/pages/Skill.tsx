@@ -1,11 +1,12 @@
 import { PatchDiff } from "@pierre/diffs/react";
 import { useMemo, useState, useSyncExternalStore } from "react";
 import { Link, useParams } from "react-router-dom";
-import { PassCount, passRate, ResultsLegend } from "../components/PassCount.js";
-import { compareEntry, type Cell, type UsageMedians } from "../lib/compare.js";
+import { PassCount, ResultsLegend } from "../components/PassCount.js";
+import { ComparisonBlock } from "../components/ComparisonBlock.js";
+import { compareEntry, type UsageMedians } from "../lib/compare.js";
 import { useDocs, useIndex } from "../lib/data.js";
 import { patchBetween } from "../lib/diff.js";
-import { cost, duration, tokens } from "../lib/format.js";
+import { cost, count, duration, tokens } from "../lib/format.js";
 import type { Entry } from "../lib/types.js";
 const phoneQuery = "(max-width: 699px)";
 const subscribeViewport = (notify: () => void) => {
@@ -14,7 +15,6 @@ const subscribeViewport = (notify: () => void) => {
   return () => query.removeEventListener("change", notify);
 };
 const phoneViewport = () => window.matchMedia(phoneQuery).matches;
-const headlineRate = (cell: Cell | null) => cell ? `${passRate(cell)} (${cell.passed}/${cell.total} runs passing)` : "no runs to compare";
 const UsageValue = ({ usage, metric, format }: {
   usage: UsageMedians;
   metric: "tokens" | "duration_s" | "cost_usd";
@@ -45,14 +45,11 @@ const EntryResults = ({ entry }: {
   const hasUsage = (value: UsageMedians) => Object.values(value.recorded).some(count => count > 0);
   const diffId = `diff-${entry.skill}-${entry.model}`;
   return (<article className="entry">
-    <header className="entry-header">
-      <p className="model">{entry.model}</p>
-      <ul className="headline">
-        <li>Without the skill, the model's pass rate was <strong>{headlineRate(totals.noSkill)}</strong>.</li>
-        <li>With the original skill it was <strong>{headlineRate(totals.before)}</strong><span className="lines">{before ? `${before.lines} lines` : "length not recorded"}</span></li>
-        <li>With the rewritten skill it is <strong className="accent">{headlineRate(totals.after)}</strong><span className="lines">{after ? `${after.lines} lines` : "length not recorded"}</span></li>
-      </ul>
-    </header>
+    <ComparisonBlock title={entry.model}
+      subline={`${count(rows.length, "task")}, ${count(usage.noSkill.runs + usage.before.runs + usage.after.runs, "run")}`}
+      noSkill={totals.noSkill} before={totals.before} after={totals.after}
+      beforeLines={before?.lines ?? null} afterLines={after?.lines ?? null}
+    />
     <section aria-label={`Results on ${entry.model}`}>
       <div className="section-heading">
         <h2>Results</h2>
