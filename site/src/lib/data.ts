@@ -17,7 +17,7 @@ const fetchJson = async <T,>(file: string): Promise<T> => {
   const response = await fetch(`${import.meta.env.BASE_URL}${file}`);
 
   if (!response.ok) {
-    throw new Error(`${file} responded ${response.status} — run \`yarn build-index\` at the repo root`);
+    throw new Error(`${file} responded ${response.status}. Run \`yarn build-index\` at the repo root`);
   }
 
   return (await response.json()) as T;
@@ -51,4 +51,4 @@ export const useDocs = () => {
   return { docs, error };
 };
 
-export const shortDate = (value: string | null) => (value === null ? "—" : value.slice(0, 10));
+export const shortDate = (value: string | null) => (value === null ? "Not recorded" : value.slice(0, 10));

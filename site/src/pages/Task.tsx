@@ -1,147 +1,91 @@
+import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import Marker from "../components/Marker.js";
 import { useIndex } from "../lib/data.js";
-import { OLD_PROMPT, OLD_RUBRIC, RETRACTED } from "../lib/notes.js";
+import { duration, tokens } from "../lib/format.js";
 
 const Task = () => {
   const index = useIndex();
   const { id } = useParams();
-  const task = index.tasks.find(entry => entry.id === id) ?? null;
-
-  if (task === null) {
-    return <h1>No such task</h1>;
+  const [copyStatus, setCopyStatus] = useState("");
+  const task = index.tasks.find(entry => entry.id === id);
+  if (!task) {
+    return <h1>Task not found</h1>;
   }
 
-  const runs = index.runs
-    .filter(run => run.task === task.id)
-    .sort((a, b) => (a.created ?? "").localeCompare(b.created ?? "") || a.run.localeCompare(b.run));
-  // The list of expect lines and the prompt are today's; a run graded before a rewrite
-  // carries an earlier rubric, and its dots count that rubric's lines, not these.
-  const onOldRubric = (run: { rubric: string | null }) =>
-    run.rubric !== null && task.rubric !== null && run.rubric !== task.rubric;
-  const onOldPrompt = (run: { prompt: string | null }) =>
-    run.prompt !== null && task.prompt !== null && run.prompt !== task.prompt;
-  const olderRubrics = runs.filter(run => run.pass !== null && onOldRubric(run)).length;
-  const olderPrompts = runs.filter(run => run.pass !== null && onOldPrompt(run)).length;
-  const oldNote = (run: { rubric: string | null; prompt: string | null; rubric_expects: number | null }) =>
-    [
-      onOldRubric(run) ? `${OLD_RUBRIC} This run was graded on ${run.rubric_expects ?? "?"} lines.` : null,
-      onOldPrompt(run) ? OLD_PROMPT : null,
-    ]
-      .filter(Boolean)
-      .join(" ");
-  const retracted = runs.some(run => run.retracted !== null);
-
-  return (
-    <>
+  const runs = index.runs.filter(run => run.task === task.id).sort((a, b) => (a.created ?? "").localeCompare(b.created ?? "") || a.run.localeCompare(b.run));
+  const earlier = runs.some(run => (run.rubric !== null && task.rubric !== null && run.rubric !== task.rubric) || (run.prompt !== null && task.prompt !== null && run.prompt !== task.prompt));
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(task.input);
+      setCopyStatus("Prompt copied.");
+    } catch {
+      setCopyStatus("Copy failed. Select the prompt text to copy it.");
+    }
+  };
+  return <>
+    <header className="page-header">
+      <Link className="back" to={`/skill/${task.skill}`}>{task.skill}</Link>
       <h1>{task.id}</h1>
-      <p className="muted">
-        <Link to={`/skill/${task.skill}`}>skills/{task.skill}</Link> · {task.kind} · {task.runs} runs per variant
-        {task.template === null ? " · bare workspace" : ` · template ${task.template}`}
-        {task.status === "retired" && <span className="tag warnTag">retired</span>}
-      </p>
-      {task.status === "retired" && (
-        <p className="note">
-          This task is retired: it is not run again, and the runs below are kept for what they measured at the time.
-        </p>
-      )}
-
-      <h2>Prompt</h2>
-      <pre className="block">{task.input}</pre>
-
-      <h2>What the judge grades</h2>
-      <ol className="expects">
-        {task.expect.map((line, position) => (
-          <li key={position}>{line}</li>
-        ))}
+      <p className="muted">{task.kind === "quiz" ? "Quiz: reasoning and calculation" : "Goal: apply advice during a build"} · {task.expect.length} checks · {runs.length} runs</p>
+    </header>
+    <section aria-labelledby="prompt-heading">
+      <div className="section-heading">
+        <h2 id="prompt-heading">Prompt</h2>
+        <button onClick={copy}>Copy prompt</button>
+      </div>
+      <p role="status" className="copy-status small">{copyStatus}</p>
+      <pre className="prompt">{task.input}</pre>
+    </section>
+    <section aria-labelledby="checks-heading">
+      <h2 id="checks-heading">Checks</h2>
+      <p className="small muted">The model must pass every check below for the run to pass.</p>
+      <ol className="checks">
+        {task.expect.map((line, position) => <li key={position}>{line}</li>)}
       </ol>
-      {(olderRubrics > 0 || olderPrompts > 0) && (
-        <p className="footnote">
-          <strong className="moved">‡</strong>{" "}
-          {olderRubrics > 0 && `${olderRubrics} of the graded runs below were graded on an earlier revision of these lines. ${OLD_RUBRIC} `}
-          {olderPrompts > 0 && `${olderPrompts} were given an earlier wording of the prompt.`}
-        </p>
-      )}
-
-      <h2>Runs</h2>
-      {runs.some(entry => entry.regrade_of !== null) && (
-        <p className="note">
-          Some rows are regrades: the same run's stored evidence read a second time against rewritten{" "}
-          <code>expect:</code> lines. A regrade and the run it re-read are one run, so the tables count only the newer
-          reading — never both.
-        </p>
-      )}
-      {retracted && <p className="note">{RETRACTED}</p>}
-      <table className="grid">
-        <thead>
-          <tr>
-            <th>run</th>
-            <th>variant</th>
-            <th>skill</th>
-            <th>model</th>
-            <th>result</th>
-            <th>expects</th>
-            <th>model transcript</th>
-          </tr>
-        </thead>
-        <tbody>
-          {runs.map(run => (
-            <tr key={run.run}>
-              <th scope="row" className="mono small">
-                {run.run}
-              </th>
-              <td>{run.variant}</td>
-              <td className="mono small">{run.skill_content ? run.skill_content.slice(0, 8) : "—"}</td>
-              <td className="small">
-                {run.executor_model ?? run.executor}
-                {run.judge?.self_judged === true && (
-                  <span className="tag idle" title="the judge was the same agent as the executor">
-                    self-judged
-                  </span>
-                )}
-              </td>
-              <td>
-                {run.pass === null ? (
-                  <span className="tag idle">ungraded</span>
-                ) : run.pass ? (
-                  <span className="tag good">pass</span>
-                ) : (
-                  <span className="tag bad">fail</span>
-                )}
-                {run.retracted !== null && <Marker symbol="retracted" note={`${RETRACTED} Reason: ${run.retracted}`} className="tag warnTag" />}
-                {run.regrade_of !== null && (
-                  <span className="tag" title={`re-read of ${run.regrade_of}`}>
-                    regrade
-                  </span>
-                )}
-                {run.superseded_by !== null && <span className="tag idle">re-read later</span>}
-              </td>
-              <td className="mono small">
-                {run.expects
-                  ? Object.entries(run.expects).map(([expect, status]) => (
-                      <span key={expect} className={status === "pass" ? "dot good" : "dot bad"} title={expect}>
-                        {status === "pass" ? "●" : "○"}
-                      </span>
-                    ))
-                  : "—"}
-                {run.expects && (onOldRubric(run) || onOldPrompt(run)) && <Marker symbol="‡" note={oldNote(run)} />}
-              </td>
-              <td className="small">
-                {run.transcript_url ? <a href={run.transcript_url}>open</a> : <span className="muted">—</span>}
-              </td>
+      {earlier && <p className="footnote">Some runs used an earlier prompt or earlier checks. Each run's dots show the checks used then.</p>}
+    </section>
+    <section aria-labelledby="runs-heading">
+      <div className="section-heading">
+        <h2 id="runs-heading">Runs</h2>
+        <p className="small muted">Filled dot: pass · hollow dot: fail</p>
+      </div>
+      <p className="table-legend">Each row is one run. A pass means the model passed every check. "Not recorded" means the run has no record for that value.</p>
+      <div className="scroll" role="region" aria-label="Task runs" tabIndex={0}>
+        <table className="grid runs-table">
+          <thead>
+            <tr>
+              <th scope="col">Run</th>
+              <th scope="col">Skill used</th>
+              <th scope="col">Skill version</th>
+              <th scope="col">Model</th>
+              <th scope="col">Result</th>
+              <th scope="col">Checks</th>
+              <th scope="col" className="num">Tokens used</th>
+              <th scope="col" className="num">Time taken</th>
+              <th scope="col">Transcript</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
-
-      {task.notes !== null && (
-        <details className="why">
-          <summary>Why this task exists, and how its checks were chosen</summary>
-          <pre className="block muted">{task.notes}</pre>
-        </details>
-      )}
-    </>
-  );
+          </thead>
+          <tbody>{runs.map(run => {
+            const entry = index.showcase?.find(entry => entry.skill === task.skill && entry.model === run.model);
+            const version = run.variant !== "with_skill" ? "No skill" : run.skill_content === entry?.before ? "Before rewrite" : run.skill_content === entry?.after ? "After rewrite" : "Not recorded";
+            return <tr key={run.run}>
+              <th scope="row" className="run-label"><span className="run-id">{run.run}</span><span className="cell-detail">{run.created?.slice(0, 10) ?? "date not recorded"}</span>
+              </th>
+              <td>{run.variant === "with_skill" ? "with skill" : "without skill"}</td>
+              <td>{version}</td>
+              <td className="model">{run.model}</td>
+              <td className={run.pass ? "good" : "bad"}>{run.pass === null ? "Not recorded" : run.pass ? "pass" : "fail"}</td>
+              <td>
+                <span className="dots">{run.expects ? Object.entries(run.expects).sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true })).map(([check, status]) => <span key={check} className={`dot ${status}`} role="img" aria-label={`Check ${check.replace("expect_", "")}: ${status}`} title={`Check ${check.replace("expect_", "")}: ${status}`} />) : "Not recorded"}</span>
+              </td>
+              <td className="num">{tokens(run.usage.tokens)}</td>
+              <td className="num">{duration(run.usage.duration_s)}</td>
+              <td>{run.transcript_url ? <a href={run.transcript_url} aria-label={`Open transcript for ${run.run}`}>Read transcript ↗</a> : "Not recorded"}</td>
+            </tr>;
+          })}</tbody>
+        </table>
+      </div>
+    </section>
+  </>;
 };
-
 export default Task;

@@ -1,279 +1,184 @@
 import { PatchDiff } from "@pierre/diffs/react";
-import Marker from "../components/Marker.js";
-import { useMemo, useState } from "react";
+import { useMemo, useState, useSyncExternalStore } from "react";
 import { Link, useParams } from "react-router-dom";
-import { compareSkill, formatCell, mixed, type Cell, type Row } from "../lib/compare.js";
+import { PassCount, ResultsLegend } from "../components/PassCount.js";
+import { ComparisonBlock } from "../components/ComparisonBlock.js";
+import { compareEntry, type UsageMedians } from "../lib/compare.js";
 import { useDocs, useIndex } from "../lib/data.js";
 import { patchBetween } from "../lib/diff.js";
-import {
-  MIXED_RUBRICS,
-  MODEL_MOVED,
-  NO_COMPARABLE_ROWS,
-  NO_SHARED_TASKS,
-  PARTIAL_COVERAGE,
-  PROMPT_MOVED,
-  RETIRED_ROW,
-  RUBRIC_MOVED,
-  UNAIDED_MODELS,
-  UNAIDED_OFF_RUBRIC,
-} from "../lib/notes.js";
+import { cost, count, duration, tokens } from "../lib/format.js";
+import type { Entry } from "../lib/types.js";
+const phoneQuery = "(max-width: 699px)";
+const subscribeViewport = (notify: () => void) => {
+  const query = window.matchMedia(phoneQuery);
+  query.addEventListener("change", notify);
+  return () => query.removeEventListener("change", notify);
+};
+const phoneViewport = () => window.matchMedia(phoneQuery).matches;
+const UsageValue = ({ usage, metric, format }: {
+  usage: UsageMedians;
+  metric: "tokens" | "duration_s" | "cost_usd";
+  format: (value: number | null) => string;
+}) => (<td className="num">
+  <span>{format(usage[metric])}</span>
+  <span className="cell-detail">{usage[metric] === null ? `${usage.recorded[metric]} of ${usage.runs} runs recorded` : `Based on ${usage.recorded[metric]} of ${usage.runs} runs`}</span>
+</td>);
+const EntryResults = ({ entry }: {
+  entry: Entry;
+}) => {
+  const index = useIndex();
+  const { docs, error: docsError } = useDocs();
+  const comparison = useMemo(() => compareEntry(entry, index), [entry, index]);
+  const phone = useSyncExternalStore(subscribeViewport, phoneViewport);
+  const [showDiff, setShowDiff] = useState(true);
+  const { before, after, rows, totals, usage } = comparison;
+  // The skill texts live in docs.json, fetched once when the first skill page opens.
+  const patch = useMemo(() => {
+    const beforeText = before && docs ? docs.skills[before.id] : undefined;
+    const afterText = after && docs ? docs.skills[after.id] : undefined;
 
-const size = (lines: number, words: number) => `${lines} lines / ${words} words`;
-const models = (cell: Cell | null) => (cell === null ? "—" : cell.models.join(", "));
-
-// What moved between the two skilled cells, in the words of the footnote each mark stands for.
-const movedNote = (row: Row) =>
-  [row.rubricMoved ? RUBRIC_MOVED : null, row.promptMoved ? PROMPT_MOVED : null].filter(Boolean).join(" ");
-
-const modelNote = (row: Row) => `${MODEL_MOVED} Before: ${models(row.before)}. After: ${models(row.after)}.`;
-
-const unaidedModelNote = (row: Row) =>
-  `${UNAIDED_MODELS} Without skill: ${models(row.noSkill)}. With skill: ${models(row.after ?? row.before)}.`;
-
+    return before && after && beforeText !== undefined && afterText !== undefined
+      ? patchBetween({ sha: before.sha, text: beforeText }, { sha: after.sha, text: afterText })
+      : null;
+  }, [before, after, docs]);
+  const columns = [{ label: "Without skill", value: usage.noSkill }, { label: "With skill, before rewrite", value: usage.before }, { label: "With skill, after rewrite", value: usage.after }];
+  const hasUsage = (value: UsageMedians) => Object.values(value.recorded).some(count => count > 0);
+  const diffId = `diff-${entry.skill}-${entry.model}`;
+  return (<article className="entry">
+    <ComparisonBlock title={entry.model}
+      subline={`${count(rows.length, "task")}, ${count(usage.noSkill.runs + usage.before.runs + usage.after.runs, "run")}`}
+      noSkill={totals.noSkill} before={totals.before} after={totals.after}
+      beforeLines={before?.lines ?? null} afterLines={after?.lines ?? null}
+      beforeTokens={before?.tokens ?? null} afterTokens={after?.tokens ?? null}
+    />
+    <section aria-label={`Results on ${entry.model}`}>
+      <div className="section-heading">
+        <h2>Results</h2>
+      </div>
+      <ResultsLegend />
+      <div className="scroll" role="region" aria-label={`${entry.model} task results`} tabIndex={0}>
+        <table className="grid">
+          <thead>
+            <tr>
+              <th scope="col">Task</th>
+              <th scope="col">Kind</th>
+              <th scope="col" className="num">Without skill</th>
+              <th scope="col" className="num secondary">With skill, before rewrite</th>
+              <th scope="col" className="num after">With skill, after rewrite</th>
+            </tr>
+          </thead>
+          <tbody>{rows.map(row => <tr key={row.task}>
+            <th scope="row">
+              <Link to={`/task/${row.task}`}>{row.task}</Link>
+            </th>
+            <td className="muted">{row.kind}</td>
+            <td className="num">
+              <PassCount cell={row.noSkill} />
+            </td>
+            <td className="num secondary"><PassCount cell={row.before} /></td>
+            <td className="num after">
+              <PassCount cell={row.after} />
+            </td>
+          </tr>)}</tbody>
+          <tfoot>
+            <tr>
+              <th scope="row" colSpan={2}>Total
+              </th>
+              <td className="num"><PassCount cell={totals.noSkill} /></td>
+              <td className="num secondary"><PassCount cell={totals.before} /></td>
+              <td className="num after"><PassCount cell={totals.after} /></td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </section>
+    <section aria-label="Tokens, time and cost">
+      <h2>Tokens, time and cost</h2>
+      {columns.some(column => hasUsage(column.value)) ? <>
+        <p className="muted small">Each value is the median per run for the tasks above. Token counts include recorded cache use. We show cost only when every run in that row has a cost record.</p>
+        <div className="scroll" role="region" aria-label="Usage medians" tabIndex={0}>
+          <table className="grid usage-table">
+            <thead>
+              <tr>
+                <th scope="col">Skill used</th>
+                <th scope="col" className="num">Median tokens per run</th>
+                <th scope="col" className="num">Median time per run</th>
+                <th scope="col" className="num">Median cost per run, USD</th>
+              </tr>
+            </thead>
+            <tbody>{columns.map(({ label, value }) => <tr key={label}>
+              <th scope="row">{label}</th>{hasUsage(value) ? <>
+                <UsageValue usage={value} metric="tokens" format={tokens} />
+                <UsageValue usage={value} metric="duration_s" format={duration} />
+                <UsageValue usage={value} metric="cost_usd" format={cost} />
+              </> : <td colSpan={3} className="muted">Not recorded</td>}</tr>)}</tbody>
+          </table>
+        </div>
+      </> : <p className="muted">These runs have no token, time or cost records.</p>}
+    </section>
+    <section aria-label="Skill diff">
+      <div className="section-heading">
+        <h2>The rewrite</h2>
+        <button aria-expanded={showDiff} aria-controls={diffId} onClick={() => setShowDiff(!showDiff)}>{showDiff ? "Hide diff" : "Show diff"}</button>
+      </div>
+      {showDiff && <div id={diffId}>
+        <div className="diff-labels">
+          <span>Before rewrite <strong>{before ? `${before.lines} lines` : "Length not recorded"}</strong>
+          </span>
+          <span>After rewrite <strong>{after ? `${after.lines} lines` : "Length not recorded"}</strong>
+          </span>
+        </div>
+        <p className="small muted">{phone ? "Removed text comes before added text." : "The original is on the left. The rewrite is on the right."} Changed words are marked. Unchanged text is folded away.</p>
+        {patch ? <div className="diff-scroll" role="region" aria-label="Before and after skill text" tabIndex={0}>
+          <PatchDiff patch={patch} options={{
+            diffStyle: phone ? "unified" : "split",
+            lineDiffType: "word",
+            overflow: "wrap",
+            disableFileHeader: true,
+            expandUnchanged: false,
+            theme: { light: "github-light", dark: "github-dark" },
+            onPostRender: node => {
+              // Name each pane for keyboard and screen-reader navigation.
+              for (const pane of node.shadowRoot?.querySelectorAll<HTMLElement>("code[data-deletions], code[data-additions]") ?? []) {
+                pane.tabIndex = 0;
+                pane.setAttribute("role", "region");
+                pane.setAttribute("aria-label", pane.hasAttribute("data-deletions") ? "Before skill text" : "After skill text");
+              }
+            },
+          }} />
+        </div> : <p className="muted">{docsError ?? (docs === null && before && after ? "Loading the skill text." : "Skill text unavailable.")}</p>}
+      </div>}
+    </section>
+  </article>);
+};
 const Skill = () => {
   const index = useIndex();
-  const { docs } = useDocs();
   const { name } = useParams();
-  const skill = index.skills.find(entry => entry.name === name) ?? null;
-  const [showDiff, setShowDiff] = useState(true);
-
-  const comparison = useMemo(
-    () => (skill === null ? null : compareSkill(skill, index.tasks, index.runs)),
-    [skill, index],
-  );
-
-  const patch = useMemo(() => {
-    const target = comparison?.after ?? comparison?.current ?? null;
-
-    if (comparison?.before == null || target === null || target.id === comparison.before.id || docs === null) {
-      return null;
-    }
-
-    return patchBetween(
-      { sha: comparison.before.sha, text: docs.skills[comparison.before.id] ?? "" },
-      { sha: target.sha, text: docs.skills[target.id] ?? "" },
-    );
-  }, [comparison, docs]);
-
-  if (skill === null || comparison === null) {
-    return <h1>No such skill</h1>;
-  }
-
-  const { before, after, current, between, rows, coverage } = comparison;
-  // Nothing to put side by side when the repo still holds the one version that was measured.
-  const right = after ?? (current !== null && current.id !== before?.id ? current : null);
-  const reports = index.reports.filter(report => report.skill.startsWith(skill.name));
-  const prs = index.prs.filter(pr => pr.skill === skill.name);
-  const moved = rows.some(row => row.rubricMoved || row.promptMoved);
-  const modelMoved = rows.some(row => row.modelMoved || row.unaidedModels);
-  const offRubric = rows.some(row => row.unaidedOffRubric);
-  const pooled = rows.some(row => mixed(row.noSkill) || mixed(row.before) || mixed(row.after));
-  const retired = rows.some(row => row.retired);
-  const fullCoverage = coverage.counted === coverage.total;
-
-  return (
-    <>
-      <h1>
-        skills/{skill.name}
-        <a className="small src" href={`https://ethskills.com/${skill.name}/SKILL.md`}>
-          upstream
-        </a>
-      </h1>
-
-      {after === null ? (
-        <p className="lede">
-          Measured once, at {before ? size(before.lines, before.words) : "an unknown size"}. It has not been rewritten
-          and re-run, so there is no before and after to compare.
-        </p>
-      ) : (
-        <p className="lede">
-          Rewritten from <strong>{size(before!.lines, before!.words)}</strong> to{" "}
-          <strong>{size(after.lines, after.words)}</strong>
-          {comparison.comparable && fullCoverage
-            ? ", and both versions were put through the same tasks."
-            : comparison.comparable
-              ? `, and compared on ${coverage.counted} of ${coverage.total} tasks.`
-              : "."}
-        </p>
-      )}
-
-      {comparison.editedAfterBenchmark && current !== null && (
-        <p className="note">
-          The file in the repo today is {size(current.lines, current.words)} — it was edited after the benchmark, so no
-          run was graded on exactly this text. The numbers below belong to the versions that were measured.
-        </p>
-      )}
-
-      <h2>Results</h2>
-      <table className="grid">
-        <thead>
-          <tr className="group">
-            <th colSpan={2} />
-            <th colSpan={2} className="span">
-              with skill
-            </th>
-          </tr>
-          <tr>
-            <th>task</th>
-            <th className="num">without skill</th>
-            <th className="num">before</th>
-            <th className="num">after</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map(row => (
-            <tr key={row.task} className={!row.counted && (after !== null || row.retired) ? "uncounted" : undefined}>
-              <th scope="row">
-                <Link to={`/task/${row.task}`}>{row.task.replace(`${skill.name}-`, "")}</Link>{" "}
-                <span className="muted small">{row.kind}</span>
-                {row.retired && <Marker symbol="retired" note={RETIRED_ROW} className="tag warnTag" />}
-              </th>
-              <td className="num">
-                {formatCell(row.noSkill)}
-                {row.unaidedOffRubric && <Marker symbol="§" note={UNAIDED_OFF_RUBRIC} />}
-                {row.unaidedModels && <Marker symbol="◊" note={unaidedModelNote(row)} />}
-                {mixed(row.noSkill) && <Marker symbol="†" note={MIXED_RUBRICS} />}
-              </td>
-              <td className="num">
-                {formatCell(row.before)}
-                {(row.rubricMoved || row.promptMoved) && <Marker symbol="‡" note={movedNote(row)} />}
-                {row.modelMoved && <Marker symbol="◊" note={modelNote(row)} />}
-                {mixed(row.before) && <Marker symbol="†" note={MIXED_RUBRICS} />}
-              </td>
-              <td className="num">
-                {formatCell(row.after)}
-                {(row.rubricMoved || row.promptMoved) && <Marker symbol="‡" note={movedNote(row)} />}
-                {row.modelMoved && <Marker symbol="◊" note={modelNote(row)} />}
-                {mixed(row.after) && <Marker symbol="†" note={MIXED_RUBRICS} />}
-              </td>
-            </tr>
-          ))}
-          <tr className="total">
-            <th scope="row">
-              total{" "}
-              <span className="muted small">
-                {fullCoverage ? `all ${coverage.total} tasks` : `${coverage.counted} of ${coverage.total} tasks`}
-              </span>
-            </th>
-            <td className="num">{formatCell(comparison.totals.noSkill)}</td>
-            <td className="num">{formatCell(comparison.totals.before)}</td>
-            <td className="num">{formatCell(comparison.totals.after)}</td>
-          </tr>
-        </tbody>
-      </table>
-
-      <p className="footnote">
-        Models: without skill {models(comparison.totals.noSkill)} · before {models(comparison.totals.before)}
-        {after !== null && <> · after {models(comparison.totals.after)}</>}.
-      </p>
-
-      {!comparison.comparable && (
-        <p className="note">{comparison.sharedRows === 0 ? NO_SHARED_TASKS : NO_COMPARABLE_ROWS}</p>
-      )}
-
-      {comparison.comparable && after !== null && !fullCoverage && (
-        <p className="footnote">
-          <strong className="moved">*</strong> {PARTIAL_COVERAGE}
-        </p>
-      )}
-
-      {moved && (
-        <p className="footnote">
-          <strong className="moved">‡</strong> The task's expect: lines or prompt were rewritten between the two
-          versions, so the two cells were graded by different rules and are not a comparison. Hover the mark for
-          which. The row is left out of the totals.
-        </p>
-      )}
-
-      {modelMoved && (
-        <p className="footnote">
-          <strong className="moved">◊</strong> {MODEL_MOVED} Hover the mark for the models.
-        </p>
-      )}
-
-      {offRubric && (
-        <p className="footnote">
-          <strong className="moved">§</strong> {UNAIDED_OFF_RUBRIC}
-        </p>
-      )}
-
-      {pooled && (
-        <p className="footnote">
-          <strong className="moved">†</strong> {MIXED_RUBRICS}
-        </p>
-      )}
-
-      {retired && (
-        <p className="footnote">
-          <strong className="moved">retired</strong> {RETIRED_ROW}
-        </p>
-      )}
-
-      {between.length > 0 && (
-        <p className="footnote">
-          {between.length} more measured {between.length === 1 ? "version was" : "versions were"} benchmarked and
-          {between.length === 1 ? " is" : " are"} not shown above:{" "}
-          {between.map(version => `${version.lines} lines (${version.runs} runs)`).join(", ")}.
-        </p>
-      )}
-
-      {(reports.length > 0 || prs.length > 0) && (
-        <>
-          <h2>{right === null ? "Reports and write-ups" : "Why it changed"}</h2>
-          <ul className="docs">
-            {reports.map(report => (
-              <li key={report.file}>
-                <Link to={`/report/${report.file}`}>{report.title}</Link>{" "}
-                <span className="muted small">report · {report.date}</span>
-              </li>
-            ))}
-            {prs.map(pr => (
-              <li key={pr.number}>
-                <Link to={`/pr/${pr.number}`}>{pr.title}</Link>{" "}
-                <span className="muted small">
-                  pull request #{pr.number} · {pr.state.toLowerCase()}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </>
-      )}
-
-      {right !== null && (
-        <>
-          <h2>
-            The skill, then and now
-            <button className="toggle" onClick={() => setShowDiff(!showDiff)}>
-              {showDiff ? "hide" : "show"}
-            </button>
-          </h2>
-          {showDiff && docs === null && <p className="muted">Loading the skill texts…</p>}
-          {showDiff && patch !== null && (
-            <>
-              <p className="footnote">
-                Left: {before ? size(before.lines, before.words) : "—"}. Right:{" "}
-                {after === null ? "the file in the repo now" : "the version measured after the rewrite"},{" "}
-                {right !== null ? size(right.lines, right.words) : "—"}. Unchanged stretches are collapsed.
-              </p>
-                <PatchDiff
-                patch={patch}
-                className="patch"
-                options={{
-                  diffStyle: "split",
-                  lineDiffType: "word",
-                  overflow: "scroll",
-                  disableFileHeader: true,
-                  expandUnchanged: false,
-                  theme: { light: "github-light", dark: "github-dark" },
-                }}
-              />
-            </>
-          )}
-        </>
-      )}
-
-    </>
-  );
+  const reports = index.reports.filter(report => report.skill === name);
+  const prs = index.prs.filter(pr => pr.skill === name);
+  const entries = index.showcase?.filter(entry => entry.skill === name) ?? [];
+  if (entries.length === 0)
+    return <h1>Skill not found</h1>;
+  return <>
+    <header className="skill-title">
+      <Link className="back" to="/">All skills</Link>
+      <div className="section-heading">
+        <h1>{name}</h1>
+        <a className="small" href={`https://ethskills.com/${name}/SKILL.md`}>upstream ↗</a>
+      </div>
+    </header>
+    {entries.map(entry => <EntryResults key={`${entry.skill}/${entry.model}`} entry={entry} />)}
+    <section aria-label="Why we rewrote it">
+      <h2>Why we rewrote it</h2>
+      <ul className="docs">{reports.map(report => <li key={report.file}>
+        <Link to={`/report/${report.file}`}>{report.title}</Link>
+        <span className="small muted">Report · {report.date ?? "date not recorded"}</span>
+      </li>)}{prs.map(pr => <li key={pr.number}>
+        <Link to={`/pr/${pr.number}`}>{pr.title}</Link>
+        <span className="small muted">Pull request #{pr.number}</span>
+      </li>)}</ul>
+      {reports.length === 0 && prs.length === 0 && <p className="muted">No reports or pull requests linked for this skill.</p>}
+    </section>
+  </>;
 };
-
 export default Skill;

@@ -288,8 +288,17 @@ This line said the opposite until 2026-08-20 — transcripts gitignored, `output
 ## The results site
 
 `site/` is a viewer, not part of the loop: it reads what runs already produced and never
-takes part in producing them. Do not touch it while running a benchmark. After one, run
-`yarn build-index` and commit `site/derived.json` if it changed — it carries the skill text
+takes part in producing them. Do not touch it while running a benchmark.
+
+After a benchmark, add or update its entry in `site/showcase.json`.
+Each entry names `skill`, `model`, `before`, and `after`, with one entry per skill and model.
+Use 12-character skill content hashes for the vendored `before` and rewritten `after` versions, not repository commit hashes.
+Run `yarn build-index --versions --no-prs` to list known skills, version ids, line counts, and run counts on stderr.
+This list precedes manifest selection; run counts span all models and task statuses.
+Both versions need runs on the named model.
+Run `yarn build-index`, then commit the manifest and `site/derived.json` if it changed.
+
+`site/derived.json` carries the skill text
 and the task rubric each run was measured against, and those stop being recoverable once
 the branch that held them is deleted.
 
