@@ -495,3 +495,31 @@ The runs that arrived from `main` were checked for a clean before/after on one m
   (66 lines) only on opus-5, and there on two goals only.
 - **testing: not added.** One version measured (379 lines); the 59-line minimal has no runs.
 - **audit: not added.** One version measured (72 lines).
+
+## 15. The front: one comparison block (2026-09-11)
+
+Shiv's direction after looking at three prototypes (a table with deltas, paired bars, one
+worked example): the home page opens with one block that pools every skill and run, the
+results table stays below it as it was, and each skill page opens with the same block for
+that skill. The three-column block is `site/src/components/ComparisonBlock.tsx`.
+
+- Columns: without skill, with skill before the rewrite, with skill after. Pass rate large,
+  run fraction under it, then lines and tokens under the two skilled columns. "higher" in
+  green or "lower" in red beside the after rate when its exact fraction moved; no word and no
+  colour when it did not.
+- Home block: sums of `compareEntry(entry).totals` across all entries, sub-line with skill,
+  model, task and run counts. It pools three models; the run fractions say so and the
+  sub-line names the model count. Skill page block: that entry's totals, titled by model.
+- Tokens are the skill text counted with the o200k tokenizer (`gpt-tokenizer`) at index
+  time, `SkillVersion.tokens`. One tokenizer for every version so the counts compare across
+  skills; Claude tokenizes differently, so for those skills it is an estimate. Median tokens
+  per run stay in the table, since they cannot be pooled across models.
+- Table copy: heading "By skill", headers "Before rewrite", "After rewrite", "Lines",
+  "Tokens per run"; the after cell carries the same higher/lower word. Intro pointers moved
+  below the table.
+- Length is a fact shown beside the pass rate, not the headline. The vault note of
+  2026-08-31 says the aim "is not merely to make files smaller", and the pass rate with raw
+  counts is the measure.
+
+Not done: a footnote naming the tokenizer under the block; the "what failed before the
+rewrite" section from the `mistakes/` records, which needs the indexer to read them.
