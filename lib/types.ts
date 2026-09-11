@@ -74,6 +74,11 @@ export type ResultRecord = {
   // sha256 of the task input the executor was given, so a regrade can tell whether the spec
   // still asks the question this run answered. Absent on runs made before the field existed.
   input_sha?: string;
+  // The id of the SKILL.md text this run was given. skill_version is the repo's HEAD at
+  // setup, which says nothing about whether the skill itself changed; this does. Absent on
+  // runs made before the field existed — those are recovered from git history instead, for
+  // as long as the branch that holds the sha survives.
+  skill_content?: string | null;
   created: string;
   // Set only on a regrade: the run whose stored evidence was re-judged. The executor never
   // ran again, so this record is a second reading of one run, not a second run — never
