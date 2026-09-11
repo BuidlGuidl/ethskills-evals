@@ -115,7 +115,8 @@ the past. Concretely:
     { "skill": "wallets",       "model": "claude-opus-5",  "before": "ae147e09a230", "after": "fc965d17a92a" },
     { "skill": "security",      "model": "gpt-5.4",        "before": "dd988d2f4172", "after": "662e68fa0226" },
     { "skill": "orchestration", "model": "gpt-5.6-terra",  "before": "524ef0810e78", "after": "60b3a1402947" },
-    { "skill": "frontend-playbook", "model": "claude-opus-5", "before": "13df4b400c54", "after": "95a2e7035710" }
+    { "skill": "frontend-playbook", "model": "claude-opus-5", "before": "13df4b400c54", "after": "95a2e7035710" },
+    { "skill": "audit",         "model": "gpt-5.6-sol",    "before": "f7e2a649a073", "after": "ccbeb1ed470a" }
   ]
 }
 ```
@@ -133,6 +134,7 @@ retracted, graded):
 | security | gpt-5.4 | 487 lines, 24 / 8 | 56 lines, 24 / 8 | 48 |
 | orchestration | gpt-5.6-terra | 225 lines, 15 / 4 of 5 | 34 lines, 15 / 5 | 21 |
 | frontend-playbook | claude-opus-5 | 394 lines, 24 / 8 | 93 lines, 24 / 8 | 24 |
+| audit | gpt-5.6-sol | 72 lines, 11 / 4 | 63 lines, 12 / 4 | 24 |
 
 Known wrinkles in this data that D10 covers: `orchestration-quiz-004` has no before runs;
 `addresses` (2 tasks), `concepts` (2), `security` (2), `wallets` (2) and `l2s` (1)
@@ -494,7 +496,11 @@ The runs that arrived from `main` were checked for a clean before/after on one m
 - **qa: not added.** The original (439 lines) has runs only on opus-4.8, the minimal version
   (66 lines) only on opus-5, and there on two goals only.
 - **testing: not added.** One version measured (379 lines); the 59-line minimal has no runs.
-- **audit: not added.** One version measured (72 lines).
+- **audit: not added at first.** One version measured (72 lines). Added after the second
+  back-merge (2971149): PR #110 minimised the skill to 63 lines and reran it on gpt-5.6-sol,
+  so both versions have runs on all four live tasks on one model, same checks and prompt.
+  The rewrite passed 10 of 12 against 11 of 11 before, a second "lower" row beside
+  orchestration.
 
 ## 15. The front: one comparison block (2026-09-11)
 

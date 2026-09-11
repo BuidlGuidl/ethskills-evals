@@ -143,15 +143,15 @@ test("the CLI selects the committed showcase after resolution and leaves the der
   try {
     const built = spawnSync(process.execPath, args, { encoding: "utf8" });
     assert.equal(built.status, 0, built.stderr);
-    assert.equal(built.stderr.trim().split("\n").length, 7);
+    assert.equal(built.stderr.trim().split("\n").length, 8);
     assert.doesNotMatch(built.stderr, /warning:/);
     assert.match(built.stderr, /showcase protocol \(claude-opus-5\): excluded none/);
     assert.match(built.stderr, /wallets-goal-004 \(no runs before the rewrite\)/);
     const index: Index = JSON.parse(readFileSync(out, "utf8"));
-    assert.equal(index.skills.length, 7);
+    assert.equal(index.skills.length, 8);
     assert.deepEqual(index.showcase, loadShowcase("site/showcase.json"));
-    assert.equal(index.tasks.length, 30);
-    assert.equal(index.runs.length, 306);
+    assert.equal(index.tasks.length, 34);
+    assert.equal(index.runs.length, 353);
     assert.deepEqual(index.warnings, []);
     assert.ok(!("notes" in index));
     for (const entry of index.showcase!) {
@@ -190,7 +190,7 @@ test("the CLI selects the committed showcase after resolution and leaves the der
     assert.deepEqual(counts, [
       ["addresses", 12, 12, 12], ["l2s", 12, 12, 12], ["protocol", 6, 6, 12],
       ["wallets", 9, 9, 18], ["security", 18, 18, 36], ["orchestration", 9, 9, 12],
-      ["frontend-playbook", 24, 24, 24],
+      ["frontend-playbook", 24, 24, 24], ["audit", 11, 12, 24],
     ]);
     assert.ok(full.skills.length > index.skills.length);
     assert.ok(full.runs.some(run => run.superseded_by !== null));
