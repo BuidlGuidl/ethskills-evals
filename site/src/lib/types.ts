@@ -42,6 +42,8 @@ export type SkillVersion = {
   sha: string;
   lines: number;
   words: number;
+  /** tokens of the skill text under the o200k tokenizer; an estimate for models that tokenize differently */
+  tokens: number;
   runs: number;
   in_repo: boolean;
 };

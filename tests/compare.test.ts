@@ -13,6 +13,7 @@ const version = (id: string, lines: number, runs: number) => ({
   sha: id,
   lines,
   words: lines * 5,
+  tokens: lines * 7,
   runs,
   in_repo: false,
 });

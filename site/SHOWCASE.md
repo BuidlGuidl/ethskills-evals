@@ -177,7 +177,7 @@ its task is live, and either `variant === "no_skill"` or `skill_content` is the 
 `before` or `after`. Drop `regrade_of` / `superseded_by` / `retracted` from the emitted run
 if they are always null after selection; keep `judge` out of the UI but it may stay in the
 JSON. `Skill.versions` should contain the before and after versions (with lines, words,
-sha). The text lives in `docs.json` since section 14; the diff fetches it from there.
+tokens under the o200k tokenizer, sha). The text lives in `docs.json` since section 14; the diff fetches it from there.
 
 `build-index` should warn (and therefore fail `--strict`) when an entry names a skill,
 version or model that selects zero runs on either side, so a typo in the manifest cannot

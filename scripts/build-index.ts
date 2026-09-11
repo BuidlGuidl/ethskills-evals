@@ -3,6 +3,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
+import { encode } from "gpt-tokenizer/encoding/o200k_base";
 import yaml from "js-yaml";
 import { loadShowcase, runModel, runUsage, selectShowcase } from "../lib/showcase.js";
 import { orderReadings } from "../lib/readings.js";
@@ -135,6 +136,9 @@ const fetchPullRequests = (): PullRequest[] | null => {
 
 const countLines = (text: string) => text.replace(/\n$/, "").split("\n").length;
 const countWords = (text: string) => text.split(/\s+/).filter(Boolean).length;
+// What the skill costs in context. One tokenizer for every version (o200k, the one GPT models
+// use) so the counts compare across skills; Claude tokenizes differently, so it is an estimate.
+const countTokens = (text: string) => encode(text).length;
 
 const sortKeys = <T,>(record: Record<string, T>) =>
   Object.fromEntries(Object.entries(record).sort(([a], [b]) => a.localeCompare(b)));
@@ -695,6 +699,7 @@ const main = async () => {
           sha: entry.sha,
           lines: countLines(entry.text),
           words: countWords(entry.text),
+          tokens: countTokens(entry.text),
           runs: entry.runs,
           in_repo: entry.id === currentId,
         };
