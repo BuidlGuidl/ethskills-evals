@@ -19,8 +19,7 @@ const Summary = () => {
   const versionTokens = (column: "beforeVersion" | "afterVersion") => {
     const values = rows.map(row => {
       const version = row[column];
-      return version && "tokens" in version && typeof version.tokens === "number" && Number.isFinite(version.tokens)
-        ? version.tokens : null;
+      return version?.tokens ?? null;
     });
     // A partial sum would understate the combined skill text.
     return values.length && values.every((value): value is number => value !== null)

@@ -49,6 +49,7 @@ const EntryResults = ({ entry }: {
       subline={`${count(rows.length, "task")}, ${count(usage.noSkill.runs + usage.before.runs + usage.after.runs, "run")}`}
       noSkill={totals.noSkill} before={totals.before} after={totals.after}
       beforeLines={before?.lines ?? null} afterLines={after?.lines ?? null}
+      beforeTokens={before?.tokens ?? null} afterTokens={after?.tokens ?? null}
     />
     <section aria-label={`Results on ${entry.model}`}>
       <div className="section-heading">
