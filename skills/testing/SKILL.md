@@ -21,7 +21,7 @@ Before deploy, every owner-settable number that feeds value math — fee basis p
 
 Reaching a suspected bug by reading the code and then writing one test for it confirms what you already believed. It is not a substitute for the search, and it stops at the first defect you happened to imagine.
 
-Include both sides of every bound, not just the far side. The value at the limit and the value past it usually break through different code paths and surface as different failures, so evidence for one is not evidence for the other.
+Treat every bound as three separate cases: the nearest value below it, the value exactly at it, and the nearest value above it. Trace each through the downstream checks before deciding which region is valid. The exact limit and the value past it often break through different code paths and surface as different failures, so evidence for one is not evidence for the other.
 
 ## Fork against the real deployment
 
@@ -52,7 +52,7 @@ Read the calls/reverts statistics in the run output every time. A revert rate ne
 ## Before deploy
 
 - [ ] No test asserts the implementation back to itself.
-- [ ] Every owner-settable number feeding value math is fuzzed across its domain, both sides of each bound included.
+- [ ] Every owner-settable number feeding value math is fuzzed across its domain, with below, exact-limit, and above-limit behavior checked separately.
 - [ ] Every external integration and quirky token is exercised on a pinned fork against the real deployment, on an endpoint confirmed to serve that block.
 - [ ] Stateful contracts have a handler-driven invariant tying accounting to custody, with a revert rate low enough that the sequences reached real states.
 - [ ] Access control, zero, and max-value cases revert as intended.
