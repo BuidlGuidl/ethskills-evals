@@ -1,0 +1,378 @@
+diff --git a/FINDINGS.md b/FINDINGS.md
+new file mode 100644
+index 0000000..b34051f
+--- /dev/null
++++ b/FINDINGS.md
+@@ -0,0 +1,229 @@
++# USDT Yield Vault release findings
++
++## Sign-off decision
++
++**Do not deploy this contract on Monday.** The pinned-mainnet test shows that the first deposit of real USDT reverts before reaching Aave. Even if that integration blocker is fixed, the vault does not account for Aave yield, does not implement its documented fee economics, and allows the owner to configure a fee that disables all deposits.
++
++No file under `src/`, `test/UsdtYieldVault.t.sol`, or `test/mocks/` was changed. The evidence tests are in `test/UsdtYieldVaultRelease.t.sol` and `test/UsdtYieldVaultMainnetFork.t.sol`.
++
++## 1. Critical — every real-USDT deposit reverts
++
++`deposit()` uses SafeERC20 for `transferFrom`, but then calls `usdt.approve(...)` directly. Mainnet USDT's `approve` succeeds with empty return data. A Solidity call through `IERC20.approve`, which declares a `bool` return value, rejects that empty return data. The transaction therefore reverts after the transfer and before Aave `supply` (the preceding transfer is rolled back too).
++
++The fork is pinned at block `25,958,026` and uses exactly the USDT and Aave Pool addresses specified for deployment. The aUSDT reserve token is `0x23878914EFE38d27C4D67Ab83ed1b93A74D4086a`.
++
++Command and relevant failure trace copied verbatim from its output (Foundry's storage-discovery setup calls are omitted):
++
++```text
++$ forge test --match-contract UsdtYieldVaultMainnetForkTest -vvvv
++Compiling 1 files with Solc 0.8.28
++Solc 0.8.28 finished in 1.08s
++Compiler run successful!
++2026-09-12T01:26:49.448162Z  WARN evm::traces::external: etherscan config not found
++2026-09-12T01:26:49.651064Z  WARN foundry_fork_db::cache: Failed to read cache file err=Os { code: 2, kind: NotFound, message: "No such file or directory" } path="/home/damu/.foundry/cache/rpc/mainnet/25958026"
++
++Ran 1 test for test/UsdtYieldVaultMainnetFork.t.sol:UsdtYieldVaultMainnetForkTest
++[FAIL: EvmError: Revert] test_RealUsdtCanBeDepositedIntoAave() (gas: 1139810)
++2026-09-12T01:26:52.094718Z  WARN flush{path=Some("/home/damu/.foundry/cache/rpc/mainnet/25958026")}: cache: Failed to open json cache for writing e=Read-only file system (os error 30)
++Traces:
++  [1139810] UsdtYieldVaultMainnetForkTest::test_RealUsdtCanBeDepositedIntoAave()
++    ├─ [0] VM::createSelectFork("<rpc url>", 25958026 [2.595e7])
++    │   └─ ← [Return] 0
++    ├─ [788692] → new UsdtYieldVault@0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f
++    │   ├─ emit OwnershipTransferred(previousOwner: 0x0000000000000000000000000000000000000000, newOwner: UsdtYieldVaultMainnetForkTest: [0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496])
++    │   └─ ← [Return] 3596 bytes of code
++    ├─ [0] VM::startPrank(mainnet depositor: [0xf2c278E289E59cD66f8249B750f916CA91820eCC])
++    │   └─ ← [Return]
++    ├─ [24953] 0xdAC17F958D2ee523a2206206994597C13D831ec7::approve(UsdtYieldVault: [0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f], 115792089237316195423570985008687907853269984665640564039457584007913129639935 [1.157e77])
++    │   ├─ emit Approval(owner: mainnet depositor: [0xf2c278E289E59cD66f8249B750f916CA91820eCC], spender: UsdtYieldVault: [0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f], value: 115792089237316195423570985008687907853269984665640564039457584007913129639935 [1.157e77])
++    │   └─ ← [Stop]
++    ├─ [64074] UsdtYieldVault::deposit(1000000000 [1e9])
++    │   ├─ [34830] 0xdAC17F958D2ee523a2206206994597C13D831ec7::transferFrom(mainnet depositor: [0xf2c278E289E59cD66f8249B750f916CA91820eCC], UsdtYieldVault: [0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f], 1000000000 [1e9])
++    │   │   ├─ emit Transfer(from: mainnet depositor: [0xf2c278E289E59cD66f8249B750f916CA91820eCC], to: UsdtYieldVault: [0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f], value: 1000000000 [1e9])
++    │   │   └─ ← [Stop]
++    │   ├─ [24953] 0xdAC17F958D2ee523a2206206994597C13D831ec7::approve(0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2, 1000000000 [1e9])
++    │   │   ├─ emit Approval(owner: UsdtYieldVault: [0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f], spender: 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2, value: 1000000000 [1e9])
++    │   │   └─ ← [Stop]
++    │   └─ ← [Revert] EvmError: Revert
++    └─ ← [Revert] EvmError: Revert
++
++Backtrace:
++  at UsdtYieldVault.deposit
++  at UsdtYieldVaultMainnetForkTest.test_RealUsdtCanBeDepositedIntoAave
++
++Suite result: FAILED. 0 passed; 1 failed; 0 skipped; finished in 2.65s (2.65s CPU time)
++
++Ran 1 test suite in 2.65s (2.65s CPU time): 0 tests passed, 1 failed, 0 skipped (1 total tests)
++
++Failing tests:
++Encountered 1 failing test in test/UsdtYieldVaultMainnetFork.t.sol:UsdtYieldVaultMainnetForkTest
++[FAIL: EvmError: Revert] test_RealUsdtCanBeDepositedIntoAave() (gas: 1139810)
++
++Encountered a total of 1 failing tests, 0 tests succeeded
++
++Tip: Run `forge test --rerun` to retry only the 1 failed test
++```
++
++Fix: replace the raw approval with an optional-return-safe operation, preferably `usdt.forceApprove(address(aavePool), amount)` (or establish a safe maximum allowance once). Retain a pinned mainnet-fork deposit/withdraw round-trip test as a release gate.
++
++## 2. High — Aave yield is never credited or redeemable
++
++All conversions and withdrawals use the manually maintained `totalAssetsStored`. It only increases by deposit principal. The contract never reads `aUsdt.balanceOf(address(this))`, so an increase in Aave receipt-token balance does not increase share value and cannot be withdrawn. The test models Aave's externally increasing aToken balance and checks the core accounting-to-custody equality.
++
++Command and output (verbatim):
++
++```text
++$ forge test --match-contract UsdtYieldVaultReleaseTest --match-test test_AaveYieldIsIncludedInTotalAssets -vv
++No files changed, compilation skipped
++2026-09-12T01:26:24.946011Z  WARN evm::traces::external: etherscan config not found
++
++Ran 1 test for test/UsdtYieldVaultRelease.t.sol:UsdtYieldVaultReleaseTest
++[FAIL: accrued Aave yield is ignored: 1000000000 != 1050000000] test_AaveYieldIsIncludedInTotalAssets() (gas: 240117)
++Suite result: FAILED. 0 passed; 1 failed; 0 skipped; finished in 923.67µs (141.49µs CPU time)
++
++Ran 1 test suite in 7.59ms (923.67µs CPU time): 0 tests passed, 1 failed, 0 skipped (1 total tests)
++
++Failing tests:
++Encountered 1 failing test in test/UsdtYieldVaultRelease.t.sol:UsdtYieldVaultReleaseTest
++[FAIL: accrued Aave yield is ignored: 1000000000 != 1050000000] test_AaveYieldIsIncludedInTotalAssets() (gas: 240117)
++
++Encountered a total of 1 failing tests, 0 tests succeeded
++
++Tip: Run `forge test --rerun` to retry only the 1 failed test
++```
++
++Fix: derive total assets from actual custody (`aUsdt.balanceOf(address(this))`, plus any idle USDT if supported), and base mint/burn conversions on that value using explicit rounding directions. Remove or continuously reconcile the stale stored counter. Add a handler-driven invariant that share claims equal custody after arbitrary deposit/withdraw sequences and simulated yield.
++
++## 3. High — fee accounting contradicts the documented economics and strands funds
++
++### Deposit fee is not charged to the first depositor
++
++The first deposit mints shares from the net amount but records the gross amount as assets. Because that depositor owns 100% of shares, their claim immediately expands back to the gross deposit: the purported deposit fee remains theirs.
++
++```text
++$ forge test --match-contract UsdtYieldVaultReleaseTest --match-test test_DepositFeeActuallyReducesFirstDepositorsClaim -vv
++Compiling 1 files with Solc 0.8.28
++Solc 0.8.28 finished in 920.52ms
++Compiler run successful!
++2026-09-12T01:26:09.208430Z  WARN evm::traces::external: etherscan config not found
++
++Ran 1 test for test/UsdtYieldVaultRelease.t.sol:UsdtYieldVaultReleaseTest
++[FAIL: first depositor owns the purported fee: 1000000000 != 999000000] test_DepositFeeActuallyReducesFirstDepositorsClaim() (gas: 233772)
++Suite result: FAILED. 0 passed; 1 failed; 0 skipped; finished in 944.27µs (143.87µs CPU time)
++
++Ran 1 test suite in 14.74ms (944.27µs CPU time): 0 tests passed, 1 failed, 0 skipped (1 total tests)
++
++Failing tests:
++Encountered 1 failing test in test/UsdtYieldVaultRelease.t.sol:UsdtYieldVaultReleaseTest
++[FAIL: first depositor owns the purported fee: 1000000000 != 999000000] test_DepositFeeActuallyReducesFirstDepositorsClaim() (gas: 233772)
++
++Encountered a total of 1 failing tests, 0 tests succeeded
++
++Tip: Run `forge test --rerun` to retry only the 1 failed test
++```
++
++### Withdrawal fee is removed from accounting but remains in Aave
++
++On withdrawal, the vault subtracts `grossAssets` from `totalAssetsStored` but asks Aave for only `netAssets`. Thus the fee remains as aUSDT custody while disappearing from share accounting. This does not accrue to remaining holders as the contract documentation promises.
++
++```text
++$ forge test --match-contract UsdtYieldVaultReleaseTest --match-test test_WithdrawalFeeRemainsAccountedForRemainingShareholder -vv
++No files changed, compilation skipped
++2026-09-12T01:26:23.306611Z  WARN evm::traces::external: etherscan config not found
++
++Ran 1 test for test/UsdtYieldVaultRelease.t.sol:UsdtYieldVaultReleaseTest
++[FAIL: withdrawal fee is in Aave custody but absent from vault accounting: 999499750 != 1002501250] test_WithdrawalFeeRemainsAccountedForRemainingShareholder() (gas: 346306)
++Suite result: FAILED. 0 passed; 1 failed; 0 skipped; finished in 1.02ms (222.32µs CPU time)
++
++Ran 1 test suite in 7.52ms (1.02ms CPU time): 0 tests passed, 1 failed, 0 skipped (1 total tests)
++
++Failing tests:
++Encountered 1 failing test in test/UsdtYieldVaultRelease.t.sol:UsdtYieldVaultReleaseTest
++[FAIL: withdrawal fee is in Aave custody but absent from vault accounting: 999499750 != 1002501250] test_WithdrawalFeeRemainsAccountedForRemainingShareholder() (gas: 346306)
++
++Encountered a total of 1 failing tests, 0 tests succeeded
++
++Tip: Run `forge test --rerun` to retry only the 1 failed test
++```
++
++When the last holder exits, there is nobody left who can ever redeem that balance:
++
++```text
++$ forge test --match-contract UsdtYieldVaultReleaseTest --match-test test_AllReceiptTokensAreRedeemableAfterLastWithdrawal -vv
++No files changed, compilation skipped
++2026-09-12T01:26:24.126729Z  WARN evm::traces::external: etherscan config not found
++
++Ran 1 test for test/UsdtYieldVaultRelease.t.sol:UsdtYieldVaultReleaseTest
++[FAIL: last withdrawal permanently strands its fee: 3000000 != 0] test_AllReceiptTokensAreRedeemableAfterLastWithdrawal() (gas: 250068)
++Suite result: FAILED. 0 passed; 1 failed; 0 skipped; finished in 933.70µs (164.60µs CPU time)
++
++Ran 1 test suite in 7.62ms (933.70µs CPU time): 0 tests passed, 1 failed, 0 skipped (1 total tests)
++
++Failing tests:
++Encountered 1 failing test in test/UsdtYieldVaultRelease.t.sol:UsdtYieldVaultReleaseTest
++[FAIL: last withdrawal permanently strands its fee: 3000000 != 0] test_AllReceiptTokensAreRedeemableAfterLastWithdrawal() (gas: 250068)
++
++Encountered a total of 1 failing tests, 0 tests succeeded
++
++Tip: Run `forge test --rerun` to retry only the 1 failed test
++```
++
++Fix: first define the intended recipient of each fee. If fees belong to remaining shareholders, leave the fee in custody and in total-asset accounting so share price rises; explicitly handle the final-holder case. If fees belong to a treasury, withdraw/transfer them to an explicit recipient and emit accounting events. Calculate first-deposit shares against a coherent pre/post-fee asset base so the depositor cannot reclaim the deposit fee.
++
++## 4. Medium — owner-controlled fee has no valid-domain check and can stop deposits
++
++Both the constructor and setter accept arbitrary values. At exactly 10,000 bps, every deposit computes zero net assets and reverts `NoSharesMinted`. Above 10,000 bps, `amount - fee` underflows and every deposit reverts. The two boundary tests prove both invalid regions are accepted by the setter.
++
++```text
++$ forge test --match-contract UsdtYieldVaultReleaseTest --match-test test_DepositFeeRejectsExactDenominator -vv
++No files changed, compilation skipped
++2026-09-12T01:26:25.766944Z  WARN evm::traces::external: etherscan config not found
++
++Ran 1 test for test/UsdtYieldVaultRelease.t.sol:UsdtYieldVaultReleaseTest
++[FAIL: next call did not revert as expected] test_DepositFeeRejectsExactDenominator() (gas: 10711)
++Suite result: FAILED. 0 passed; 1 failed; 0 skipped; finished in 833.15µs (52.12µs CPU time)
++
++Ran 1 test suite in 8.02ms (833.15µs CPU time): 0 tests passed, 1 failed, 0 skipped (1 total tests)
++
++Failing tests:
++Encountered 1 failing test in test/UsdtYieldVaultRelease.t.sol:UsdtYieldVaultReleaseTest
++[FAIL: next call did not revert as expected] test_DepositFeeRejectsExactDenominator() (gas: 10711)
++
++Encountered a total of 1 failing tests, 0 tests succeeded
++
++Tip: Run `forge test --rerun` to retry only the 1 failed test
++```
++
++```text
++$ forge test --match-contract UsdtYieldVaultReleaseTest --match-test test_DepositFeeRejectsAboveDenominator -vv
++No files changed, compilation skipped
++2026-09-12T01:26:26.615605Z  WARN evm::traces::external: etherscan config not found
++
++Ran 1 test for test/UsdtYieldVaultRelease.t.sol:UsdtYieldVaultReleaseTest
++[FAIL: next call did not revert as expected] test_DepositFeeRejectsAboveDenominator() (gas: 10710)
++Suite result: FAILED. 0 passed; 1 failed; 0 skipped; finished in 830.68µs (58.39µs CPU time)
++
++Ran 1 test suite in 7.98ms (830.68µs CPU time): 0 tests passed, 1 failed, 0 skipped (1 total tests)
++
++Failing tests:
++Encountered 1 failing test in test/UsdtYieldVaultRelease.t.sol:UsdtYieldVaultReleaseTest
++[FAIL: next call did not revert as expected] test_DepositFeeRejectsAboveDenominator() (gas: 10710)
++
++Encountered a total of 1 failing tests, 0 tests succeeded
++
++Tip: Run `forge test --rerun` to retry only the 1 failed test
++```
++
++Fix: enforce a deliberately chosen maximum strictly below `BPS_DENOMINATOR` in both constructor and setter. Test the maximum minus one, exact maximum, and maximum plus one, then fuzz the complete accepted fee domain through deposit/withdraw sequences.
++
++## Scope note
++
++I attempted the pre-deploy static-analysis gate, but this environment's launcher is broken. This is an uncompleted release check, not evidence of another contract defect. The integration failure above is independently sufficient to block deployment.
++
++```text
++$ slither .
++Traceback (most recent call last):
++  File "/home/damu/.local/bin/slither", line 5, in <module>
++    from slither.__main__ import main
++ModuleNotFoundError: No module named 'slither'
++```
+diff --git a/test/UsdtYieldVaultMainnetFork.t.sol b/test/UsdtYieldVaultMainnetFork.t.sol
+new file mode 100644
+index 0000000..6cf5ecc
+--- /dev/null
++++ b/test/UsdtYieldVaultMainnetFork.t.sol
+@@ -0,0 +1,32 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.28;
++
++import {Test} from "forge-std/Test.sol";
++import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
++import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
++
++import {UsdtYieldVault} from "../src/UsdtYieldVault.sol";
++
++contract UsdtYieldVaultMainnetForkTest is Test {
++    using SafeERC20 for IERC20;
++
++    address internal constant USDT = 0xdAC17F958D2ee523a2206206994597C13D831ec7;
++    address internal constant A_USDT = 0x23878914EFE38d27C4D67Ab83ed1b93A74D4086a;
++    address internal constant AAVE_POOL = 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2;
++    uint256 internal constant FORK_BLOCK = 25_958_026;
++
++    function test_RealUsdtCanBeDepositedIntoAave() public {
++        vm.createSelectFork("https://ethereum-rpc.publicnode.com", FORK_BLOCK);
++
++        address depositor = makeAddr("mainnet depositor");
++        UsdtYieldVault vault = new UsdtYieldVault(USDT, A_USDT, AAVE_POOL, 10, address(this));
++        deal(USDT, depositor, 1_000e6);
++
++        vm.startPrank(depositor);
++        IERC20(USDT).forceApprove(address(vault), type(uint256).max);
++        vault.deposit(1_000e6);
++        vm.stopPrank();
++
++        assertGt(IERC20(A_USDT).balanceOf(address(vault)), 0, "deposit did not reach Aave");
++    }
++}
+diff --git a/test/UsdtYieldVaultRelease.t.sol b/test/UsdtYieldVaultRelease.t.sol
+new file mode 100644
+index 0000000..620bd7f
+--- /dev/null
++++ b/test/UsdtYieldVaultRelease.t.sol
+@@ -0,0 +1,94 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.28;
++
++import {Test} from "forge-std/Test.sol";
++
++import {UsdtYieldVault} from "../src/UsdtYieldVault.sol";
++import {MockUSDT} from "./mocks/MockUSDT.sol";
++import {MockAavePool, MockAToken} from "./mocks/MockAavePool.sol";
++
++contract UsdtYieldVaultReleaseTest is Test {
++    UsdtYieldVault internal vault;
++    MockUSDT internal usdt;
++    MockAavePool internal pool;
++    MockAToken internal aUsdt;
++
++    address internal owner = makeAddr("release owner");
++    address internal alice = makeAddr("release alice");
++    address internal bob = makeAddr("release bob");
++
++    function setUp() public {
++        usdt = new MockUSDT();
++        pool = new MockAavePool(address(usdt));
++        aUsdt = pool.aToken();
++        vault = new UsdtYieldVault(address(usdt), address(aUsdt), address(pool), 10, owner);
++
++        usdt.mint(alice, 10_000e6);
++        usdt.mint(bob, 10_000e6);
++        vm.prank(alice);
++        usdt.approve(address(vault), type(uint256).max);
++        vm.prank(bob);
++        usdt.approve(address(vault), type(uint256).max);
++    }
++
++    function _deposit(address account, uint256 amount) internal returns (uint256 shares) {
++        vm.prank(account);
++        shares = vault.deposit(amount);
++    }
++
++    function test_DepositFeeActuallyReducesFirstDepositorsClaim() public {
++        uint256 amount = 1_000e6;
++        uint256 expectedNetClaim = amount - (amount * vault.depositFeeBps() / vault.BPS_DENOMINATOR());
++
++        _deposit(alice, amount);
++
++        assertEq(vault.balanceOfUnderlying(alice), expectedNetClaim, "first depositor owns the purported fee");
++    }
++
++    function test_WithdrawalFeeRemainsAccountedForRemainingShareholder() public {
++        uint256 aliceShares = _deposit(alice, 1_000e6);
++        _deposit(bob, 1_000e6);
++
++        vm.prank(alice);
++        vault.withdraw(aliceShares);
++
++        assertEq(
++            vault.totalAssets(),
++            aUsdt.balanceOf(address(vault)),
++            "withdrawal fee is in Aave custody but absent from vault accounting"
++        );
++    }
++
++    function test_AllReceiptTokensAreRedeemableAfterLastWithdrawal() public {
++        uint256 shares = _deposit(alice, 1_000e6);
++
++        vm.prank(alice);
++        vault.withdraw(shares);
++
++        assertEq(aUsdt.balanceOf(address(vault)), 0, "last withdrawal permanently strands its fee");
++    }
++
++    function test_AaveYieldIsIncludedInTotalAssets() public {
++        _deposit(alice, 1_000e6);
++
++        // Aave yield manifests as an increased aToken balance. The existing mock has
++        // no index, so mint the same observable balance increase as the pool.
++        vm.prank(address(pool));
++        aUsdt.mint(address(vault), 50e6);
++
++        assertEq(vault.totalAssets(), aUsdt.balanceOf(address(vault)), "accrued Aave yield is ignored");
++    }
++
++    function test_DepositFeeRejectsExactDenominator() public {
++        vm.prank(owner);
++        vm.expectRevert();
++        vault.setDepositFee(vault.BPS_DENOMINATOR());
++    }
++
++    function test_DepositFeeRejectsAboveDenominator() public {
++        vm.prank(owner);
++        vm.expectRevert();
++        vault.setDepositFee(vault.BPS_DENOMINATOR() + 1);
++    }
++}
++
+
+# Untracked files and status
+ A FINDINGS.md
+ A test/UsdtYieldVaultMainnetFork.t.sol
+ A test/UsdtYieldVaultRelease.t.sol
