@@ -1,0 +1,277 @@
+diff --git a/FINDINGS.md b/FINDINGS.md
+new file mode 100644
+index 0000000..da41aec
+--- /dev/null
++++ b/FINDINGS.md
+@@ -0,0 +1,181 @@
++# USDT Yield Vault Security Review
++
++## Sign-off decision
++
++**Do not deploy this implementation with user funds.** The vault does not account
++for Aave yield, and its withdrawal-fee bookkeeping permanently disconnects assets
++held in Aave from all outstanding shares. These are asset-accounting failures in
++the core deposit/withdraw path, not missing edge-case validation.
++
++The existing suite remains untouched and still passes all 39 tests. The new
++failing regression tests are in `test/AuditFindings.t.sol`. They deliberately
++assert the behavior the vault promises, so `forge test` is expected to be red
++until the production contract is repaired.
++
++## Finding 1 — High: Aave yield is never credited or withdrawable
++
++### What happens
++
++Aave aTokens expose accrued interest through an increasing `balanceOf`. The vault
++stores only the original amounts supplied in `totalAssetsStored` and never reads
++`aUsdt.balanceOf(address(this))`. Consequently:
++
++- `totalAssets()`, `convertToShares`, `convertToAssets`, and `sharePrice` ignore all
++  Aave yield;
++- withdrawals return principal-derived amounts only; and
++- accrued yield remains in the vault's aUSDT balance with no accounting path by
++  which a shareholder can claim it.
++
++The test deposits 1,000 USDT, changes the vault's aUSDT balance to 1,100 USDT to
++model Aave's post-accrual observable state, funds the mock pool for redemption,
++and exits all shares. A correct redemption after the 30 bps withdrawal fee is
++1,096.7 USDT. The contract pays only 997 USDT.
++
++### Reproduction and verbatim output
++
++Command:
++
++```text
++forge test --match-test test_Finding_AccruedAaveYieldMustIncreaseUserRedemption -vv
++```
++
++Output:
++
++```text
++Compiling 1 files with Solc 0.8.28
++Solc 0.8.28 finished in 1.05s
++Compiler run successful!
++2026-09-13T15:40:47.223901Z  WARN evm::traces::external: etherscan config not found
++
++Ran 1 test for test/AuditFindings.t.sol:AuditFindingsTest
++[FAIL: Aave yield was not paid to depositor: 997000000 != 1096700000] test_Finding_AccruedAaveYieldMustIncreaseUserRedemption() (gas: 477003)
++Suite result: FAILED. 0 passed; 1 failed; 0 skipped; finished in 1.30ms (483.30µs CPU time)
++
++Ran 1 test suite in 7.55ms (1.30ms CPU time): 0 tests passed, 1 failed, 0 skipped (1 total tests)
++
++Failing tests:
++Encountered 1 failing test in test/AuditFindings.t.sol:AuditFindingsTest
++[FAIL: Aave yield was not paid to depositor: 997000000 != 1096700000] test_Finding_AccruedAaveYieldMustIncreaseUserRedemption() (gas: 477003)
++
++Encountered a total of 1 failing tests, 0 tests succeeded
++
++Tip: Run `forge test --rerun` to retry only the 1 failed test
++```
++
++### Cause
++
++`deposit` increments `totalAssetsStored` by the nominal deposit, `withdraw`
++decrements it by nominal gross assets, and `totalAssets()` simply returns that
++stored value. The immutable `aUsdt` is otherwise unused.
++
++### Recommended fix (not applied)
++
++Make the actual Aave position the source of truth for assets, normally
++`aUsdt.balanceOf(address(this))`, and use a single internally consistent
++pre-operation asset snapshot for share conversion. Explicitly define how direct
++aToken transfers, rounding, and any Aave shortfall are handled. Add time/accrual
++tests on a mainnet fork as well as a unit mock whose aToken balance can grow.
++
++## Finding 2 — High: withdrawal fees are erased from accounting and stranded
++
++### What happens
++
++On withdrawal, the vault computes `grossAssets`, transfers only `netAssets` out
++of Aave, but subtracts the full `grossAssets` from `totalAssetsStored`. The fee
++therefore remains as aUSDT owned by the vault while disappearing from the asset
++base used to value shares.
++
++This directly contradicts the contract and README statement that withdrawal fees
++"stay supplied in Aave and accrue to the remaining shareholders." With Alice and
++Bob each holding claims to 1,000 USDT, Alice's 3 USDT withdrawal fee should raise
++Bob's claim from 1,000 to 1,003 USDT. It remains 1,000 USDT.
++
++### Reproduction and verbatim output: remaining holder receives no fee
++
++Command:
++
++```text
++forge test --match-test test_Finding_WithdrawalFeeMustAccrueToRemainingShareholder -vv
++```
++
++Output:
++
++```text
++No files changed, compilation skipped
++2026-09-13T15:40:47.416114Z  WARN evm::traces::external: etherscan config not found
++
++Ran 1 test for test/AuditFindings.t.sol:AuditFindingsTest
++[FAIL: withdrawal fee was removed from accounting instead of accruing to Bob: 1000000000 != 1003000000] test_Finding_WithdrawalFeeMustAccrueToRemainingShareholder() (gas: 346010)
++Suite result: FAILED. 0 passed; 1 failed; 0 skipped; finished in 1.43ms (639.34µs CPU time)
++
++Ran 1 test suite in 8.45ms (1.43ms CPU time): 0 tests passed, 1 failed, 0 skipped (1 total tests)
++
++Failing tests:
++Encountered 1 failing test in test/AuditFindings.t.sol:AuditFindingsTest
++[FAIL: withdrawal fee was removed from accounting instead of accruing to Bob: 1000000000 != 1003000000] test_Finding_WithdrawalFeeMustAccrueToRemainingShareholder() (gas: 346010)
++
++Encountered a total of 1 failing tests, 0 tests succeeded
++
++Tip: Run `forge test --rerun` to retry only the 1 failed test
++```
++
++### Reproduction and verbatim output: final exit strands the fee
++
++With one 1,000 USDT depositor, the final withdrawal burns every share but leaves
++3 USDT of aUSDT in the vault. There is no sweep or recovery function, and future
++share calculations use `totalAssetsStored`, not that balance.
++
++Command:
++
++```text
++forge test --match-test test_Finding_FinalExitMustNotStrandUserAssetsInAave -vv
++```
++
++Output:
++
++```text
++No files changed, compilation skipped
++2026-09-13T15:40:47.602948Z  WARN evm::traces::external: etherscan config not found
++
++Ran 1 test for test/AuditFindings.t.sol:AuditFindingsTest
++[FAIL: aUSDT is stranded after the final shareholder exits: 3000000 != 0] test_Finding_FinalExitMustNotStrandUserAssetsInAave() (gas: 251019)
++Suite result: FAILED. 0 passed; 1 failed; 0 skipped; finished in 969.92µs (158.13µs CPU time)
++
++Ran 1 test suite in 7.39ms (969.92µs CPU time): 0 tests passed, 1 failed, 0 skipped (1 total tests)
++
++Failing tests:
++Encountered 1 failing test in test/AuditFindings.t.sol:AuditFindingsTest
++[FAIL: aUSDT is stranded after the final shareholder exits: 3000000 != 0] test_Finding_FinalExitMustNotStrandUserAssetsInAave() (gas: 251019)
++
++Encountered a total of 1 failing tests, 0 tests succeeded
++
++Tip: Run `forge test --rerun` to retry only the 1 failed test
++```
++
++### Recommended fix (not applied)
++
++Use actual aUSDT balance accounting as described in Finding 1. If stored
++accounting is retained, subtract only the amount actually withdrawn from Aave
++(`netAssets`), so the retained fee remains in the asset numerator for remaining
++shares. Define the last-share policy explicitly: either the final redeemer gets
++all residual assets (usually the safest invariant), or residual fees go to a
++specified recipient through an auditable mechanism. Test that zero shares implies
++zero economically owned assets and that fees increase remaining holders' claims.
++
++## Additional hardening required before deployment
++
++These items were found by inspection but are not counted as reproduced findings
++above:
++
++- Bound both constructor and setter deposit fees to at most 10,000 bps; values
++  above that make deposits revert by arithmetic underflow.
++- Validate nonzero constructor addresses and verify the supplied aUSDT is the
++  Aave reserve token for USDT.
++- Use `SafeERC20.forceApprove` rather than raw `approve` for robust compatibility
++  with USDT's allowance rules.
++- Decide whether an owner should be able to pause withdrawals as well as deposits;
++  today the owner can indefinitely block user exits.
++- Add a pinned-block mainnet-fork suite covering the exact USDT, Pool, and aUSDT
++  addresses before deployment.
++
++Those controls do not repair either high-severity accounting defect.
+diff --git a/test/AuditFindings.t.sol b/test/AuditFindings.t.sol
+new file mode 100644
+index 0000000..e36e8de
+--- /dev/null
++++ b/test/AuditFindings.t.sol
+@@ -0,0 +1,80 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.28;
++
++import {Test} from "forge-std/Test.sol";
++
++import {UsdtYieldVault} from "../src/UsdtYieldVault.sol";
++import {MockUSDT} from "./mocks/MockUSDT.sol";
++import {MockAavePool, MockAToken} from "./mocks/MockAavePool.sol";
++
++/// @notice Regression tests deliberately asserting the behavior a yield vault promises.
++/// They fail against the code under review and serve as reproducible evidence.
++contract AuditFindingsTest is Test {
++    UsdtYieldVault internal vault;
++    MockUSDT internal usdt;
++    MockAavePool internal pool;
++    MockAToken internal aUsdt;
++
++    address internal owner = makeAddr("owner");
++    address internal alice = makeAddr("alice");
++    address internal bob = makeAddr("bob");
++
++    function setUp() public {
++        usdt = new MockUSDT();
++        pool = new MockAavePool(address(usdt));
++        aUsdt = pool.aToken();
++        vault = new UsdtYieldVault(address(usdt), address(aUsdt), address(pool), 0, owner);
++
++        usdt.mint(alice, 10_000e6);
++        usdt.mint(bob, 10_000e6);
++        vm.prank(alice);
++        usdt.approve(address(vault), type(uint256).max);
++        vm.prank(bob);
++        usdt.approve(address(vault), type(uint256).max);
++    }
++
++    function _deposit(address account, uint256 amount) internal returns (uint256 shares) {
++        vm.prank(account);
++        shares = vault.deposit(amount);
++    }
++
++    function test_Finding_AccruedAaveYieldMustIncreaseUserRedemption() public {
++        uint256 shares = _deposit(alice, 1_000e6);
++
++        // aTokens are rebasing balance tokens. This is the post-accrual state Aave exposes.
++        deal(address(aUsdt), address(vault), 1_100e6);
++        usdt.mint(address(pool), 100e6);
++
++        uint256 beforeBalance = usdt.balanceOf(alice);
++        vm.prank(alice);
++        vault.withdraw(shares);
++
++        // 1,100 USDT principal + yield, less the documented 30 bps withdrawal fee.
++        assertEq(usdt.balanceOf(alice) - beforeBalance, 1_096_700_000, "Aave yield was not paid to depositor");
++    }
++
++    function test_Finding_WithdrawalFeeMustAccrueToRemainingShareholder() public {
++        uint256 aliceShares = _deposit(alice, 1_000e6);
++        _deposit(bob, 1_000e6);
++        uint256 bobAssetsBefore = vault.balanceOfUnderlying(bob);
++
++        vm.prank(alice);
++        vault.withdraw(aliceShares);
++
++        // Alice's 3 USDT fee remains invested and should increase Bob's claim.
++        assertEq(
++            vault.balanceOfUnderlying(bob),
++            bobAssetsBefore + 3e6,
++            "withdrawal fee was removed from accounting instead of accruing to Bob"
++        );
++    }
++
++    function test_Finding_FinalExitMustNotStrandUserAssetsInAave() public {
++        uint256 shares = _deposit(alice, 1_000e6);
++        vm.prank(alice);
++        vault.withdraw(shares);
++
++        assertEq(vault.totalShares(), 0);
++        assertEq(aUsdt.balanceOf(address(vault)), 0, "aUSDT is stranded after the final shareholder exits");
++    }
++}
+
+# Untracked files and status
+ A FINDINGS.md
+ A test/AuditFindings.t.sol
