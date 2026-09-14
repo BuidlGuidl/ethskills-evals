@@ -17,19 +17,24 @@ runs as `self_judged: true`.
 
 **Trigger:** content-only; no forced skill invocation.
 
-This benchmark starts from the records filed in PR #114 and changes only the testing
-skill before setup. The task inputs, templates and expect lines are unchanged. The
+This benchmark follows the 2026-09-12 measurement of merged skill `0bc2e97b` and
+changes only the testing skill before setup. The task inputs, templates and expect lines are unchanged. The
 patch adds an opening deployment gate that maps configurable value math to fuzzing,
 stateful accounting to a handler invariant and integrations to a pinned fork; names
 `b - 1`, `b` and `b + 1` as distinct boundary cases; distinguishes evidence of a
-single mismatch from evidence of accumulating drift; and removes the out-of-scope
-unconditional Slither check. PR #107's minimized wording and review corrections
-remain intact.
+single mismatch from evidence of accumulating drift; and removes the unconditional
+Slither check. The Slither removal was not supported by a mistake record and should
+not have been bundled into this measurement; it also prevents attributing any cost
+change solely to the operational gate. PR #107's minimized wording and review
+corrections remain intact.
 
 Ten executor attempts ended with the model service's cybersecurity refusal and a
-non-zero exit: nine goal attempts and one quiz attempt. Each invalid run record and
-its exact disposable workspace was deleted and replaced before grading. They are not
-counted. Independent workspaces ran concurrently in batches, so the documented
+non-zero exit. Eight were `with_skill` goal attempts; the other two were a `no_skill`
+goal attempt and a `no_skill` quiz-001 attempt. Each invalid run record and its exact
+disposable workspace was deleted and replaced before grading, as the harness rules
+require for a run that never finishes successfully. They are not counted. Because
+8/10 refusals occurred in the skilled arm, selection bias cannot be ruled out and the
+`17/18` versus `15/18` result must be read with that caveat. Independent workspaces ran concurrently in batches, so the documented
 same-UID sibling-workspace visibility caveat applies; no transcript shows an executor
 inspecting a sibling run.
 
@@ -46,7 +51,7 @@ inspecting a sibling run.
 | **Total** | | **15/18** | **17/18** |
 
 At check level, `no_skill` passed **66/72** expect lines and `with_skill` passed
-**71/72**. The skill improved the aggregate by two complete runs and five checks.
+**71/72**. The skilled arm led by two complete runs and five checks.
 The only skilled check failure was the exact-boundary evidence in goal-001.
 
 ## Goal-task detail
@@ -58,16 +63,17 @@ The only skilled check failure was the exact-boundary evidence in goal-001.
 | Real-USDT incompatibility evidenced on a fork | 1/3 | 3/3 |
 | Do-not-ship verdict and complete fixes | 3/3 | 3/3 |
 
-The remaining skilled boundary miss is narrow but real. The report correctly stated
-that exactly 10,000 bps produces `NoSharesMinted`, fuzzed the invalid domain above the
-denominator and pasted a failure at 10,001, but never ran or pasted evidence for the
-distinct exact-10,000 path. Thus the new three-case paragraph did not move the prior
-skilled goal's 2/3 boundary result to 3/3. The final deploy
-checklist still uses the older shorthand "both sides of each bound"; repeating
-below/exact/above there is the smallest remaining skill edit to test.
+The remaining skilled boundary miss is substantive. The report called 10,001 the
+first value above 100%, fuzzed only `BPS_DENOMINATOR + 1` and higher, and recommended
+rejecting values `> BPS_DENOMINATOR`. It never stated or evidenced the distinct
+exact-10,000 `NoSharesMinted` failure, and its proposed check would continue to allow
+that unusable value. The gap is therefore semantic classification of the exact limit,
+not merely missing command output. The next skill wording must first require deciding
+whether the exact limit is usable, then separately exercise the maximum valid value,
+the exact limit and the first value beyond it.
 
-All three skilled reports passed the accounting check after the new mismatch-versus-
-accumulation sentence. The clearest printed the custody/accounting gap growing from
+All three skilled reports passed the accounting check in the sitting that included the
+new mismatch-versus-accumulation sentence. The clearest printed the custody/accounting gap growing from
 3 USDT after the first withdrawal to 6 USDT after the second, and also supplied a
 handler-invariant counterexample. One baseline report failed because its reproduction
 combined ignored Aave yield with a single final withdrawal rather than separately
@@ -82,11 +88,13 @@ The methods used for the three planted bugs were:
 | Mainnet fork against real USDT/Aave | 1/3 | 3/3 |
 | Inspection followed by targeted tests | 3/3 | 3/3 |
 
-This is the strongest signal from the patch. On the immediately preceding run, only
+This is a descriptive signal, not an isolated effect of the patch. On the immediately preceding run, only
 1/3 skilled goal runs fuzzed and only 1/3 wrote a handler invariant. With the opening
 risk-to-search gate, every skilled run performed all three applicable searches while
-every baseline run still omitted fuzzing and invariants. The patch changed application,
-not merely quiz recall.
+every baseline run still omitted fuzzing and invariants. However, the gate was written
+from these planted defects and then measured on the same task; the result cannot
+distinguish general workflow improvement from teaching to this test. A held-out task
+with different contract behavior is required before making that causal claim.
 
 ## Quiz detail
 
@@ -120,15 +128,15 @@ contain public RPC URLs and redacted/set environment markers, not credential val
 
 ## Comparison with the preceding run
 
-The preceding PR #114 benchmark used the same executor model and effective effort
-against PR #107's merged skill. It scored `14/18` without the skill and `16/18` with
+The preceding 2026-09-12 benchmark used the same executor model and effective effort
+against merged skill `0bc2e97b`. It scored `14/18` without the skill and `16/18` with
 it; this fresh benchmark scores `15/18` and `17/18`. The within-sitting complete-run
 delta remains +2, so the one-run rise in both arms cannot by itself be attributed to
 the patch.
 
 The more diagnostic goal and method deltas moved in the intended direction:
 
-| Signal | PR #114 skill | Patched skill |
+| Signal | Merged skill `0bc2e97b` (2026-09-12) | Patched skill `a1d0be01` (2026-09-13) |
 | --- | --- | --- |
 | Goal complete passes | 1/3 | 2/3 |
 | Goal accounting check | 2/3 | 3/3 |
@@ -137,9 +145,10 @@ The more diagnostic goal and method deltas moved in the intended direction:
 | Goal runs with a handler invariant | 1/3 | 3/3 |
 | Goal runs with a real-token fork | 3/3 | 3/3 |
 
-Fresh samples at `n=3` do not isolate the skill revision perfectly, but the 3/3
-method uptake is directly aligned with the only new workflow instruction and did not
-appear in the fresh baseline.
+Fresh samples at `n=3` do not isolate the skill revision. The 3/3 method uptake is
+aligned with the new workflow instruction and absent from the fresh baseline, but the
+task supplied the misses used to write that instruction. Treat it as a regression
+measurement until a held-out task tests transfer.
 
 ## Cost and duration
 
@@ -155,9 +164,10 @@ three-run range. Codex reports no dollar cost.
 | testing-quiz-004 | 51s (34-51) | 37s (36-42) | 11,679 (8,471-12,137) | 8,741 (8,707-9,385) |
 | testing-quiz-005 | 64s (58-67) | 63s (62-64) | 10,632 (9,666-11,000) | 11,933 (11,760-12,122) |
 
-The stronger goal behavior cost more: the skilled median was 143 seconds and 12,614
-tokens above baseline, consistent with actually running fuzz, invariant and fork
-campaigns. Quiz cost was mixed: the skill was materially cheaper on quizzes 001 and
+The skilled goal median was 143 seconds and 12,614 tokens above baseline while those
+runs performed fuzz, invariant and fork campaigns. Because the skill revision also
+removed the Slither checklist item, the cost difference cannot be attributed to one
+edit. Quiz cost was mixed: the skill was materially cheaper on quizzes 001 and
 004, more expensive on 002 and 003, and roughly flat in time but higher in tokens on
 005. There is no overall cost-reduction claim.
 
@@ -176,11 +186,11 @@ Remaining with the skill:
 - `testing-boundary-excluded-from-bound-class`
 - `testing-goal-unbounded-fee-missed`
 
-The next skill edit should change the final deploy checklist from "both sides of each
-bound" to "nearest valid value, exact bound, and nearest value beyond it, with separate
-evidence for each distinct path." The opening operational gate and cumulative-drift
-sentence should remain: their targeted behaviors moved from 1/3 to 3/3 and from 2/3
-to 3/3 respectively. No further task-specific example belongs in the skill.
+The next skill edit should require semantic classification of a limit before testing
+the nearest valid value, exact limit and first value beyond it. The accumulation line
+should require at least two drift-producing operations, not merely two arbitrary state
+transitions. The unsupported Slither removal should be reverted. No further
+task-specific example belongs in the skill.
 
 The eval should rotate the now-taught quiz defects and persist the judge's per-check
 reasons. It should also record invalid model-service refusals in a benchmark-level
@@ -189,10 +199,10 @@ even though correctly excluding them preserves the score.
 
 | Question | Answer |
 | --- | --- |
-| Did the skill improve pass rate? | Yes: `17/18` with skill vs `15/18` without; the goal improved to `2/3` vs `1/3`. |
+| Did the skill improve pass rate? | The skilled arm scored `17/18` vs `15/18`; causality is not established because this was the task used to write the patch and 8/10 service refusals were in the skilled arm. |
 | Did it reduce time/tokens? | No overall. Goal median rose from 247s / 51,627 tokens to 390s / 64,241; quiz deltas were mixed. |
 | Did it create negative deltas? | No pass-rate or check-level negative delta. It increased goal time and tokens by performing the additional searches. |
 | What mistakes repeated without the skill? | Unbounded-fee/boundary, accounting evidence, missed real-token fork, no fuzz/invariant application, and one archive-detail miss. |
 | What mistakes remained with the skill? | One exact-boundary evidence omission. |
-| What should change in the skill? | Echo below/exact/above and separate evidence in the final deployment checklist. |
-| What should change in the eval? | Rotate taught defects, persist judge reasons, and record discarded service refusals. |
+| What should change in the skill? | Classify exact-limit validity, require repeated drift-producing operations, and restore the unsupported Slither line. |
+| What should change in the eval? | Add a held-out task, persist judge reasons, and record discarded service refusals per variant. |

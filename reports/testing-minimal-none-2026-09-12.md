@@ -89,7 +89,7 @@ six matched; no fabricated output or tidied command reconstruction was found. Th
 new-file quarantine also held: evidence tests were added under `test/`, while `src/`,
 `test/UsdtYieldVault.t.sol`, and `test/mocks/` were unchanged.
 
-All valid executors exited zero before grading. All six goal runs that claimed the
+All valid executors exited zero before grading. All five goal runs that claimed the
 USDT incompatibility used a pinned real-mainnet fork; the one baseline run that did
 not fork failed that check. The transcripts expose only redacted/set markers for
 environment keys, not credential values.
