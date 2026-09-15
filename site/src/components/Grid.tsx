@@ -30,5 +30,5 @@ export const Grid = <Column extends string,>({ rows, columns, onCellClick, total
       })}</tbody>
     </table>
   </div>
-  <p className="grid-legend">Pass rate: the share of runs that passed every check. Red under 50%, amber under 80%, green above.{note && <> {note}</>}</p>
+  <p className="grid-legend">Pass rate: the share of runs that passed every check. Green is 100%, amber under 100%, red under 50%.{note && <> {note}</>}</p>
 </>;

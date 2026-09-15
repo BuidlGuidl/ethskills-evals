@@ -542,15 +542,16 @@ The row shows the selected version's lines and tokens. No skill hides those coun
 Cells and their run lists use `compareEntry`, including its existing selection rules.
 
 A filled cell shows a rounded pass percentage and the run count beneath it. Colors use that rounded percentage.
-Rates below 50% are red. Rates from 50% to below 80% are amber. Rates of 80% or more are green.
+Rates below 50% are red. Rates from 50% to below 100% are amber. Only 100% is green.
 A cell with no runs shows an en dash titled "Not run yet" and cannot open a panel.
 The legend below the grid says that more models are being run.
 The existing combined comparison follows under "What the rewrites changed".
 
 A filled cell opens a panel on the right with the runs behind that count, grouped by task.
 Total panels group those tasks by model. Version sizes appear only when all models in the row used the same version.
-Each task shows its kind and a collapsed prompt. Each run shows its date, result, and check dots.
-Opening a run shows its checks, recorded usage, and transcript link.
+The panel uses a compact table. Task rows expand to runs, and run rows expand to details.
+Each run shows its date, result, and check dots. Details show checks, recorded usage, a transcript link, and a collapsed prompt.
+Single-task panels open with their runs visible. The header shows the arm and combined pass count and percentage.
 Runs with earlier checks show numbered results without current check wording. Each run list sorts by date.
 Filled dots mean pass. Hollow dots mean fail.
 The panel closes with Escape, a backdrop click, or its Close button.

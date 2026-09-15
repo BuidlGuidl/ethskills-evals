@@ -6,7 +6,7 @@ export const ARM_COLUMNS = { none: "noSkill", old: "before", new: "after" } as c
 
 export const percent = (passed: number, total: number) => total === 0 ? 0 : Math.round(100 * passed / total);
 export const rateBucket = (percentage: number) =>
-  percentage < 50 ? "low" : percentage < 80 ? "mid" : "high";
+  percentage < 50 ? "low" : percentage < 100 ? "mid" : "high";
 
 export const readArm = (params: URLSearchParams): Arm => {
   const arm = params.get("arm");
