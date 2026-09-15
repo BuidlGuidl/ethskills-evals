@@ -19,8 +19,8 @@ const Tasks = () => {
         return <div key={entry.model} className="task-group">
           <p className="model">{entry.model}</p>
           <ResultsLegend />
-          <div className="scroll" role="region" aria-label={`${skill.name} tasks on ${entry.model}`} tabIndex={0}>
-            <table className="grid">
+          <div className="table-card scroll" role="region" aria-label={`${skill.name} tasks on ${entry.model}`} tabIndex={0}>
+            <table className="table">
               <thead>
                 <tr>
                   <th scope="col">Task</th>

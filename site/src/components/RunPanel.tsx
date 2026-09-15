@@ -24,7 +24,7 @@ const TaskRows = ({ task, runs, initiallyOpen }: { task: Task; runs: Run[]; init
       onClick={toggle} onKeyDown={event => activateRow(event, toggle)}>
       <th scope="row"><span className="panel-row-label"><Chevron />{task.id}</span></th>
       <td className="muted">{task.kind === "quiz" ? "Quiz" : "Goal"}</td>
-      <td className={`panel-status rate-${rateBucket(rate)}`}>{passed}/{runs.length} · {rate}%</td>
+      <td className={`panel-status rate-${rateBucket(rate)}`}><span>{passed}/{runs.length} · {rate}%</span></td>
     </tr>
     {open && [...runs].sort((a, b) => (a.created ?? "").localeCompare(b.created ?? "") || a.run.localeCompare(b.run)).map((run, i) => {
       const earlier = run.rubric !== null && task.rubric !== null && run.rubric !== task.rubric;
@@ -42,12 +42,13 @@ const TaskRows = ({ task, runs, initiallyOpen }: { task: Task; runs: Run[]; init
           </span></th>
           <td><span className="dots">{checks.map(({ key, number, wording }) => {
             const status = run.expects?.[key];
-            return <span key={key} className={`dot ${status ?? "missing"}`} role="img" title={earlier ? `Check ${number}` : wording}
+            return <span key={key} className={`dot ${status ?? "missing"}`} role="img"
               aria-label={`Check ${number}: ${status ?? "not recorded"}${earlier ? "" : `. ${wording}`}`} />;
           })}</span></td>
-          <td className={`panel-status ${run.pass === null ? "muted" : run.pass ? "rate-high" : "rate-low"}`}>{run.pass === null ? "Not recorded" : run.pass ? "Pass" : "Fail"}</td>
+          <td className={`panel-status ${run.pass === null ? "muted" : run.pass ? "rate-high" : "rate-low"}`}><span>{run.pass === null ? "Not recorded" : run.pass ? "Pass" : "Fail"}</span></td>
         </tr>
         {runOpen && <tr className="panel-detail-row"><td colSpan={3}>
+          <details className="panel-prompt"><summary>Prompt</summary><pre className="prompt">{task.input}</pre></details>
           {earlier && <p className="small muted">This run used an earlier version of the checks.</p>}
           <ol className="panel-checks">{checks.map(({ key, number, wording }) => {
             const status = run.expects?.[key];
@@ -60,7 +61,6 @@ const TaskRows = ({ task, runs, initiallyOpen }: { task: Task; runs: Run[]; init
             {run.usage.cost_usd !== null && <div><dt>Cost, USD</dt><dd>{cost(run.usage.cost_usd)}</dd></div>}
           </dl>
           {run.transcript_url && <a href={run.transcript_url} target="_blank" rel="noopener noreferrer">Transcript</a>}
-          <details className="panel-prompt"><summary>Prompt</summary><pre className="prompt">{task.input}</pre></details>
         </td></tr>}
       </Fragment>;
     })}
@@ -120,8 +120,8 @@ export const RunPanel = ({ title, subline, groups, footer, onClose }: {
         <p className="panel-header-status">{passed} of {allRuns.length} runs pass / <span className={`rate-${rateBucket(rate)}`}>{rate}%</span></p>
         <button className="panel-close" type="button" aria-label="Close panel" onClick={onClose}>×</button>
       </header>
-      <div className="panel-table-scroll">
-        <table className="panel-table">
+      <div className="table-card scroll panel-table-card">
+        <table className="table panel-table">
           <thead><tr><th scope="col">Task</th><th scope="col">Kind</th><th scope="col">Status</th></tr></thead>
           <tbody>{groups.map(({ task, runs, model, heading }) => <Fragment key={`${model ?? ""}/${task.id}`}>
             {heading && <tr className="panel-model-row"><th colSpan={3} scope="colgroup">{heading}</th></tr>}

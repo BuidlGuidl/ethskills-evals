@@ -11,8 +11,8 @@ export const Grid = <Column extends string,>({ rows, columns, onCellClick, total
   label?: string;
   rowLabel?: string;
 }) => <>
-  <div className="scroll rate-grid-scroll" role="region" aria-label={label} tabIndex={0}>
-    <table className="rate-grid">
+  <div className="table-card scroll" role="region" aria-label={label} tabIndex={0}>
+    <table className="table rate-grid">
       <caption className="sr-only">{label}. Cells show the share of runs that passed every check.</caption>
       <thead><tr><th scope="col">{rowLabel}</th>
         {columns.map(column => <th scope="col" key={column.key}>{column.label}</th>)}
@@ -20,8 +20,11 @@ export const Grid = <Column extends string,>({ rows, columns, onCellClick, total
       </tr></thead>
       <tbody>{rows.map(row => {
         const cells = columns.map(column => ({ key: column.key, value: row.cells[column.key] }));
-        return <tr key={row.key}>
-          <th scope="row">{row.label}{row.sub && <span className="grid-row-sub">{row.sub}</span>}</th>
+        return <tr key={row.key} className="clickable-row" onClick={() => onCellClick(row.key, "total")}>
+          <th scope="row"><button className="row-label" type="button" aria-haspopup="dialog"
+            onClick={event => { event.stopPropagation(); onCellClick(row.key, "total"); }}>
+            {row.label}{row.sub && <span className="grid-row-sub">{row.sub}</span>}
+          </button></th>
           {cells.map(({ key, value }) => <td key={key}><RateCell passed={value?.passed ?? 0}
             total={value?.total ?? 0} onClick={() => onCellClick(row.key, key)} /></td>)}
           {total && <td className="grid-total"><RateCell passed={row.total?.passed ?? 0} total={row.total?.total ?? 0}

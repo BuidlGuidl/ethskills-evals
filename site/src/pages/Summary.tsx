@@ -49,7 +49,7 @@ const Summary = () => {
         const version = selectedVersions[0];
         const sharedVersion = version && selectedVersions.every(other => other?.id === version.id) ? version : null;
         const cells = Object.fromEntries(models.map(model => [model, entries.get(model)?.totals[column] ?? null]));
-        return { key: skill, label: <Link to={`/skill/${skill}`}>{skill}</Link>, cells, total: pool(Object.values(cells)),
+        return { key: skill, label: skill, cells, total: pool(Object.values(cells)),
           sub: sharedVersion ? `${thousands(sharedVersion.lines)} lines, ${thousands(sharedVersion.tokens)} tokens` : undefined };
       })}
       columns={models.map(model => {

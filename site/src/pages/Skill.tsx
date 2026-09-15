@@ -5,7 +5,7 @@ import { Grid } from "../components/Grid.js";
 import { RunPanel } from "../components/RunPanel.js";
 import { ARMS, ARM_COLUMNS, ARM_LABELS, type Arm } from "../lib/grid.js";
 import { ComparisonBlock } from "../components/ComparisonBlock.js";
-import { compareEntry, type UsageMedians } from "../lib/compare.js";
+import { compareEntry, pool, type UsageMedians } from "../lib/compare.js";
 import { useDocs, useIndex } from "../lib/data.js";
 import { patchBetween } from "../lib/diff.js";
 import { cost, count, duration, tokens } from "../lib/format.js";
@@ -33,9 +33,11 @@ const EntryResults = ({ entry }: {
   const comparison = useMemo(() => compareEntry(entry, index), [entry, index]);
   const phone = useSyncExternalStore(subscribeViewport, phoneViewport);
   const [showDiff, setShowDiff] = useState(true);
-  const [selected, setSelected] = useState<{ task: string; arm: Arm } | null>(null);
+  const [selected, setSelected] = useState<{ task: string; arm: Arm | "total" } | null>(null);
   const selectedTask = index.tasks.find(task => task.id === selected?.task);
-  const selectedCell = selected && comparison.rows.find(row => row.task === selected.task)?.[ARM_COLUMNS[selected.arm]];
+  const selectedRow = comparison.rows.find(row => row.task === selected?.task);
+  const selectedCell = selected && selectedRow && (selected.arm === "total"
+    ? pool(ARMS.map(arm => selectedRow[ARM_COLUMNS[arm]])) : selectedRow[ARM_COLUMNS[selected.arm]]);
   const { before, after, rows, totals, usage } = comparison;
   // The skill texts live in docs.json, fetched once when the first skill page opens.
   const patch = useMemo(() => {
@@ -61,23 +63,25 @@ const EntryResults = ({ entry }: {
         <h2>Results</h2>
       </div>
       <Grid label={`${entry.model} task results`} rowLabel="Task"
-        rows={rows.map(row => ({ key: row.task, label: <Link to={`/task/${row.task}`}>{row.task}</Link>,
+        rows={rows.map(row => ({ key: row.task, label: row.task,
           sub: row.kind === "quiz" ? "Quiz" : "Goal",
           cells: { none: row.noSkill, old: row.before, new: row.after } }))}
         columns={ARMS.map(arm => ({ key: arm, label: ARM_LABELS[arm] }))}
-        onCellClick={(task, arm) => { if (arm !== "total") setSelected({ task, arm }); }}
+        onCellClick={(task, arm) => setSelected({ task, arm })}
       />
       {selected && selectedTask && selectedCell && <RunPanel title={`${selectedTask.id} on ${entry.model}`}
-        subline={`${ARM_LABELS[selected.arm]}, ${selectedCell.passed} of ${selectedCell.total} runs passed`}
-        groups={[{ task: selectedTask, runs: comparison.runs[ARM_COLUMNS[selected.arm]].filter(run => run.task === selectedTask.id) }]}
-        onClose={() => setSelected(null)} />}
+        subline={`${selected.arm === "total" ? "All skill versions" : ARM_LABELS[selected.arm]}, ${selectedCell.passed} of ${selectedCell.total} runs passed`}
+        groups={(selected.arm === "total" ? ARMS : [selected.arm]).map(arm => ({ task: selectedTask, model: arm,
+          heading: selected.arm === "total" ? ARM_LABELS[arm] : undefined,
+          runs: comparison.runs[ARM_COLUMNS[arm]].filter(run => run.task === selectedTask.id) }))}
+        onClose={() => setSelected(null)} footer={<Link to={`/task/${selectedTask.id}`}>Open the task page</Link>} />}
     </section>
     <section aria-label="Tokens, time and cost">
       <h2>Tokens, time and cost</h2>
       {columns.some(column => hasUsage(column.value)) ? <>
         <p className="muted small">Each value is the median per run for the tasks above. Token counts include recorded cache use. We show cost only when every run in that row has a cost record.</p>
-        <div className="scroll" role="region" aria-label="Usage medians" tabIndex={0}>
-          <table className="grid usage-table">
+        <div className="table-card scroll" role="region" aria-label="Usage medians" tabIndex={0}>
+          <table className="table usage-table">
             <thead>
               <tr>
                 <th scope="col">Skill used</th>
