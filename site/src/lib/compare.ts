@@ -3,6 +3,15 @@ import type { Entry, Index, Run, Skill } from "./types.js";
 // Cells retain their check revisions so incompatible grades never enter comparison totals.
 export type Cell = { passed: number; total: number; rubrics: string[] };
 
+export const pool = (cells: (Cell | null)[]): Cell | null => {
+  const present = cells.filter((cell): cell is Cell => cell !== null);
+  return present.length === 0 ? null : {
+    passed: present.reduce((total, cell) => total + cell.passed, 0),
+    total: present.reduce((total, cell) => total + cell.total, 0),
+    rubrics: [...new Set(present.flatMap(cell => cell.rubrics))].sort(),
+  };
+};
+
 // A retracted grade measured the harness, not the model — a killed CLI, a deliverable that
 // never reached the judge. The record stays on the task page and says why; no count has it.
 const measured = (run: Run) => run.retracted === null;
@@ -49,7 +58,6 @@ export const versionById = (skill: Skill, id: string | null) =>
   id === null ? null : (skill.versions.find(version => version.id === id) ?? null);
 
 type Columns<Value> = { noSkill: Value; before: Value; after: Value };
-type Column = keyof Columns<unknown>;
 
 export type Row = Columns<Cell | null> & {
   task: string;
@@ -108,22 +116,14 @@ export const compareEntry = (entry: Entry, index: Index) => {
     const cells = { noSkill: tally(runs.noSkill), before: tally(runs.before), after: tally(runs.after) };
     return { task: task.id, kind: task.kind, ...cells };
   });
-  const sum = (column: Column): Cell | null => {
-    const cells = rows.map(row => row[column]).filter((cell): cell is Cell => cell !== null);
-
-    return cells.length === 0 ? null : {
-      passed: cells.reduce((total, cell) => total + cell.passed, 0),
-      total: cells.reduce((total, cell) => total + cell.total, 0),
-      rubrics: [...new Set(cells.flatMap(cell => cell.rubrics))].sort(),
-    };
-  };
   const skill = index.skills.find(skill => skill.name === entry.skill);
 
   return {
     before: skill ? versionById(skill, entry.before) : null,
     after: skill ? versionById(skill, entry.after) : null,
+    runs: columns,
     rows,
-    totals: { noSkill: sum("noSkill"), before: sum("before"), after: sum("after") },
+    totals: { noSkill: pool(rows.map(row => row.noSkill)), before: pool(rows.map(row => row.before)), after: pool(rows.map(row => row.after)) },
     usage: {
       noSkill: usageMedians(columns.noSkill),
       before: usageMedians(columns.before),
@@ -131,18 +131,3 @@ export const compareEntry = (entry: Entry, index: Index) => {
     },
   };
 };
-
-export const summarize = (index: Index) => (index.showcase ?? []).map(entry => {
-  const comparison = compareEntry(entry, index);
-
-  return {
-    skill: entry.skill,
-    model: entry.model,
-    tasks: comparison.rows.length,
-    runs: comparison.usage.noSkill.runs + comparison.usage.before.runs + comparison.usage.after.runs,
-    ...comparison.totals,
-    beforeVersion: comparison.before,
-    afterVersion: comparison.after,
-    usage: comparison.usage,
-  };
-});

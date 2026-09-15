@@ -50,8 +50,8 @@ const Task = () => {
         <p className="small muted">Filled dot: pass · hollow dot: fail</p>
       </div>
       <p className="table-legend">Each row is one run. A pass means the model passed every check. "Not recorded" means the run has no record for that value.</p>
-      <div className="scroll" role="region" aria-label="Task runs" tabIndex={0}>
-        <table className="grid runs-table">
+      <div className="table-card scroll" role="region" aria-label="Task runs" tabIndex={0}>
+        <table className="table runs-table">
           <thead>
             <tr>
               <th scope="col">Run</th>

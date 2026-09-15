@@ -529,3 +529,42 @@ that skill. The three-column block is `site/src/components/ComparisonBlock.tsx`.
 
 Not done: a footnote naming the tokenizer under the block; the "what failed before the
 rewrite" section from the `mistakes/` records, which needs the indexer to read them.
+
+## 16. The grid
+
+The home page shows how AI agents perform on Ethereum tasks, with and without ethskills.
+Skills form the rows. Models form the columns, in manifest order.
+Each row opens its combined run panel. A Total column counts the row's runs across models.
+
+The switch selects No skill, Old skill, or New skill. New skill is the default.
+The URL records the choice in `?arm=`. Old skill uses the manifest's before version. New skill uses its after version.
+The row shows the selected version's lines and tokens. No skill hides those counts.
+Cells and their run lists use `compareEntry`, including its existing selection rules.
+
+A filled cell shows a rounded pass percentage and the run count beneath it. Colors use that rounded percentage.
+Rates below 50% are red. Rates from 50% to below 100% are amber. Only 100% is green.
+A cell with no runs shows an en dash and a styled "Not run yet" tooltip on hover and focus.
+Clicking it opens the row's combined panel. Filled cells open their own results.
+The legend below the grid says that more models are being run.
+The existing combined comparison follows under "What the rewrites changed".
+
+A filled cell opens a panel on the right with the runs behind that count, grouped by task.
+Total panels group those tasks by model. Version sizes appear only when all models in the row used the same version.
+The panel uses a compact table. Task rows expand to runs, and run rows expand to details.
+Each run shows its date, result, and check dots. Details show a collapsed prompt first, then checks, recorded usage, and a transcript link.
+Single-task panels open with their runs visible. The header shows the arm and combined pass count and percentage.
+Runs with earlier checks show numbered results without current check wording. Each run list sorts by date.
+Filled dots mean pass. Hollow dots mean fail.
+The panel closes with Escape, a backdrop click, or its Close button.
+Focus stays inside the panel and returns to the cell when it closes.
+The skill page uses the same grid, with tasks as rows and the three arms as columns.
+Clicking a task row opens its runs grouped by arm. The panel footer links to the task page.
+Its comparison block, usage medians, and skill text diff remain in place.
+
+The grids, run panel, usage table, task runs, and task list share the same table classes.
+They use rounded containers, row and column borders, uppercase mono headers, and 14px body cells.
+
+The site uses the existing dark palette by default.
+Inter and Source Code Pro load locally through `@fontsource-variable/inter` and `@fontsource-variable/source-code-pro`.
+The logos come from the Supabase evals repo, whose code uses Apache 2.0.
+The marks name the harness: the Claude mark means Claude Code, and the OpenAI mark means Codex.
