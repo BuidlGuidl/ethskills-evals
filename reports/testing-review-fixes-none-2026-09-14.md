@@ -13,7 +13,7 @@ is self-judged, as expected for this single-stack benchmark.
 
 **Runs:** The five repeated quizzes and the new held-out quiz have 3 valid runs per
 variant. Goal-001 has 3 valid baseline runs but only 2 valid skilled runs; five
-additional skilled attempts are retained as retracted harness failures.
+additional skilled attempts are retained as retracted non-zero executor outcomes.
 
 **Trigger:** content-only; no forced skill invocation.
 
@@ -107,6 +107,13 @@ termination. Each was graded only with `--grade-failed-run`, marked with
 `harness_failure` and `retracted`, and excluded from pass and check counts. There were
 no invalid baseline attempts in this sitting.
 
+Across the 2026-09-13 and 2026-09-14 sittings, **12 of 14 cybersecurity refusals**
+occurred in the skilled arm: 8/10 in the first sitting and 4/4 in this one. The
+separate usage-limit termination also occurred in the skilled arm. The schema records
+these as `harness_failure`, but analytically this concentration is a possible
+skill-triggered classifier effect, not neutral harness noise. It must be reported as a
+negative delta unless a controlled follow-up disproves that explanation.
+
 The five retained failures took 99–262 seconds and 14,330–57,431 tokens each according
 to the per-run rows from `yarn run-stats`; their aggregate median is 185 seconds and
 25,027 tokens. Those are operational costs, not valid-arm performance. A sixth
@@ -115,9 +122,10 @@ a live credential; it is not a benchmark sample. The credential was redacted fro
 working records, but rotation is still required because earlier branch history had
 already been pushed.
 
-This imbalance is itself a negative result. The valid `1/2` skilled goal score may be
-selection-biased, and repeated redrawing would make that worse. The benchmark stops
-without filling the third slot.
+This imbalance is itself a negative result. The goal comparison is inconclusive at
+`1/2` valid skilled runs versus `0/3` baseline: it may be selection-biased, and
+repeated redrawing would make that worse. The benchmark stops without filling the
+third slot.
 
 ## Evidence audit
 
@@ -183,9 +191,9 @@ repo-shaped transfer task whose defects differ from goal-001.
 
 | Question | Answer |
 | --- | --- |
-| Did the skill improve pass rate? | Repeated quizzes: `15/15` vs `12/15`; held-out quiz: `3/3` vs `2/3`. Goal: `1/2` valid vs `0/3`, with no third skilled sample after five retained harness failures. |
+| Did the skill improve pass rate? | Repeated quizzes: `15/15` vs `12/15`; held-out quiz: `3/3` vs `2/3`. Goal is inconclusive at `1/2` valid vs `0/3`, with no third skilled sample after five retained non-zero outcomes. |
 | Did it reduce time/tokens? | No overall. Valid goal median rose from 207s / 44,426 tokens to 328s / 60,440; held-out median moved from 51s / 14,091 to 55s / 11,928. |
-| Did it create negative deltas? | No valid pass/check delta. Operationally, the skilled goal arm had five retained service failures, one credential-leaking interrupted attempt, higher valid-run goal cost, and two failed Slither-launcher attempts. |
+| Did it create negative deltas? | No valid pass/check delta. Operationally, 12/14 cybersecurity refusals across the two sittings hit the skilled arm; this sitting also had one skilled usage-limit termination, one credential-leaking interrupted attempt, higher valid-run goal cost, and two failed Slither-launcher attempts. |
 | What mistakes repeated without the skill? | Boundary/unbounded-fee miss, no real-token fork, no fuzzing, incomplete tautology diagnosis, incomplete handler/no-drift replacement, and archive-depth omission. |
 | What mistakes remained with the skill? | One valid run omitted fuzzing; one authored a fork but could not produce real integration evidence without archive access. |
 | What should change in the skill? | Nothing further from this same task; validate future edits on an operational held-out repository. |

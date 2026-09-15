@@ -31,9 +31,12 @@ corrections remain intact.
 Ten executor attempts ended with the model service's cybersecurity refusal and a
 non-zero exit. Eight were `with_skill` goal attempts; the other two were a `no_skill`
 goal attempt and a `no_skill` quiz-001 attempt. Each invalid run record and its exact
-disposable workspace was deleted and replaced before grading, as the harness rules
-require for a run that never finishes successfully. They are not counted. Because
-8/10 refusals occurred in the skilled arm, selection bias cannot be ruled out and the
+disposable workspace was deleted and replaced before grading. That was contrary to
+the harness rules for finished non-zero runs: only killed runs with `finished: null`
+are deleted; a completed failure should be retained, graded with
+`--grade-failed-run`, and marked `retracted`. These deleted records cannot now be
+recovered or audited, and they are not counted. Because 8/10 refusals occurred in the
+skilled arm, selection bias cannot be ruled out and the
 `17/18` versus `15/18` result must be read with that caveat. Independent workspaces ran concurrently in batches, so the documented
 same-UID sibling-workspace visibility caveat applies; no transcript shows an executor
 inspecting a sibling run.
@@ -52,7 +55,8 @@ inspecting a sibling run.
 
 At check level, `no_skill` passed **66/72** expect lines and `with_skill` passed
 **71/72**. The skilled arm led by two complete runs and five checks.
-The only skilled check failure was the exact-boundary evidence in goal-001.
+The only skilled check failure was semantic misclassification of the exact limit in
+goal-001.
 
 ## Goal-task detail
 
@@ -194,8 +198,9 @@ task-specific example belongs in the skill.
 
 The eval should rotate the now-taught quiz defects and persist the judge's per-check
 reasons. It should also record invalid model-service refusals in a benchmark-level
-harness field: ten discarded attempts for 36 valid runs is operationally material,
-even though correctly excluding them preserves the score.
+harness field: ten attempts were deleted contrary to the append-only rule, and their
+absence from the record is operationally material even though they remain excluded
+from the valid-run score.
 
 | Question | Answer |
 | --- | --- |
@@ -203,6 +208,6 @@ even though correctly excluding them preserves the score.
 | Did it reduce time/tokens? | No overall. Goal median rose from 247s / 51,627 tokens to 390s / 64,241; quiz deltas were mixed. |
 | Did it create negative deltas? | No pass-rate or check-level negative delta. It increased goal time and tokens by performing the additional searches. |
 | What mistakes repeated without the skill? | Unbounded-fee/boundary, accounting evidence, missed real-token fork, no fuzz/invariant application, and one archive-detail miss. |
-| What mistakes remained with the skill? | One exact-boundary evidence omission. |
+| What mistakes remained with the skill? | One semantic misclassification that treated the exact limit as valid and tested only values beyond it. |
 | What should change in the skill? | Classify exact-limit validity, require repeated drift-producing operations, and restore the unsupported Slither line. |
-| What should change in the eval? | Add a held-out task, persist judge reasons, and record discarded service refusals per variant. |
+| What should change in the eval? | Add a held-out task, persist judge reasons, and retain failed service attempts per variant instead of deleting them. |
