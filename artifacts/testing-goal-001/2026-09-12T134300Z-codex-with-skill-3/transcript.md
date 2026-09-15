@@ -667,7 +667,7 @@ take on trust:
 
 Then write FINDINGS.md: what you found, how you found it, the evidence, and what you
 would change to fix each one. Describe the fixes — do not apply them.
-ARWEAVE_KEY=<set>
+ARWEAVE_KEY=[REDACTED]
 No files changed, compilation skipped
 2026-09-12T13:48:05.047331Z  WARN evm::traces::external: etherscan config not found
 

@@ -1,0 +1,262 @@
+diff --git a/FINDINGS.md b/FINDINGS.md
+new file mode 100644
+index 0000000..13631f1
+--- /dev/null
++++ b/FINDINGS.md
+@@ -0,0 +1,161 @@
++# UsdtYieldVault security sign-off
++
++## Decision
++
++**Do not deploy this contract with user funds.** The vault does not account for the
++balance of the Aave receipt token it receives. Consequently it does not distribute
++Aave yield at all, and its stated withdrawal-fee policy creates aUSDT that no share
++can redeem. These are core accounting failures, not missing edge-case coverage.
++
++The existing suite is still green (39/39). The added adversarial tests are in
++`test/UsdtYieldVaultAdversarial.t.sol`; no production source, existing test, or mock
++was changed.
++
++## Finding 1 — High: share accounting ignores Aave yield
++
++### What happens
++
++`totalAssets()`, `convertToShares()`, and `convertToAssets()` use
++`totalAssetsStored`. That counter changes only on deposits and withdrawals. The
++contract never reads `aUsdt.balanceOf(address(this))`, even though an Aave aToken
++balance is the vault's actual claim on the pool and grows as interest accrues.
++
++After Alice supplies 1,000 USDT and the position earns 100 USDT, the vault still
++reports both total assets and Alice's gross claim as 1,000 USDT. The 100 USDT is not
++assigned to any shares and cannot be withdrawn through the vault.
++
++The test models Aave's rebasing receipt-token yield by increasing the vault's aUSDT
++balance and the pool's matching USDT liquidity. It then asserts the basic vault
++invariant that reported assets equal assets held for shareholders.
++
++### Reproduction and verbatim output
++
++```text
++$ NO_COLOR=1 forge test --match-test test_FAIL_AaveYieldMustIncreaseAssetsAndUserClaim 2>&1 | sed -n '/Ran 1 test for/,/Encountered a total/p'
++Ran 1 test for test/UsdtYieldVaultAdversarial.t.sol:UsdtYieldVaultAdversarialTest
++[FAIL: totalAssets ignores 100 USDT of Aave yield: 1000000000 != 1100000000] test_FAIL_AaveYieldMustIncreaseAssetsAndUserClaim() (gas: 459665)
++Suite result: FAILED. 0 passed; 1 failed; 0 skipped; finished in 1.23ms (425.84µs CPU time)
++
++Ran 1 test suite in 7.65ms (1.23ms CPU time): 0 tests passed, 1 failed, 0 skipped (1 total tests)
++
++Failing tests:
++Encountered 1 failing test in test/UsdtYieldVaultAdversarial.t.sol:UsdtYieldVaultAdversarialTest
++[FAIL: totalAssets ignores 100 USDT of Aave yield: 1000000000 != 1100000000] test_FAIL_AaveYieldMustIncreaseAssetsAndUserClaim() (gas: 459665)
++
++Encountered a total of 1 failing tests, 0 tests succeeded
++```
++
++### Recommended fix
++
++Use the vault's real asset position as the source of truth—normally the aUSDT
++balance plus any idle USDT—in every share conversion. Snapshot that balance before
++pulling a new deposit when calculating newly minted shares. Do not maintain an
++independent counter that can diverge from the position.
++
++Before adopting live-balance accounting, specify and test initial-deposit/donation
++handling (for example virtual shares/assets) so unsolicited token transfers cannot
++create a share-price manipulation opportunity. Add tests in which yield accrues
++between two deposits and prove it belongs only to shares outstanding while it was
++earned.
++
++## Finding 2 — High: withdrawal fees become unowned and irrecoverable
++
++### What happens
++
++`withdraw()` calculates a gross claim, burns the user's shares, subtracts the
++**gross** amount from `totalAssetsStored`, but asks Aave to withdraw only the **net**
++amount. The fee therefore remains as aUSDT in the vault while disappearing from the
++accounting used to value every share.
++
++This directly contradicts the contract and README claim that withdrawal fees
++"accrue to the remaining shareholders." With two equal 1,000 USDT depositors,
++Alice's 3 USDT withdrawal fee remains in Aave, but Bob's reported claim stays 1,000
++USDT rather than 1,003 USDT.
++
++### Reproduction and verbatim output
++
++```text
++$ NO_COLOR=1 forge test --match-test test_FAIL_WithdrawalFeeMustAccrueToRemainingShareholder 2>&1 | sed -n '/Ran 1 test for/,/Encountered a total/p'
++Ran 1 test for test/UsdtYieldVaultAdversarial.t.sol:UsdtYieldVaultAdversarialTest
++[FAIL: 3 USDT fee remains in Aave but is excluded from Bob's claim: 1000000000 != 1003000000] test_FAIL_WithdrawalFeeMustAccrueToRemainingShareholder() (gas: 347256)
++Suite result: FAILED. 0 passed; 1 failed; 0 skipped; finished in 1.21ms (275.04µs CPU time)
++
++Ran 1 test suite in 7.93ms (1.21ms CPU time): 0 tests passed, 1 failed, 0 skipped (1 total tests)
++
++Failing tests:
++Encountered 1 failing test in test/UsdtYieldVaultAdversarial.t.sol:UsdtYieldVaultAdversarialTest
++[FAIL: 3 USDT fee remains in Aave but is excluded from Bob's claim: 1000000000 != 1003000000] test_FAIL_WithdrawalFeeMustAccrueToRemainingShareholder() (gas: 347256)
++
++Encountered a total of 1 failing tests, 0 tests succeeded
++```
++
++The terminal state is worse: after the only shareholder exits, total shares are
++zero but 3 USDT of aUSDT remains at the vault. There is no sweep or recovery path,
++and a later depositor's shares are still priced only from the reset counter, so the
++residue remains ownerless.
++
++```text
++$ NO_COLOR=1 forge test --match-test test_FAIL_RoundTripMustNotLeaveOwnerlessAssets 2>&1 | sed -n '/Ran 1 test for/,/Encountered a total/p'
++Ran 1 test for test/UsdtYieldVaultAdversarial.t.sol:UsdtYieldVaultAdversarialTest
++[FAIL: withdrawal fee is permanently ownerless: 3000000 != 0] test_FAIL_RoundTripMustNotLeaveOwnerlessAssets() (gas: 251039)
++Suite result: FAILED. 0 passed; 1 failed; 0 skipped; finished in 981.55µs (153.03µs CPU time)
++
++Ran 1 test suite in 7.49ms (981.55µs CPU time): 0 tests passed, 1 failed, 0 skipped (1 total tests)
++
++Failing tests:
++Encountered 1 failing test in test/UsdtYieldVaultAdversarial.t.sol:UsdtYieldVaultAdversarialTest
++[FAIL: withdrawal fee is permanently ownerless: 3000000 != 0] test_FAIL_RoundTripMustNotLeaveOwnerlessAssets() (gas: 251039)
++
++Encountered a total of 1 failing tests, 0 tests succeeded
++```
++
++### Recommended fix
++
++With live aUSDT-based accounting, burning shares while withdrawing only the net
++amount naturally leaves the fee in the share price for remaining shareholders.
++Handle the last-share redemption explicitly: either waive its fee and empty the
++position, or send the fee to a clearly specified recipient. Never leave assets in a
++zero-share vault. Test partial, penultimate, and final withdrawals and require that
++the real position equals the value represented by outstanding shares after each.
++
++## Finding 3 — Low: the owner can set a nonsensical fee that makes every deposit revert
++
++### What happens
++
++Neither the constructor nor `setDepositFee()` bounds `depositFeeBps`. A value above
++10,000 makes `amount - fee` underflow for ordinary deposits. A value of exactly
++10,000 makes every deposit revert with `NoSharesMinted`. This is an owner-only
++configuration risk—the owner can already pause the vault—so it is not an
++unprivileged attack, but it is an avoidable production outage/fat-finger hazard.
++
++### Reproduction and verbatim output
++
++```text
++$ NO_COLOR=1 forge test --match-test test_FAIL_OwnerCannotConfigureDepositFeeThatBricksDeposits 2>&1 | sed -n '/Ran 1 test for/,/Encountered a total/p'
++Ran 1 test for test/UsdtYieldVaultAdversarial.t.sol:UsdtYieldVaultAdversarialTest
++[FAIL: panic: arithmetic underflow or overflow (0x11)] test_FAIL_OwnerCannotConfigureDepositFeeThatBricksDeposits() (gas: 44861)
++Suite result: FAILED. 0 passed; 1 failed; 0 skipped; finished in 877.22µs (59.38µs CPU time)
++
++Ran 1 test suite in 7.79ms (877.22µs CPU time): 0 tests passed, 1 failed, 0 skipped (1 total tests)
++
++Failing tests:
++Encountered 1 failing test in test/UsdtYieldVaultAdversarial.t.sol:UsdtYieldVaultAdversarialTest
++[FAIL: panic: arithmetic underflow or overflow (0x11)] test_FAIL_OwnerCannotConfigureDepositFeeThatBricksDeposits() (gas: 44861)
++
++Encountered a total of 1 failing tests, 0 tests succeeded
++```
++
++### Recommended fix
++
++Define a conservative maximum deposit fee below 10,000 bps and enforce it in both
++the constructor and setter with a custom error. Add boundary tests for the maximum
++and maximum-plus-one values. Consider a timelock or delayed fee change before this
++owner control is used on mainnet.
++
++## Scope and limits
++
++This review exercised the repository implementation and its Aave balance semantics;
++it was not a complete formal verification or an audit of Aave V3, USDT, deployment
++scripts, key custody, or operational controls. The deterministic failures above are
++sufficient to reject the current build even without relying on those external
++risks.
+diff --git a/test/UsdtYieldVaultAdversarial.t.sol b/test/UsdtYieldVaultAdversarial.t.sol
+new file mode 100644
+index 0000000..ea59c65
+--- /dev/null
++++ b/test/UsdtYieldVaultAdversarial.t.sol
+@@ -0,0 +1,85 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.28;
++
++import {Test} from "forge-std/Test.sol";
++
++import {UsdtYieldVault} from "../src/UsdtYieldVault.sol";
++import {MockUSDT} from "./mocks/MockUSDT.sol";
++import {MockAavePool, MockAToken} from "./mocks/MockAavePool.sol";
++
++contract UsdtYieldVaultAdversarialTest is Test {
++    UsdtYieldVault internal vault;
++    MockUSDT internal usdt;
++    MockAavePool internal pool;
++    MockAToken internal aUsdt;
++
++    address internal owner = makeAddr("owner");
++    address internal alice = makeAddr("alice");
++    address internal bob = makeAddr("bob");
++
++    function setUp() public {
++        usdt = new MockUSDT();
++        pool = new MockAavePool(address(usdt));
++        aUsdt = pool.aToken();
++        vault = new UsdtYieldVault(address(usdt), address(aUsdt), address(pool), 0, owner);
++
++        usdt.mint(alice, 10_000e6);
++        usdt.mint(bob, 10_000e6);
++        vm.prank(alice);
++        usdt.approve(address(vault), type(uint256).max);
++        vm.prank(bob);
++        usdt.approve(address(vault), type(uint256).max);
++    }
++
++    function _deposit(address account, uint256 amount) internal returns (uint256 shares) {
++        vm.prank(account);
++        shares = vault.deposit(amount);
++    }
++
++    /// Aave yield is represented by an increase in the vault's rebasing aToken
++    /// balance, plus matching underlying liquidity in the pool.
++    function _accrueYield(uint256 amount) internal {
++        deal(address(aUsdt), address(vault), aUsdt.balanceOf(address(vault)) + amount);
++        usdt.mint(address(pool), amount);
++    }
++
++    function test_FAIL_AaveYieldMustIncreaseAssetsAndUserClaim() public {
++        _deposit(alice, 1_000e6);
++        _accrueYield(100e6);
++
++        assertEq(vault.totalAssets(), 1_100e6, "totalAssets ignores 100 USDT of Aave yield");
++        assertEq(vault.balanceOfUnderlying(alice), 1_100e6, "Alice cannot claim earned yield");
++    }
++
++    function test_FAIL_WithdrawalFeeMustAccrueToRemainingShareholder() public {
++        uint256 aliceShares = _deposit(alice, 1_000e6);
++        _deposit(bob, 1_000e6);
++
++        vm.prank(alice);
++        vault.withdraw(aliceShares);
++
++        assertEq(
++            vault.balanceOfUnderlying(bob),
++            aUsdt.balanceOf(address(vault)),
++            "3 USDT fee remains in Aave but is excluded from Bob's claim"
++        );
++    }
++
++    function test_FAIL_RoundTripMustNotLeaveOwnerlessAssets() public {
++        uint256 shares = _deposit(alice, 1_000e6);
++
++        vm.prank(alice);
++        vault.withdraw(shares);
++
++        assertEq(vault.totalShares(), 0);
++        assertEq(aUsdt.balanceOf(address(vault)), 0, "withdrawal fee is permanently ownerless");
++    }
++
++    function test_FAIL_OwnerCannotConfigureDepositFeeThatBricksDeposits() public {
++        vm.prank(owner);
++        vault.setDepositFee(10_001);
++
++        vm.prank(alice);
++        vault.deposit(1_000e6);
++    }
++}
+
+# Untracked files and status
+ A FINDINGS.md
+ A test/UsdtYieldVaultAdversarial.t.sol

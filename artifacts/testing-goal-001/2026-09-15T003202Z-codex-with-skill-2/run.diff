@@ -1,0 +1,198 @@
+diff --git a/test/DeploymentRisk.t.sol b/test/DeploymentRisk.t.sol
+new file mode 100644
+index 0000000..e292232
+--- /dev/null
++++ b/test/DeploymentRisk.t.sol
+@@ -0,0 +1,140 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.28;
++
++import {Test} from "forge-std/Test.sol";
++
++import {UsdtYieldVault} from "../src/UsdtYieldVault.sol";
++import {MockUSDT} from "./mocks/MockUSDT.sol";
++import {MockAavePool, MockAToken} from "./mocks/MockAavePool.sol";
++
++contract DeploymentRiskTest is Test {
++    MockUSDT internal usdt;
++    MockAavePool internal pool;
++    MockAToken internal aUsdt;
++    UsdtYieldVault internal vault;
++
++    address internal owner = makeAddr("owner");
++    address internal alice = makeAddr("alice");
++    address internal bob = makeAddr("bob");
++
++    function setUp() public {
++        usdt = new MockUSDT();
++        pool = new MockAavePool(address(usdt));
++        aUsdt = pool.aToken();
++        vault = new UsdtYieldVault(address(usdt), address(aUsdt), address(pool), 10, owner);
++
++        usdt.mint(alice, 10_000e6);
++        usdt.mint(bob, 10_000e6);
++        vm.prank(alice);
++        usdt.approve(address(vault), type(uint256).max);
++        vm.prank(bob);
++        usdt.approve(address(vault), type(uint256).max);
++    }
++
++    function testFuzz_AcceptedFeeMustLeaveDepositsUsable(uint256 feeBps) public {
++        feeBps = bound(feeBps, 0, 10_001);
++        vm.prank(owner);
++        vault.setDepositFee(feeBps);
++
++        vm.prank(alice);
++        uint256 shares = vault.deposit(1_000e6);
++        assertGt(shares, 0, "an accepted fee must not brick deposits");
++    }
++
++    function test_FeeAboveDenominatorMustBeRejectedBySetter() public {
++        vm.prank(owner);
++        vault.setDepositFee(10_001);
++        assertLe(vault.depositFeeBps(), vault.BPS_DENOMINATOR(), "invalid fee was accepted");
++    }
++
++    function test_TwoWithdrawalsMustNotAccumulateUnaccountedAUsdt() public {
++        vm.prank(alice);
++        uint256 aliceShares = vault.deposit(1_000e6);
++        vm.prank(bob);
++        uint256 bobShares = vault.deposit(1_000e6);
++
++        vm.prank(alice);
++        vault.withdraw(aliceShares / 2);
++        uint256 gapAfterFirst = aUsdt.balanceOf(address(vault)) - vault.totalAssets();
++
++        vm.prank(bob);
++        vault.withdraw(bobShares / 2);
++        uint256 gapAfterSecond = aUsdt.balanceOf(address(vault)) - vault.totalAssets();
++
++        emit log_named_uint("unaccounted aUSDT after first withdrawal", gapAfterFirst);
++        emit log_named_uint("unaccounted aUSDT after second withdrawal", gapAfterSecond);
++        assertEq(aUsdt.balanceOf(address(vault)), vault.totalAssets(), "custody diverged from accounting");
++    }
++
++    function test_AccruedAaveBalanceMustIncreaseReportedAssets() public {
++        vm.prank(alice);
++        vault.deposit(1_000e6);
++
++        vm.prank(address(pool));
++        aUsdt.mint(address(vault), 100e6);
++
++        emit log_named_uint("vault totalAssets after simulated Aave accrual", vault.totalAssets());
++        emit log_named_uint("aUSDT custody after simulated Aave accrual", aUsdt.balanceOf(address(vault)));
++        assertEq(vault.totalAssets(), aUsdt.balanceOf(address(vault)), "Aave yield is absent from accounting");
++    }
++}
++
++contract VaultHandler is Test {
++    UsdtYieldVault internal immutable vault;
++    MockUSDT internal immutable usdt;
++    address internal immutable alice;
++    address internal immutable bob;
++
++    constructor(UsdtYieldVault _vault, MockUSDT _usdt, address _alice, address _bob) {
++        vault = _vault;
++        usdt = _usdt;
++        alice = _alice;
++        bob = _bob;
++    }
++
++    function withdraw(uint256 actorSeed, uint256 shareSeed) external {
++        address actor = actorSeed % 2 == 0 ? alice : bob;
++        uint256 balance = vault.shareBalance(actor);
++        if (balance == 0) return;
++        uint256 shares = bound(shareSeed, 1, balance);
++        vm.prank(actor);
++        vault.withdraw(shares);
++    }
++}
++
++contract DeploymentInvariantTest is Test {
++    MockUSDT internal usdt;
++    MockAavePool internal pool;
++    MockAToken internal aUsdt;
++    UsdtYieldVault internal vault;
++    VaultHandler internal handler;
++
++    address internal owner = makeAddr("owner");
++    address internal alice = makeAddr("alice");
++    address internal bob = makeAddr("bob");
++
++    function setUp() public {
++        usdt = new MockUSDT();
++        pool = new MockAavePool(address(usdt));
++        aUsdt = pool.aToken();
++        vault = new UsdtYieldVault(address(usdt), address(aUsdt), address(pool), 10, owner);
++
++        usdt.mint(alice, 10_000e6);
++        usdt.mint(bob, 10_000e6);
++        vm.startPrank(alice);
++        usdt.approve(address(vault), type(uint256).max);
++        vault.deposit(1_000e6);
++        vm.stopPrank();
++        vm.startPrank(bob);
++        usdt.approve(address(vault), type(uint256).max);
++        vault.deposit(1_000e6);
++        vm.stopPrank();
++
++        handler = new VaultHandler(vault, usdt, alice, bob);
++        targetContract(address(handler));
++    }
++
++    function invariant_TrackedAssetsMustEqualAaveCustody() public view {
++        assertEq(aUsdt.balanceOf(address(vault)), vault.totalAssets(), "custody/accounting drift");
++    }
++}
+diff --git a/test/MainnetFork.t.sol b/test/MainnetFork.t.sol
+new file mode 100644
+index 0000000..2e2513b
+--- /dev/null
++++ b/test/MainnetFork.t.sol
+@@ -0,0 +1,42 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.28;
++
++import {Test} from "forge-std/Test.sol";
++import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
++import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
++
++import {UsdtYieldVault} from "../src/UsdtYieldVault.sol";
++
++contract MainnetForkTest is Test {
++    using SafeERC20 for IERC20;
++
++    address internal constant USDT = 0xdAC17F958D2ee523a2206206994597C13D831ec7;
++    address internal constant A_USDT = 0x23878914EFE38d27C4D67Ab83ed1b93A74D4086a;
++    address internal constant AAVE_POOL = 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2;
++    uint256 internal constant PINNED_BLOCK = 20_000_000;
++
++    function test_RealUsdtApproveMustReturnIERC20Bool() public {
++        vm.createSelectFork(vm.envString("MAINNET_RPC_URL"), PINNED_BLOCK);
++
++        (bool success, bytes memory returnData) = USDT.call(abi.encodeCall(IERC20.approve, (AAVE_POOL, 1)));
++        assertTrue(success, "USDT approve itself reverted");
++        emit log_named_uint("real USDT approve return-data bytes", returnData.length);
++        assertEq(returnData.length, 32, "IERC20 typed call requires a bool but real USDT returns no data");
++    }
++
++    function test_RealUsdtDepositMustSupplyIntoAave() public {
++        vm.createSelectFork(vm.envString("MAINNET_RPC_URL"), PINNED_BLOCK);
++
++        address depositor = makeAddr("fork depositor");
++        UsdtYieldVault vault = new UsdtYieldVault(USDT, A_USDT, AAVE_POOL, 0, address(this));
++        deal(USDT, depositor, 10_000e6);
++
++        vm.startPrank(depositor);
++        IERC20(USDT).forceApprove(address(vault), type(uint256).max);
++        (bool success,) = address(vault).call(abi.encodeCall(vault.deposit, (10_000e6)));
++        vm.stopPrank();
++
++        assertTrue(success, "deposit with real USDT reverted");
++        assertEq(IERC20(A_USDT).balanceOf(address(vault)), 10_000e6, "deposit did not reach Aave");
++    }
++}
+
+# Untracked files and status
+ A test/DeploymentRisk.t.sol
+ A test/MainnetFork.t.sol

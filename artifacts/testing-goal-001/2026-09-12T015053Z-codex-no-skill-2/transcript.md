@@ -576,7 +576,7 @@ INIT_CWD=<redacted>
 CODEX_HOME=<redacted>
 PROJECT_CWD=<redacted>
 npm_package_json=<redacted>
-ARWEAVE_KEY=<redacted>
+ARWEAVE_KEY=[REDACTED]
 PATH=<redacted>
 
 codex
