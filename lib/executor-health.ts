@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import type { Executor } from "./types.js";
+import { jsonEvents } from "./usage.js";
 
 const MAX_EVIDENCE_CHARS = 200;
 
@@ -74,10 +75,36 @@ const lineAt = (captured: string, index: number) => {
   return line.length > MAX_EVIDENCE_CHARS ? `${line.slice(0, MAX_EVIDENCE_CHARS)} …` : line;
 };
 
-// executor.err only. That is the harness's own capture of the executor's stderr — for codex
-// the whole session log, for claude the diagnostics — and it is written by run-executor next
-// to the record verify already reads. It is gitignored, so a committed run has none: no file
-// means no signal, never a refusal, since the regrade guard already stops those.
+// Since `codex exec --json` (2026-09-15) each command's output is no longer in the stderr log
+// but in transcript.jsonl, one command_execution item at a time, with its exit code. The same
+// bound applies and is exact there: the output of every command before the first that exited 0.
+const outputsBeforeFirstSuccess = (raw: string) => {
+  const outputs: string[] = [];
+
+  for (const event of jsonEvents(raw).events) {
+    const item = event.item as Record<string, unknown> | undefined;
+
+    if (event.type !== "item.completed" || item?.type !== "command_execution") {
+      continue;
+    }
+
+    if (item.exit_code === 0) {
+      break;
+    }
+
+    if (typeof item.aggregated_output === "string") {
+      outputs.push(item.aggregated_output);
+    }
+  }
+
+  return outputs.join("\n");
+};
+
+// The harness's own captures of the executor, written by run-executor next to the record
+// verify already reads: executor.err (for a pre---json codex the whole session log, now
+// diagnostics such as the shell-snapshot error) and transcript.jsonl (codex's command output).
+// Both are gitignored, so a committed run has neither: no file means no signal, never a
+// refusal, since the regrade guard already stops those.
 export const detectBrokenShell = (runDir: string, executor: Executor) => {
   const failures = SHELL_FAILURES[executor];
 
@@ -85,19 +112,24 @@ export const detectBrokenShell = (runDir: string, executor: Executor) => {
     return null;
   }
 
-  const capturePath = path.join(runDir, "executor.err");
+  const captures = [
+    { capturePath: path.join(runDir, "executor.err"), scan: beforeFirstSuccess },
+    { capturePath: path.join(runDir, "transcript.jsonl"), scan: outputsBeforeFirstSuccess },
+  ];
 
-  if (!existsSync(capturePath)) {
-    return null;
-  }
+  for (const { capturePath, scan } of captures) {
+    if (!existsSync(capturePath)) {
+      continue;
+    }
 
-  const captured = beforeFirstSuccess(readFileSync(capturePath, "utf8"));
+    const captured = scan(readFileSync(capturePath, "utf8"));
 
-  for (const failure of failures) {
-    const match = failure.pattern.exec(captured);
+    for (const failure of failures) {
+      const match = failure.pattern.exec(captured);
 
-    if (match) {
-      return { cause: failure.cause, remedy: failure.remedy, evidence: lineAt(captured, match.index), capturePath };
+      if (match) {
+        return { cause: failure.cause, remedy: failure.remedy, evidence: lineAt(captured, match.index), capturePath };
+      }
     }
   }
 

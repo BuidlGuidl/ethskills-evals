@@ -181,12 +181,13 @@ harness_failure:                      # absent unless --grade-failed-run graded 
 usage:                                # what the run cost; absent on runs made before 2026-08-27
   duration_s: 812                     # the harness's own wall clock — the one figure both stacks share
   turns: 34                           # claude only
-  cost_usd: 4.66                      # claude only; codex exec reports no price
-  input_tokens: 12                    # claude only; the UNCACHED remainder, double digits on a real run
-  cache_creation_input_tokens: 47453  # claude only; where a skill's own prompt lands
-  cache_read_input_tokens: 203362     # claude only; the context re-read on every turn
-  output_tokens: 31748                # claude only
-  total_tokens: 282575                # both stacks; the sum of the four above on claude, codex's own line on codex
+  cost_usd: 4.66                      # claude's reported price; on codex derived from tokens × lib/prices.ts
+  cost_source: executor               # executor (claude) | list_price (codex); null when there is no cost
+  input_tokens: 12                    # the UNCACHED remainder, double digits on a real claude run
+  cache_creation_input_tokens: 47453  # where a skill's own prompt lands
+  cache_read_input_tokens: 203362     # the context re-read on every turn
+  output_tokens: 31748                # includes reasoning tokens on codex
+  total_tokens: 282575                # the sum of the four above, on both stacks
 judge:                                # who graded this run
   agent: claude
   model: claude-opus-4-8              # null when the agent's CLI picked its own default
@@ -231,7 +232,7 @@ yarn run-stats --tasks <id>,<id> [--since 2026-08-27] [--variant no_skill] [--sk
 It reads the `## run stats` footer `run-executor` writes into each committed `transcript.md`,
 falling back to the raw `## result` block older transcripts carry instead — the same result event
 under different labels, so those runs are derivable too — and to `result.yaml`'s `usage` block for
-what neither holds, which on codex is the token total. It prints per-task medians per variant with
+what neither holds, which on pre-`--json` codex runs is the token total. It prints per-task medians per executor and variant with
 the cost range beside them and the median `total_tokens`, and says `(n with no stats)` for runs
 that carry none of the three — whose cost and duration this repo simply does not have.
 
@@ -250,20 +251,24 @@ variant's column — and no reviewer could have caught it without re-deriving ev
 State the executor, its model, the judge, and the run count at the top of every report. If any run came back `self_judged: true`, say so there — on a single-stack benchmark that is every run, and it is a caveat on the numbers, not a defect in them.
 
 Pass counts are not the whole verdict. `result.yaml` carries a `usage` block per run, so
-give the cost row real numbers rather than "no reduction observed": duration and tokens on
-both stacks, dollars on claude. Two arms that both pass every line are not equivalent if one
+give the cost row real numbers rather than "no reduction observed": duration, tokens and
+dollars on both stacks. Two arms that both pass every line are not equivalent if one
 of them took twice the tokens to get there, and on a saturated task that difference is the
-result. Dollars for a codex benchmark have to be derived from tokens and a published price —
-say so in the report rather than printing a figure the harness never measured.
+result. A codex dollar figure is `cost_source: list_price`: the run's token split priced at
+OpenAI's standard-tier list price in `lib/prices.ts` (dated there), not what the operator was
+billed, and it ignores the >272K long-context surcharge. `run-stats` marks it `(list price)`;
+say so in the report too. A codex model missing from that table records `cost_usd: null` —
+add its row before running it.
 
-Quote `total_tokens`, never `input_tokens`. On claude the run's input is spread over three
-fields and `input_tokens` alone is the uncached leftover — a skill's whole prompt is billed
-through `cache_creation_input_tokens` and re-read every turn through
-`cache_read_input_tokens`, so a total that skips them cannot see the cost the skill adds.
-And `total_tokens` means different things on the two stacks: claude's counts every cache
-read, codex's `tokens used` line is its own accounting and comes out several times smaller
-for comparable work. Compare tokens between variants within one stack; comparing them across
-stacks is comparing two units.
+Quote `total_tokens`, never `input_tokens`. The run's input is spread over three fields and
+`input_tokens` alone is the uncached leftover — a skill's whole prompt is billed through
+`cache_creation_input_tokens` and re-read every turn through `cache_read_input_tokens`, so a
+total that skips them cannot see the cost the skill adds. Since 2026-09-15 codex runs with
+`exec --json` and records the same four-way split. Codex runs before that carry only the
+`tokens used` line as `total_tokens` — uncached input plus output, several times smaller than
+the same work counted the new way — so never put an old codex total beside a new one. Even
+with the same shape, the two stacks tokenize and cache differently: compare tokens between
+variants within one stack, and dollars across stacks.
 
 Every report ends with this table. Answer the last row honestly: sometimes the eval is the wrong artifact, not the skill.
 

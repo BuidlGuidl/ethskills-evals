@@ -73,9 +73,15 @@ const buildCommand = (executor: Executor, model: string | null, reasoningEffort:
   // one level down. It does not stop codex's own caches and state dbs, which are the same
   // for every operator and carry no run content.
   //
+  // --json because it is the only place codex reports its token split. Without it the session
+  // log ends in a bare `tokens used` count — uncached input plus output — which cannot be priced
+  // and is not the unit claude's total is in. With it, every turn ends in a turn.completed event
+  // carrying input, cached and output tokens, which is what usage.ts records and prices.
+  //
   // The rest of ~/.codex is handled by CODEX_HOME below, not by a flag.
   const args = [
     "exec",
+    "--json",
     "--disable", "shell_snapshot",
     "--ephemeral",
     "-s", "workspace-write",
@@ -150,10 +156,10 @@ const main = async () => {
   // and stays ungradeable, which is the point — it is a dead run, not a zero score.
   await writeRecord(recordPath, record);
 
-  // Both streams are captured raw and both are kept: which one carries the transcript is
-  // the executor's business (claude puts everything on stdout, codex on stderr), and a run
-  // that dies mid-way still leaves whatever it had written.
-  const outStream = createWriteStream(path.join(runDir, executor === "claude" ? "transcript.jsonl" : "transcript.log"));
+  // Both streams are captured raw and both are kept: both executors stream JSON events on
+  // stdout and diagnostics on stderr, and a run that dies mid-way still leaves whatever it
+  // had written.
+  const outStream = createWriteStream(path.join(runDir, "transcript.jsonl"));
   const errStream = createWriteStream(path.join(runDir, "executor.err"));
   const chunks: string[] = [];
   const errors: string[] = [];
@@ -211,8 +217,10 @@ const main = async () => {
   errStream.end();
   await Promise.all([finished(outStream), finished(errStream)]);
 
+  // Measured before the transcript is written, because codex's stats footer is built from it.
+  const usage = buildUsage(executor, chunks.join(""), errors.join(""), Date.now() - startedAt, model);
   const transcript = buildTranscript(
-    { run: requireString(result.run, "run"), executor, model, exit, workspacePath },
+    { run: requireString(result.run, "run"), executor, model, exit, workspacePath, usage },
     chunks.join(""),
     errors.join(""),
   );
@@ -227,13 +235,16 @@ const main = async () => {
   // Usage is recorded only for a run that finished: an interrupted run returns above with
   // finished null, and half a session's tokens against a whole session's work would read
   // as a cheap run rather than a dead one.
-  const usage = buildUsage(executor, chunks.join(""), errors.join(""), Date.now() - startedAt);
-
   await writeRecord(recordPath, { ...record, finished: new Date().toISOString(), exit, usage });
 
-  // buildUsage always measures the clock, so duration_s is a number here; cost is claude's
-  // own float and prints as 1.7752330000000003 unless it is rounded to the cent.
-  const price = usage.cost_usd === null ? "" : ` ($${usage.cost_usd.toFixed(2)})`;
+  if (executor === "codex" && usage.total_tokens !== null && usage.cost_usd === null) {
+    console.warn(`run-executor: no list price for codex model ${model ?? "(cli default)"} in lib/prices.ts; cost_usd recorded as null`);
+  }
+
+  // buildUsage always measures the clock, so duration_s is a number here; cost prints as
+  // 1.7752330000000003 unless it is rounded to the cent.
+  const basis = usage.cost_source === "list_price" ? " at list price" : "";
+  const price = usage.cost_usd === null ? "" : ` ($${usage.cost_usd.toFixed(2)}${basis})`;
   const tokens = usage.total_tokens === null ? "" : `, ${usage.total_tokens} tokens`;
 
   console.log(`executor exited ${exit} in ${usage.duration_s}s${price}${tokens}; transcript at ${path.join(runDir, "transcript.md")}`);

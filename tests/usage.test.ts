@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { buildTranscript } from "../lib/transcript.js";
 import { buildUsage, parseTranscriptStats, parseUsageRecord } from "../lib/usage.js";
 
 // One line of claude's stream-json, trimmed to the fields the harness reads. The real
@@ -82,6 +83,7 @@ test("a claude run that died before the result event still records its duration"
     duration_s: 61,
     turns: null,
     cost_usd: null,
+    cost_source: null,
     input_tokens: null,
     cache_creation_input_tokens: null,
     cache_read_input_tokens: null,
@@ -90,8 +92,98 @@ test("a claude run that died before the result event still records its duration"
   });
 });
 
-// codex prints the count with a thousands separator that has changed between versions:
-// U+202F in the 2026-08-13 runs under artifacts/, a comma in codex-cli 0.146.1.
+test("a claude cost is recorded as the executor's own", () => {
+  assert.equal(buildUsage("claude", claudeStdout, "", 1_000).cost_source, "executor");
+});
+
+// `codex exec --json` stdout, trimmed to the events the harness reads. The usage line is a real
+// one, from codex-cli 0.150.1 on gpt-5.6-sol (2026-09-15).
+const codexStdout = [
+  JSON.stringify({ type: "thread.started", thread_id: "t" }),
+  JSON.stringify({ type: "turn.started" }),
+  JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "I'll look first." } }),
+  JSON.stringify({
+    type: "item.completed",
+    item: { type: "command_execution", command: "/bin/bash -lc 'cat hello.txt'", aggregated_output: "hi\n", exit_code: 0 },
+  }),
+  JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "done" } }),
+  JSON.stringify({
+    type: "turn.completed",
+    usage: { input_tokens: 58_451, cached_input_tokens: 53_632, cache_write_input_tokens: 0, output_tokens: 267, reasoning_output_tokens: 0 },
+  }),
+  "",
+].join("\n");
+
+// OpenAI counts the cached part inside input_tokens; claude counts it beside. Recorded in
+// claude's shape, or input_tokens would mean two different things in one result.yaml column.
+test("codex --json usage is re-cut into claude's shape", () => {
+  const usage = buildUsage("codex", codexStdout, "", 1_000, "gpt-5.6-sol");
+
+  assert.equal(usage.input_tokens, 58_451 - 53_632);
+  assert.equal(usage.cache_read_input_tokens, 53_632);
+  assert.equal(usage.cache_creation_input_tokens, 0);
+  assert.equal(usage.output_tokens, 267);
+  assert.equal(usage.total_tokens, 58_451 + 267);
+  assert.equal(usage.turns, null);
+});
+
+// 4,819 uncached × $4 + 53,632 cached × $0.40 + 267 output × $20, per million.
+test("codex cost is derived from the token split and the model's list price", () => {
+  const usage = buildUsage("codex", codexStdout, "", 1_000, "gpt-5.6-sol");
+
+  assert.equal(usage.cost_usd, 0.046069);
+  assert.equal(usage.cost_source, "list_price");
+});
+
+test("a codex model with no list price records no cost rather than a guess", () => {
+  for (const model of ["gpt-unlisted", null]) {
+    const usage = buildUsage("codex", codexStdout, "", 1_000, model);
+
+    assert.equal(usage.cost_usd, null);
+    assert.equal(usage.cost_source, null);
+    assert.equal(usage.total_tokens, 58_718);
+  }
+});
+
+test("codex usage sums every completed turn", () => {
+  const turn = JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1_000, cached_input_tokens: 600, output_tokens: 50 } });
+  const usage = buildUsage("codex", `${turn}\n${turn}\n`, "", 1_000, "gpt-5.6-sol");
+
+  assert.equal(usage.input_tokens, 800);
+  assert.equal(usage.cache_read_input_tokens, 1_200);
+  assert.equal(usage.total_tokens, 2_100);
+});
+
+// A codex killed mid-turn never emits turn.completed: no usage, not zero usage.
+test("a codex run with no completed turn records no tokens", () => {
+  const usage = buildUsage("codex", JSON.stringify({ type: "turn.started" }), "", 1_000, "gpt-5.6-sol");
+
+  assert.equal(usage.total_tokens, null);
+  assert.equal(usage.cost_usd, null);
+});
+
+// run-stats reads the transcript first, so the footer has to carry the derived cost back out
+// and say it is derived.
+test("a codex transcript footer round-trips tokens, duration and a list-price cost", () => {
+  const usage = buildUsage("codex", codexStdout, "", 42_000, "gpt-5.6-sol");
+  const transcript = buildTranscript(
+    { run: "r", executor: "codex", model: "gpt-5.6-sol", exit: 0, workspacePath: "/w", usage },
+    codexStdout,
+    "",
+  );
+  const stats = parseTranscriptStats(transcript);
+
+  assert.match(transcript, /- \*\*exec\*\* `\/bin\/bash -lc 'cat hello.txt'` → exit 0/);
+  assert.match(transcript, /## assistant\ndone/);
+  assert.equal(stats?.duration_s, 42);
+  assert.equal(stats?.cost_usd, 0.046069);
+  assert.equal(stats?.cost_source, "list_price");
+  assert.equal(stats?.total_tokens, 58_718);
+  assert.equal(stats?.cache_read_input_tokens, 53_632);
+});
+
+// codex without --json printed the count with a thousands separator that has changed between
+// versions: U+202F in the 2026-08-13 runs under artifacts/, a comma in codex-cli 0.146.1.
 test("codex usage is parsed with either thousands separator", () => {
   for (const rendered of ["60\u202f128", "60,128", "60\u00a0128", "60 128"]) {
     const usage = buildUsage("codex", "", `some session log\n\ntokens used\n${rendered}\n`, 1_000);
@@ -122,6 +214,7 @@ test("a usage block round-trips through yaml shape", () => {
     duration_s: 812,
     turns: null,
     cost_usd: 4.66,
+    cost_source: "list_price",
     input_tokens: 12,
     cache_creation_input_tokens: 47_453,
     cache_read_input_tokens: 203_362,
@@ -139,6 +232,7 @@ test("a usage block missing a field reads as absent, not as zero", () => {
     duration_s: null,
     turns: null,
     cost_usd: null,
+    cost_source: null,
     input_tokens: null,
     cache_creation_input_tokens: null,
     cache_read_input_tokens: null,
@@ -167,6 +261,12 @@ const resultBlockTranscript = [
   })}`,
   "### final message\n\nWritten to answer.md. duration_ms: 999999 appears here too.",
 ].join("\n\n");
+
+// Every record written before cost_source existed got its cost from claude.
+test("a recorded cost with no source is the executor's", () => {
+  assert.equal(parseUsageRecord({ cost_usd: 1.2 })?.cost_source, "executor");
+  assert.equal(parseUsageRecord({ cost_usd: null })?.cost_source, null);
+});
 
 test("the run stats footer is read when a transcript has one", () => {
   const stats = parseTranscriptStats(footerTranscript);

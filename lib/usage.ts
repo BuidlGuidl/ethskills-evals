@@ -1,11 +1,12 @@
+import { codexListPrice } from "./prices.js";
 import { isRecord } from "./task.js";
-import type { Executor, RunUsage } from "./types.js";
+import type { CostSource, Executor, RunUsage } from "./types.js";
 
 // Thousands separators seen from codex across versions and locales: comma (0.146.1),
 // narrow no-break space (the 2026-08-13 codex runs in artifacts/), plus the ordinary
 // and non-breaking spaces the same formatter reaches for elsewhere. Strip them all
 // before Number(), or "60 128" parses as 60.
-const SEPARATORS = /[,\u0020\u00a0\u2009\u202f]/g;
+const SEPARATORS = /[,    ]/g;
 
 const toNumber = (raw: string) => {
   const value = Number(raw.replace(SEPARATORS, ""));
@@ -20,7 +21,38 @@ const numberOrNull = (value: unknown) => (typeof value === "number" && Number.is
 const sum = (values: (number | null)[]) =>
   values.every((value) => value === null) ? null : values.reduce((total: number, value) => total + (value ?? 0), 0);
 
-export type ClaudeTokens = {
+// Both executors stream JSON lines on stdout. A line that is not a JSON object — a crash
+// message, a CLI that ignored the flag — is not an event, and is returned apart so a renderer
+// can still show it.
+export const jsonEvents = (raw: string) => {
+  const events: Record<string, unknown>[] = [];
+  const unparsed: string[] = [];
+
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trim();
+
+    if (trimmed.length === 0) {
+      continue;
+    }
+
+    try {
+      const event: unknown = JSON.parse(trimmed);
+
+      if (isRecord(event)) {
+        events.push(event);
+        continue;
+      }
+    } catch {
+      // falls through to unparsed
+    }
+
+    unparsed.push(line);
+  }
+
+  return { events, unparsed };
+};
+
+export type RunTokens = {
   input: number | null;
   cacheCreation: number | null;
   cacheRead: number | null;
@@ -29,13 +61,17 @@ export type ClaudeTokens = {
   total: number | null;
 };
 
+// Kept under its old name: transcript.ts and the pre-footer parser below both read claude's
+// usage object through it.
+export type ClaudeTokens = RunTokens;
+
 // Claude Code caches the prompt, so `input_tokens` counts only what was neither written to
 // nor read from the cache — single or double digits on every real run (6 to 306 across the
 // 83 claude transcripts in artifacts/). The run's actual input is the two cache fields, and
 // a skill's own context cost lands entirely in them, so a total that omits them cannot see
 // the thing this harness exists to measure. All four are recorded: the breakdown is only
 // available here, and result.yaml is append-only.
-export const claudeTokens = (usage: Record<string, unknown>): ClaudeTokens => {
+export const claudeTokens = (usage: Record<string, unknown>): RunTokens => {
   const input = numberOrNull(usage.input_tokens);
   const cacheCreation = numberOrNull(usage.cache_creation_input_tokens);
   const cacheRead = numberOrNull(usage.cache_read_input_tokens);
@@ -50,6 +86,64 @@ export const claudeTokens = (usage: Record<string, unknown>): ClaudeTokens => {
     total: sum([input, cacheCreation, cacheRead, output]),
   };
 };
+
+// codex uses OpenAI's convention, the other way round from claude's: input_tokens is the
+// whole prompt, and cached_input_tokens and cache_write_input_tokens are parts of it. Re-cut
+// into claude's shape so input_tokens means "uncached remainder" in every result.yaml. No
+// reasoning field: output_tokens already includes reasoning_output_tokens, and that is also
+// how it is billed.
+export const codexTokens = (usage: Record<string, unknown>): RunTokens => {
+  const prompt = numberOrNull(usage.input_tokens);
+  const cacheRead = numberOrNull(usage.cached_input_tokens);
+  const cacheCreation = numberOrNull(usage.cache_write_input_tokens);
+  const output = numberOrNull(usage.output_tokens);
+
+  return {
+    input: prompt === null ? null : Math.max(0, prompt - (cacheRead ?? 0) - (cacheCreation ?? 0)),
+    cacheCreation,
+    cacheRead,
+    inputTotal: prompt,
+    output,
+    total: sum([prompt, output]),
+  };
+};
+
+// `codex exec --json` closes every turn with a turn.completed event carrying that turn's
+// usage. An exec session is normally one turn, but nothing promises it, so the turns are
+// summed field by field. null when no turn completed — a run that died mid-turn has no usage,
+// not zero usage.
+export const codexRunTokens = (stdout: string): RunTokens | null => {
+  const turns = jsonEvents(stdout).events
+    .filter(event => event.type === "turn.completed" && isRecord(event.usage))
+    .map(event => codexTokens(event.usage as Record<string, unknown>));
+
+  if (turns.length === 0) {
+    return null;
+  }
+
+  const add = (key: keyof RunTokens) => sum(turns.map(turn => turn[key]));
+
+  return {
+    input: add("input"),
+    cacheCreation: add("cacheCreation"),
+    cacheRead: add("cacheRead"),
+    inputTotal: add("inputTotal"),
+    output: add("output"),
+    total: add("total"),
+  };
+};
+
+export const codexCost = (model: string | null, tokens: RunTokens) =>
+  tokens.total === null
+    ? null
+    : codexListPrice(model, {
+      uncachedInput: tokens.input ?? 0,
+      cacheWrite: tokens.cacheCreation ?? 0,
+      cacheRead: tokens.cacheRead ?? 0,
+      output: tokens.output ?? 0,
+    });
+
+const sourceOf = (cost: number | null, source: CostSource): CostSource | null => (cost === null ? null : source);
 
 // claude streams one `result` event at the end of the session carrying the whole run's
 // accounting. It is the same event transcript.ts renders as "## run stats", read here
@@ -75,10 +169,12 @@ const parseClaudeUsage = (stdout: string) => {
     }
 
     const tokens = claudeTokens((event.usage ?? {}) as Record<string, unknown>);
+    const cost = numberOrNull(event.total_cost_usd);
 
     return {
       turns: numberOrNull(event.num_turns),
-      cost_usd: numberOrNull(event.total_cost_usd),
+      cost_usd: cost,
+      cost_source: sourceOf(cost, "executor"),
       input_tokens: tokens.input,
       cache_creation_input_tokens: tokens.cacheCreation,
       cache_read_input_tokens: tokens.cacheRead,
@@ -90,11 +186,13 @@ const parseClaudeUsage = (stdout: string) => {
   return null;
 };
 
-// codex exec prints one "tokens used" line at the end of the session log, and nothing
-// else about the run: no price, no turn count, no input/output split. Last match wins —
-// a run that hits its context limit prints the line more than once.
-const parseCodexUsage = (sessionLog: string) => {
-  const matches = [...sessionLog.matchAll(/tokens used[:\s]*\n?\s*([\d,\u0020\u00a0\u2009\u202f]*\d)/g)];
+// Before `--json`, codex exec printed one "tokens used" line at the end of the session log
+// on stderr, and nothing else about the run: no price, no turn count, no input/output split.
+// The number is uncached input plus output. Kept so a capture from a codex launched by hand
+// without the flag still records what it can. Last match wins — a run that hits its context
+// limit prints the line more than once.
+const parseCodexLogUsage = (sessionLog: string) => {
+  const matches = [...sessionLog.matchAll(/tokens used[:\s]*\n?\s*([\d,    ]*\d)/g)];
   const last = matches.at(-1);
 
   if (last === undefined) {
@@ -104,6 +202,7 @@ const parseCodexUsage = (sessionLog: string) => {
   return {
     turns: null,
     cost_usd: null,
+    cost_source: null,
     input_tokens: null,
     cache_creation_input_tokens: null,
     cache_read_input_tokens: null,
@@ -112,26 +211,62 @@ const parseCodexUsage = (sessionLog: string) => {
   };
 };
 
+// No turn count: a codex "turn" is one user prompt, always 1 in exec, which is not the unit
+// claude's num_turns counts.
+const parseCodexUsage = (stdout: string, stderr: string, model: string | null) => {
+  const tokens = codexRunTokens(stdout);
+
+  if (tokens === null) {
+    return parseCodexLogUsage(stderr);
+  }
+
+  const cost = codexCost(model, tokens);
+
+  return {
+    turns: null,
+    cost_usd: cost,
+    cost_source: sourceOf(cost, "list_price"),
+    input_tokens: tokens.input,
+    cache_creation_input_tokens: tokens.cacheCreation,
+    cache_read_input_tokens: tokens.cacheRead,
+    output_tokens: tokens.output,
+    total_tokens: tokens.total,
+  };
+};
+
 // Duration is the harness's own measurement rather than the executor's, because it is the
-// one figure both stacks can be compared on: claude reports duration_ms and a dollar cost,
-// codex reports a token total and nothing else. A report that wants dollars for codex has
-// to derive them from tokens and a published price, and should say so. The token totals are
-// NOT comparable across stacks — claude's counts every cache read, codex's line is its own
-// accounting and prints a fraction of the figure for comparable work — so compare tokens
-// within a stack, between variants.
-export const buildUsage = (executor: Executor, stdout: string, stderr: string, durationMs: number): RunUsage => {
-  const parsed = executor === "claude" ? parseClaudeUsage(stdout) : parseCodexUsage(stderr);
+// one figure both stacks measure the same way. Tokens now share a shape too, and cost is in
+// dollars on both — but claude's is the price it reports and codex's is derived from a list
+// price for `model` (lib/prices.ts), which is why cost_source is recorded beside it.
+export const buildUsage = (
+  executor: Executor,
+  stdout: string,
+  stderr: string,
+  durationMs: number,
+  model: string | null = null,
+): RunUsage => {
+  const parsed = executor === "claude" ? parseClaudeUsage(stdout) : parseCodexUsage(stdout, stderr, model);
 
   return {
     duration_s: Math.round(durationMs / 1000),
     turns: parsed?.turns ?? null,
     cost_usd: parsed?.cost_usd ?? null,
+    cost_source: parsed?.cost_source ?? null,
     input_tokens: parsed?.input_tokens ?? null,
     cache_creation_input_tokens: parsed?.cache_creation_input_tokens ?? null,
     cache_read_input_tokens: parsed?.cache_read_input_tokens ?? null,
     output_tokens: parsed?.output_tokens ?? null,
     total_tokens: parsed?.total_tokens ?? null,
   };
+};
+
+const parseCostSource = (value: unknown, cost: number | null): CostSource | null => {
+  if (value === "executor" || value === "list_price") {
+    return value;
+  }
+
+  // A record written before cost_source existed: only claude could put a cost in it then.
+  return sourceOf(cost, "executor");
 };
 
 // Runs made before usage existed have no such block, and their executor.yaml is not going
@@ -143,10 +278,13 @@ export const parseUsageRecord = (value: unknown): RunUsage | undefined => {
     return undefined;
   }
 
+  const cost = numberOrNull(value.cost_usd);
+
   return {
     duration_s: numberOrNull(value.duration_s),
     turns: numberOrNull(value.turns),
-    cost_usd: numberOrNull(value.cost_usd),
+    cost_usd: cost,
+    cost_source: parseCostSource(value.cost_source, cost),
     input_tokens: numberOrNull(value.input_tokens),
     cache_creation_input_tokens: numberOrNull(value.cache_creation_input_tokens),
     cache_read_input_tokens: numberOrNull(value.cache_read_input_tokens),
@@ -175,11 +313,15 @@ const parseFooter = (text: string) => {
   // "?" is what the footer prints for a field the result event did not carry.
   const inputTotal = readMatch(text, /^- tokens in\/out: (\d+)\/\d+$/m);
   const output = readMatch(text, /^- tokens in\/out: \d+\/(\d+)$/m);
+  const cost = readMatch(text, /^- cost: \$([\d.]+)$/m);
+  // Only codex footers carry a cost basis line; a claude footer's cost is claude's own.
+  const source = /^- cost basis: list price/m.test(text) ? "list_price" : "executor";
 
   return {
     duration_s: readMatch(text, /^- duration: (\d+)s$/m),
     turns: readMatch(text, /^- turns: (\d+)$/m),
-    cost_usd: readMatch(text, /^- cost: \$([\d.]+)$/m),
+    cost_usd: cost,
+    cost_source: sourceOf(cost, source),
     input_tokens: null,
     cache_creation_input_tokens: readMatch(text, /^- of which cache write\/read: (\d+)\/\d+$/m),
     cache_read_input_tokens: readMatch(text, /^- of which cache write\/read: \d+\/(\d+)$/m),
@@ -199,7 +341,7 @@ const parseResultBlock = (text: string) => {
 
   const body = block[1];
   const usageLine = body.match(/^usage: (\{.*)$/m);
-  let tokens: ClaudeTokens = { input: null, cacheCreation: null, cacheRead: null, inputTotal: null, output: null, total: null };
+  let tokens: RunTokens = { input: null, cacheCreation: null, cacheRead: null, inputTotal: null, output: null, total: null };
 
   if (usageLine !== null) {
     try {
@@ -210,11 +352,13 @@ const parseResultBlock = (text: string) => {
   }
 
   const durationMs = readMatch(body, /^duration_ms: (\d+)$/m);
+  const cost = readMatch(body, /^total_cost_usd: ([\d.]+)$/m);
 
   return {
     duration_s: durationMs === null ? null : Math.round(durationMs / 1000),
     turns: readMatch(body, /^num_turns: (\d+)$/m),
-    cost_usd: readMatch(body, /^total_cost_usd: ([\d.]+)$/m),
+    cost_usd: cost,
+    cost_source: sourceOf(cost, "executor"),
     input_tokens: tokens.input,
     cache_creation_input_tokens: tokens.cacheCreation,
     cache_read_input_tokens: tokens.cacheRead,

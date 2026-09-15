@@ -85,6 +85,34 @@ tokens used: 12345
   assert.equal(detect(capture), null);
 });
 
+// Under `codex exec --json` a command's output is in transcript.jsonl, not executor.err.
+const command = (output: string, exitCode: number) =>
+  JSON.stringify({ type: "item.completed", item: { type: "command_execution", command: "ls", aggregated_output: output, exit_code: exitCode } });
+
+const detectJsonl = (jsonl: string) => {
+  const runDir = mkdtempSync(path.join(tmpdir(), "eval-run-"));
+
+  writeFileSync(path.join(runDir, "transcript.jsonl"), jsonl);
+
+  try {
+    return detectBrokenShell(runDir, "codex");
+  } finally {
+    rmSync(runDir, { recursive: true, force: true });
+  }
+};
+
+test("a dead sandbox is caught in codex's --json command output", () => {
+  const found = detectJsonl(`${command(BWRAP_FAILURE, 1)}\n`);
+
+  assert.notEqual(found, null);
+  assert.match(found!.evidence, /^bwrap: setting up uid map/);
+  assert.match(found!.capturePath, /transcript\.jsonl$/);
+});
+
+test("--json output after the first successful command is the run talking, not the harness", () => {
+  assert.equal(detectJsonl(`${command("ok\n", 0)}\n${command(BWRAP_FAILURE, 1)}\n`), null);
+});
+
 // executor.err is gitignored, so a run dir that came from a clone has none. Missing capture
 // is missing evidence, never a refusal.
 test("no capture is not a refusal", () => {
