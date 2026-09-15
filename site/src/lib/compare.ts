@@ -13,8 +13,13 @@ export type Cell = { passed: number; total: number; rubrics: string[]; prompts: 
 const measured = (run: Run) => run.retracted === null;
 
 // The model a run was executed on, or the executor with a note when the record predates
-// the field: an unrecorded model is not known to equal a recorded one.
-export const modelOf = (run: Run) => run.executor_model ?? `${run.executor ?? "unknown"} (model unrecorded)`;
+// the field: an unrecorded model is not known to equal a recorded one. The effort is part of
+// the stack, so the same model at another effort reads as a different model.
+export const modelOf = (run: Run) => {
+  const model = run.executor_model ?? `${run.executor ?? "unknown"} (model unrecorded)`;
+
+  return run.executor_reasoning_effort ? `${model} · ${run.executor_reasoning_effort}` : model;
+};
 
 // A regrade and the run it re-read are one run read twice, and one run can be read many
 // times. Of the readings present in the set, only the newest counts — whichever hops of the

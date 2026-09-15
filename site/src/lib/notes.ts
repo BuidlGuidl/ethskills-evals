@@ -10,7 +10,7 @@ export const PROMPT_MOVED =
   "are not a comparison — read them per column. The row is left out of the totals.";
 
 export const MODEL_MOVED =
-  "The two versions were run on different models, so a difference between the cells is not the skill's alone. " +
+  "The two versions were run on different models or efforts, so a difference between the cells is not the skill's alone. " +
   "The row stays in the totals; read it with that in mind.";
 
 export const UNAIDED_OFF_RUBRIC =
@@ -18,7 +18,7 @@ export const UNAIDED_OFF_RUBRIC =
   "run there is. It faces neither skilled cell, and the row is left out of the totals.";
 
 export const UNAIDED_MODELS =
-  "The unaided runs were made on a different model than the skilled column, or on several, so the gap between " +
+  "The unaided runs were made on a different model or effort than the skilled column, or on several, so the gap between " +
   "them is not the skill's alone.";
 
 export const MIXED_RUBRICS =

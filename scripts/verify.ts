@@ -5,7 +5,7 @@ import path from "node:path";
 import process from "node:process";
 import yaml from "js-yaml";
 import { guardJudgeBlindness } from "../lib/blindness.js";
-import { resolveCodexModel } from "../lib/codex-home.js";
+import { resolveEffort, resolveModel } from "../lib/effort.js";
 import { buildEvidence, snapshotOutput, writeDiff } from "../lib/evidence.js";
 import { detectBrokenShell } from "../lib/executor-health.js";
 import { judgeExpectations } from "../lib/judge.js";
@@ -18,7 +18,7 @@ const ROOT = process.cwd();
 const EXECUTORS = new Set<Executor>(["claude", "codex"]);
 const VARIANTS = new Set<Variant>(["no_skill", "with_skill"]);
 const VERIFY_ARGS = new Set([
-  "run", "judge-agent", "judge-model", "grade-failed-run", "keep-workspace", "regrade", "reason", "allow-skill-mention",
+  "run", "judge-agent", "judge-model", "judge-effort", "grade-failed-run", "keep-workspace", "regrade", "reason", "allow-skill-mention",
 ]);
 // The judge is a fresh, blind process, never the orchestrator's own contaminated
 // context. --judge-agent is required rather than defaulting to the run's executor:
@@ -30,13 +30,15 @@ const resolveJudge = (args: Record<string, string | boolean>): JudgeSpec => {
   }
 
   const agent = parseAgent(requireString(args["judge-agent"], "--judge-agent"));
-  const requested = args["judge-model"] === undefined ? null : requireString(args["judge-model"], "--judge-model");
-  // codex judges under a redirected CODEX_HOME, so nothing supplies the operator's configured
-  // model unless the harness passes it. Resolved here rather than inside the runner so that
-  // result.yaml records the model that actually graded, not a null the CLI silently filled in.
-  const model = agent === "codex" ? resolveCodexModel(requested, "--judge-model") : requested;
+  const optional = (flag: string) => (args[flag] === undefined ? null : requireString(args[flag], `--${flag}`));
 
-  return { agent, model };
+  // Resolved here rather than inside the runner so that result.yaml records the model and
+  // effort that actually graded, and a missing one stops verify before the judge is paid for.
+  return {
+    agent,
+    model: resolveModel(agent, optional("judge-model"), "--judge-model"),
+    reasoning_effort: resolveEffort(agent, optional("judge-effort"), "--judge-effort"),
+  };
 };
 
 const parseExecutor = (value: string): Executor => {
@@ -99,6 +101,9 @@ const loadResultRecord = (resultPath: string): ResultRecord => {
     executor_model: loaded.executor_model === undefined || loaded.executor_model === null
       ? null
       : requireString(loaded.executor_model, "executor_model"),
+    executor_reasoning_effort: loaded.executor_reasoning_effort === undefined || loaded.executor_reasoning_effort === null
+      ? null
+      : requireString(loaded.executor_reasoning_effort, "executor_reasoning_effort"),
     executor_exit: typeof loaded.executor_exit === "number" ? loaded.executor_exit : undefined,
     usage: parseUsageRecord(loaded.usage),
     expect_sha: loaded.expect_sha === undefined ? undefined : requireString(loaded.expect_sha, "expect_sha"),
@@ -385,7 +390,7 @@ const main = async () => {
       ...(regrade ? { regrade_of: result.run, regrade_reason: regradeReason as string, regraded_at: new Date().toISOString() } : {}),
       executor_model: executorRecord === null ? result.executor_model ?? null : executorRecord.model,
       executor_reasoning_effort:
-        executorRecord === null ? result.executor_reasoning_effort : executorRecord.reasoning_effort ?? undefined,
+        executorRecord === null ? result.executor_reasoning_effort ?? null : executorRecord.reasoning_effort ?? null,
       executor_exit: executorRecord === null ? result.executor_exit : executorRecord.exit ?? undefined,
       // Carried like `retracted` below: a run that was graded over a dead shell stays a run
       // that was graded over a dead shell, and a regrade has no capture left to re-detect it

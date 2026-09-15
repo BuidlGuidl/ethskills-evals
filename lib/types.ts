@@ -21,7 +21,8 @@ export type ExpectStatus = "pass" | "fail";
 
 export type JudgeSpec = {
   agent: Executor;
-  model: string | null;
+  model: string;
+  reasoning_effort: string;
 };
 
 // self_judged: the same agent CLI performed and graded the run. The judge process is
@@ -63,9 +64,8 @@ export type RunUsage = {
 export type ExecutorRecord = {
   executor: Executor;
   model: string | null;
-  // codex only, and only the operator's top-level `model_reasoning_effort =`: the redirected
-  // CODEX_HOME means codex never reads it, so the harness passes it on argv and names it
-  // here. null is "none configured, codex's default ran", which is a real answer.
+  // Both executors, always passed on argv: --effort for claude, and for codex --effort or the
+  // operator's top-level `model_reasoning_effort =`. null only on records made before #118.
   reasoning_effort?: string | null;
   started: string;
   finished: string | null;

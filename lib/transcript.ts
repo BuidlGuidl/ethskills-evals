@@ -9,6 +9,7 @@ type TranscriptHeader = {
   run: string;
   executor: Executor;
   model: string | null;
+  reasoningEffort: string | null;
   exit: number;
   workspacePath: string;
   // The harness's usage record, which is where codex's footer gets its duration and its
@@ -306,7 +307,7 @@ export const buildTranscript = (header: TranscriptHeader, stdout: string, stderr
   const heading = [
     `# Executor transcript — ${header.run}`,
     "",
-    `**executor**: ${header.executor}  |  **model**: ${header.model ?? "cli default"}  |  **exit**: ${header.exit}`,
+    `**executor**: ${header.executor}  |  **model**: ${header.model ?? "cli default"}  |  **effort**: ${header.reasoningEffort ?? "cli default"}  |  **exit**: ${header.exit}`,
     `**workspace**: ${header.workspacePath}`,
   ].join("\n");
   const body = header.executor === "claude" ? renderClaude(stdout, stderr) : renderCodex(stdout, stderr, header);

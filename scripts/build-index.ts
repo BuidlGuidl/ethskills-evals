@@ -487,6 +487,7 @@ const main = async () => {
     variant: unknown;
     executor: unknown;
     executor_model: unknown;
+    executor_reasoning_effort: unknown;
     created: string | null;
     pass: boolean | null;
     expects: unknown;
@@ -580,6 +581,7 @@ const main = async () => {
         variant: loaded.variant ?? null,
         executor: loaded.executor ?? null,
         executor_model: loaded.executor_model ?? null,
+        executor_reasoning_effort: loaded.executor_reasoning_effort ?? null,
         created: typeof loaded.created === "string" ? loaded.created : null,
         pass: loaded.pass === undefined ? null : Boolean(loaded.pass),
         expects: loaded.expects ?? null,

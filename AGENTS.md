@@ -25,15 +25,15 @@ Then write `tasks/<id>.yaml` and run the loop. Report back at the end, not durin
 
 The skills under `skills/` are vendored at a pinned commit, and a task spec may already exist under `tasks/`. When it does:
 
-1. Ask exactly one question: the stack. Detect which harness you are running on and propose running everything on it — executor and judge both (claude → opus, codex → the model the harness reads out of `~/.codex/config.toml` and passes explicitly, see "The three roles"). One skill runs on one stack, start to finish. A second stack is a separate benchmark with its own runs and report, never blended into one table.
-2. Run the loop as written, grading every run with `--judge-agent <your agent> --judge-model <your model>`.
+1. Ask exactly one question: the stack. A stack is the agent, the model and the effort. Detect which harness you are running on and propose running everything on it — executor and judge both (claude → opus at the effort you are running at, codex → the model and `model_reasoning_effort` the harness reads out of `~/.codex/config.toml` and passes explicitly, see "The three roles"). One skill runs on one stack, start to finish. A second stack, including the same model at another effort, is a separate benchmark with its own runs and report, never blended into one table.
+2. Run the loop as written, grading every run with `--judge-agent <your agent> --judge-model <your model> --judge-effort <your effort>`.
 3. File the results PR titled `eval: <skill> (<stack>)`, report included.
 
 ## The loop
 
 1. `yarn setup --task tasks/<id>.yaml --variant <no_skill|with_skill> --run <n> --executor <claude|codex>` — builds `<run-dir>/workspace`, seeds it as its own git repo and records the baseline sha in `<run-dir>/baseline.sha`.
-2. `yarn run-executor --run artifacts/<id>/<run-id> --model <model>` — spawns the executor in that workspace on `TASK.md`, saves the transcript, records when it finished. Long runs: start it detached (`nohup yarn run-executor … &`) and wait for `finished:` in `executor.yaml`, because a harness that kills the foreground process kills the run.
-3. `yarn verify --run artifacts/<id>/<run-id> --judge-agent <claude|codex> --judge-model <model>` — assembles evidence, runs the judge, fills `result.yaml`. Use the same judge for every run in the benchmark.
+2. `yarn run-executor --run artifacts/<id>/<run-id> --model <model> --effort <effort>` — spawns the executor in that workspace on `TASK.md`, saves the transcript, records when it finished. Long runs: start it detached (`nohup yarn run-executor … &`) and wait for `finished:` in `executor.yaml`, because a harness that kills the foreground process kills the run.
+3. `yarn verify --run artifacts/<id>/<run-id> --judge-agent <claude|codex> --judge-model <model> --judge-effort <effort>` — assembles evidence, runs the judge, fills `result.yaml`. Use the same judge for every run in the benchmark.
 4. Repeat for every variant and run.
 5. Compare. The headline is raw pass counts per variant (`with_skill 2/3 vs no_skill 0/3`). Read per-check failures, not just the aggregate.
 6. File a mistake record in `mistakes/` the first time you see a mistake. `frequency: 1/1` is honest about weak evidence; an unfiled observation is lost.
@@ -53,7 +53,7 @@ the two.
 1. **Never perform the task yourself.** Your context is contaminated by definition. Every run is a fresh executor. If you catch yourself editing files inside a workspace, stop, delete the run, start over.
 2. **The executor never sees the grading.** The task yaml and its expect lines stay out of the workspace. `setup` hard-fails on leaks; do not work around it.
 3. **Always use the scripts** — setup, execution, grading. All three. Improvisation at any of them quietly corrupts records, and spawning executors by hand is what once left runs graded before they finished and workspaces deleted under live processes.
-4. **Grade after execution, independently.** Never let an executor self-report success. `verify` requires `--judge-agent`, so the grading agent is always a stated choice; add `--judge-model` to grade on the orchestrator's model. When judge and executor are the same agent the record says `self_judged: true` — expected on a single-stack benchmark, and the report has to say so.
+4. **Grade after execution, independently.** Never let an executor self-report success. `verify` requires `--judge-agent`, `--judge-model` and `--judge-effort` (codex takes the last two from `~/.codex/config.toml` when they are not passed), so the grading stack is always a stated choice and `result.yaml` names it under `judge:`. When judge and executor are the same agent the record says `self_judged: true` — expected on a single-stack benchmark, and the report has to say so.
 5. **One executor per workspace, one run at a time per workspace.** `run-executor` refuses a second pass over a workspace that already ran. Runs in different workspaces are independent — each has its own git repo — but never point two processes at one run dir.
 6. **`verify` deletes the workspace once it has graded it.** Evidence is captured into `<run-dir>/run.diff` or `<run-dir>/output/` first and both are committed, so nothing is lost. Pass `--keep-workspace` when you mean to dig through it afterwards — it holds the workspace until the next `clean-workspaces --delete`, which counts a graded run's workspace as spent, so dig through it before you sweep. Grading cannot start until `executor.yaml` says the executor finished, which is what keeps a live run from being graded and deleted under itself. Every other ending orphans a workspace — a killed executor never gets graded, and deleting its run dir to start over (rules 1 and 3) deletes the only record of where its workspace is. `yarn clean-workspaces` lists what can be reclaimed — a workspace whose run dir is gone, and one whose run is already graded, which covers `--keep-workspace` and a cleanup that failed after the grade was written — and `--delete` removes them; run it after a benchmark, from the checkout that made the runs, or live runs in another worktree look like orphans. If the runs were made with `EVAL_WORKSPACE_ROOT` set, sweep that root: `--root <path>`, or the same variable in the environment. That variable is read by all three commands, not just `setup` — export it for the whole benchmark or `run-executor` and `verify` will look for the workspace under the default root.
 
@@ -64,14 +64,14 @@ the two.
 **Executor**: a freshly spawned agent that performs one run in a clean workspace.
 
 ```bash
-yarn run-executor --run artifacts/<id>/<run-id> --model <model>
+yarn run-executor --run artifacts/<id>/<run-id> --model <model> --effort <effort>
 ```
 
 The script builds the executor's command, so the flags that matter cannot be forgotten: `--setting-sources project` for claude (user-level config crowds the skill listing and skills stop triggering), and for codex `sandbox_workspace_write.network_access=true` (`workspace-write` blocks network by default, so without it every live-data task fails for the wrong reason) plus `--disable shell_snapshot` (codex otherwise sources a snapshot of the operator's interactive shell into every command; one unparseable line in it takes the executor's shell down for the whole run, and a run that cannot open a file grades as a skill that did not help) and `--ephemeral` (the codex home below is shared by every run on the machine, and without it each run's session log lands there for the next run to find). The codex judge carries both flags too. The same exposure on the claude side is still open: `--setting-sources project` governs settings-file discovery only, and claude snapshots the operator's shell the same way. Two limits on that codex flag worth stating: it removes the snapshot, not the login shell — codex still runs every command through `/bin/bash -lc`, so `/etc/profile` and the operator's `~/.bash_profile` are sourced with it on — and it does not fail open, because an unrecognised feature name exits 1 before the run starts and `verify` refuses a non-zero exit, so a codex rename surfaces as a dead run rather than as a flag that quietly stopped applying.
 
 Codex also runs with `CODEX_HOME` pointed at `.codex-home/` in this repo, built by `lib/codex-home.ts`: the harness puts a generated `config.toml` and a symlink to the operator's `auth.json` there, and nothing of the operator's beyond that. Flags do not cover this: `--ignore-user-config` drops `config.toml` alone, while `~/.codex/skills`, `plugins/`, `rules/` and `memories` load by directory discovery, so an operator with a global codex skill on the task's subject contaminates the `no_skill` variant and nothing in the record shows it. Codex fills the rest of the dir in itself as it runs — its own bundled skills, plugin cache and state dbs — which is machine-local and the same for every operator, and `--ephemeral` keeps run content (`sessions/`, `history.jsonl`) out of it so one run's skill text cannot reach the next one. The judge runs under the same home. Delete `.codex-home/` any time; the next run rebuilds it.
 
-Omit `--model` to let the CLI pick its own default; whatever ran is recorded in `executor.yaml` and copied into `result.yaml`. For codex that default is now the harness's business: since the redirect means codex reads no `~/.codex/config.toml`, `run-executor` and `verify` read the operator's top-level `model =` out of it themselves and pass it on the command line, so the model in the record is the model that ran. The operator's top-level `model_reasoning_effort =` travels the same way, on argv and into `executor.yaml` as `reasoning_effort`, because it moves the answer as much as the model does and a benchmark cannot straddle a silent change to it. A value set only under a `[profile]` table is not picked up — the harness says so and records `null` rather than naming a setting the run never used.
+Every run names its model and its effort, because the effort moves the answer as much as the model does and a benchmark cannot straddle a silent change to either. Both travel on argv and into `executor.yaml` (`model`, `reasoning_effort`), then into `result.yaml` (`executor_model`, `executor_reasoning_effort`). There is no CLI default to fall back on: `run-executor` refuses to start, before it writes `executor.yaml`, when either one cannot be resolved. For claude, `--model` and `--effort` (`low`, `medium`, `high`, `xhigh`, `max`) are both required. For codex, the flags win, and without them the harness reads the operator's top-level `model =` and `model_reasoning_effort =` out of `~/.codex/config.toml` itself, since the redirect means codex reads none of it. A value set only under a `[profile]` table is not picked up, so without a flag it is refused rather than recorded as a setting the run never used. Runs made before this rule carry no effort, and the site shows them as "effort unrecorded".
 
 It writes `<run-dir>/transcript.md` beside the raw capture, and `<run-dir>/executor.yaml` with `started`, `finished`, `exit`. A run whose `finished` is still null was killed — including by Ctrl-C, which leaves the record untouched on purpose: it is a dead run, not a zero. Delete it and set up a new one. A run that finished with a non-zero exit is refused by `verify` unless you pass `--grade-failed-run`, so a CLI that was missing or crashed cannot be recorded as a model failure. The same refusal covers the runs the exit code cannot see: `executor.err` is scanned for the signatures of an executor that had no working shell (`Shell snapshot validation failed`, `bwrap:`), because those exit 0 and read as a model that chose not to look at anything. `run-executor` scans first and exits non-zero itself, so the loop stops on the run that broke rather than on the `verify` two steps later; `verify` scans again for runs launched by hand. Only the executor's own signatures are matched, and only up to its first successful command — past that the capture is the run's output, and this repo's own files hold both signatures verbatim. `--grade-failed-run` overrides both refusals and writes `harness_failure:` into `result.yaml` so a run graded over one is never mistaken for a clean one. Add a signature to `SHELL_FAILURES` in `lib/executor-health.ts` whenever a new way of losing the shell turns up.
 
@@ -82,10 +82,10 @@ It writes `<run-dir>/transcript.md` beside the raw capture, and `<run-dir>/execu
 Never grade from your own context. You have read the skill and the expect lines, so you cannot grade blind. `verify` spawns the judge for you; pass the agent and model **you** are running as, so the grading happens on the orchestrator's model:
 
 ```bash
-yarn verify --run artifacts/<id>/<run-id> --judge-agent claude --judge-model <your model>
+yarn verify --run artifacts/<id>/<run-id> --judge-agent claude --judge-model <your model> --judge-effort <your effort>
 ```
 
-Omit `--judge-model` to let that agent's CLI pick its own default. Keep one judge for the length of a benchmark. A grader that changes between runs makes `with_skill` and `no_skill` incomparable.
+There is no CLI default for the judge either: a missing model or effort stops `verify` before the judge is spawned, with the same codex fallback to `~/.codex/config.toml` as the executor. Keep one judge, at one effort, for the length of a benchmark. A grader that changes between runs makes `with_skill` and `no_skill` incomparable.
 
 ### Revising expect lines: regrade, do not re-run
 
@@ -93,7 +93,7 @@ When you change a task's `expect:` lines after runs exist, the question is wheth
 
 ```bash
 yarn verify --run artifacts/<id>/<run-id> --regrade --reason "<what changed in the rubric and why>" \
-  --judge-agent claude --judge-model <model>
+  --judge-agent claude --judge-model <model> --judge-effort <effort>
 ```
 
 `--regrade` re-judges a run's stored evidence (`run.diff`, `output/`) against the task spec as it stands now. It never re-executes, never touches the source run dir, and writes `<run-id>-regrade-<n>/result.yaml` with `regrade_of` naming the run it re-read and `regrade_reason` saying why. Grade every run of the task, not the failures only — a wording change that flips a fail to a pass usually flips something the other way too. Hold the judge fixed at whatever graded the run originally; changing the wording and the judge together tells you nothing about either. A regrade is a second reading of one run, never a second run: never add it to a pass tally beside its source.
@@ -174,8 +174,8 @@ variant: with_skill
 skill_version: 191dcc1                # git short sha of the skill source; null for no_skill
 input_sha: 4f2b9c1de803               # sha256 of the input this run was given; absent on pre-2026-08-28 runs
 created: 2026-07-06T09:30:00Z
-executor_model: claude-opus-5         # what actually ran; null when the CLI picked its default
-executor_reasoning_effort: null       # codex only; the operator's model_reasoning_effort, passed on argv
+executor_model: claude-opus-5         # what actually ran; null only on runs made before it was required
+executor_reasoning_effort: medium     # both executors, passed on argv; absent or null on runs made before 2026-09-15
 executor_exit: 0                      # verify refuses anything else unless --grade-failed-run
 harness_failure:                      # absent unless --grade-failed-run graded over a refusal
 usage:                                # what the run cost; absent on runs made before 2026-08-27
@@ -190,7 +190,8 @@ usage:                                # what the run cost; absent on runs made b
   total_tokens: 282575                # the sum of the four above, on both stacks
 judge:                                # who graded this run
   agent: claude
-  model: claude-opus-4-8              # null when the agent's CLI picked its own default
+  model: claude-opus-4-8              # null only on grades made before it was required
+  reasoning_effort: high              # absent on grades made before 2026-09-15
   self_judged: false                  # true when judge and executor are the same agent
 expects:                              # judged expect lines, in task-spec order
   expect_1: pass
@@ -248,7 +249,7 @@ report once carried baseline costs assembled by hand out of a *benchmark-wide* m
 report — one cell took its duration from an aggregate over seven tasks and its cost from the other
 variant's column — and no reviewer could have caught it without re-deriving every cell.
 
-State the executor, its model, the judge, and the run count at the top of every report. If any run came back `self_judged: true`, say so there — on a single-stack benchmark that is every run, and it is a caveat on the numbers, not a defect in them.
+State the executor, its model and effort, the judge with its model and effort, and the run count at the top of every report. If any run came back `self_judged: true`, say so there — on a single-stack benchmark that is every run, and it is a caveat on the numbers, not a defect in them.
 
 Pass counts are not the whole verdict. `result.yaml` carries a `usage` block per run, so
 give the cost row real numbers rather than "no reduction observed": duration, tokens and

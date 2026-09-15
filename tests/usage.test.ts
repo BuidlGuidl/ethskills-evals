@@ -116,12 +116,12 @@ const codexStdout = [
   "",
 ].join("\n");
 
-const codexTranscript = (stdout: string, model: string | null = "gpt-5.6-sol", durationMs = 42_000) => {
+const codexTranscript = (stdout: string, model = "gpt-5.6-sol", durationMs = 42_000) => {
   const usage = buildUsage("codex", stdout, "", durationMs, model);
 
   return {
     usage,
-    text: buildTranscript({ run: "r", executor: "codex", model, exit: 0, workspacePath: "/w", usage }, stdout, ""),
+    text: buildTranscript({ run: "r", executor: "codex", model, reasoningEffort: "medium", exit: 0, workspacePath: "/w", usage }, stdout, ""),
   };
 };
 
@@ -278,7 +278,7 @@ test("a ? on one side of a footer pair keeps the number on the other", () => {
 // its partial tokens must not reach a cost table as a cheap complete run.
 test("an interrupted run gets no stats footer", () => {
   const text = buildTranscript(
-    { run: "r", executor: "codex", model: "gpt-5.6-sol", exit: 143, workspacePath: "/w", usage: null },
+    { run: "r", executor: "codex", model: "gpt-5.6-sol", reasoningEffort: "medium", exit: 143, workspacePath: "/w", usage: null },
     codexStdout,
     "",
   );
@@ -290,7 +290,6 @@ test("an interrupted run gets no stats footer", () => {
 
 test("an unpriced model says why the footer has no cost", () => {
   assert.match(codexTranscript(codexStdout, "gpt-unlisted").text, /- cost basis: none — gpt-unlisted has no row/);
-  assert.match(codexTranscript(codexStdout, null).text, /- cost basis: none — the run used codex's own default model/);
 });
 
 // Under --json the session goes to a file, so this line is all the operator sees of a run.

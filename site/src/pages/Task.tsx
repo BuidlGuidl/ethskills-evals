@@ -94,8 +94,18 @@ const Task = () => {
               <td className="mono small">{run.skill_content ? run.skill_content.slice(0, 8) : "—"}</td>
               <td className="small">
                 {run.executor_model ?? run.executor}
+                {run.executor_reasoning_effort ? (
+                  ` · ${run.executor_reasoning_effort}`
+                ) : (
+                  <span className="muted"> · effort unrecorded</span>
+                )}
                 {run.judge?.self_judged === true && (
-                  <span className="tag idle" title="the judge was the same agent as the executor">
+                  <span
+                    className="tag idle"
+                    title={`the judge was the same agent as the executor${
+                      run.judge.reasoning_effort ? ` (${run.judge.model} · ${run.judge.reasoning_effort})` : ""
+                    }`}
+                  >
                     self-judged
                   </span>
                 )}

@@ -180,32 +180,6 @@ export const operatorCodexModel = (): string | null => operatorCodexSetting("mod
 // nothing in the record to say so, which is the failure the redirect exists to prevent.
 export const operatorCodexReasoningEffort = (): string | null => operatorCodexSetting("model_reasoning_effort");
 
-// AGENTS.md's "codex → the model in ~/.codex/config.toml" has to keep meaning that, so the
-// harness reads the model itself and passes it. The gain over letting the CLI read it: the
-// model is now on argv and in executor.yaml, so the record names what ran instead of `null`.
-export const resolveCodexModel = (requested: string | null, flag = "--model"): string | null => {
-  if (requested !== null) {
-    return requested;
-  }
-
-  const configured = operatorCodexModel();
-
-  if (configured !== null) {
-    return configured;
-  }
-
-  // Not an error — no model is a legitimate choice, and codex has a default. But it is the
-  // one case where the record cannot name the model that ran, so it does not happen quietly.
-  console.warn(
-    `codex: no top-level model in ${path.join(operatorCodexHome(), "config.toml")}; the run uses codex's own default `
-      + `and the record says model: null. Pass ${flag} to pin it.`,
-  );
-
-  return null;
-};
-
 // Carried on argv for the same reason as the model: a setting that changes the answer has to
-// be visible in the record. Nothing is passed when the operator sets nothing — codex's own
-// default is a legitimate choice, and the record says null for it.
-export const codexReasoningArgs = (effort: string | null): string[] =>
-  effort === null ? [] : ["-c", `model_reasoning_effort="${effort}"`];
+// be visible in the record. lib/effort.ts resolves both and refuses when either is unset.
+export const codexReasoningArgs = (effort: string): string[] => ["-c", `model_reasoning_effort="${effort}"`];

@@ -65,9 +65,9 @@ The orchestrating agent works from `AGENTS.md`, the full playbook including ever
 
 - `yarn setup` builds a clean workspace for one run: task prompt in, skill installed (or not), and a hard fail if any grading material would leak in. The isolation is load-bearing, not hygiene. An executor that knows how it's being judged starts acting smart, so it gets the task and nothing else.
 - `yarn run-executor` spawns the executor in that workspace on `TASK.md` alone, builds the CLI invocation so the load-bearing flags cannot be forgotten, saves the transcript, and records when the process finished. A run whose executor was killed stays ungradeable by design: that is a dead run, not a zero.
-- `yarn verify` grades a finished run: snapshots the output, has a blind LLM judge grade the task's `expect:` lines against it, and writes `result.yaml`. No judge is baked in; the orchestrator passes `--judge-agent` and `--judge-model`, and `result.yaml` records which judge graded which run.
+- `yarn verify` grades a finished run: snapshots the output, has a blind LLM judge grade the task's `expect:` lines against it, and writes `result.yaml`. No judge is baked in; the orchestrator passes `--judge-agent`, `--judge-model` and `--judge-effort`, and `result.yaml` records which judge graded which run, at what effort.
 
-Every run leaves a record behind: what the executor changed (`run.diff`, or a snapshot of the files for a task with no starting repo), its transcript, `executor.yaml` with the model and the exit, and the graded `result.yaml`. The orchestrating agent never performs the task itself.
+Every run leaves a record behind: what the executor changed (`run.diff`, or a snapshot of the files for a task with no starting repo), its transcript, `executor.yaml` with the model, the effort and the exit, and the graded `result.yaml`. The orchestrating agent never performs the task itself.
 
 Executors are pluggable: `--executor claude` or `--executor codex`. Skills install at the cross-agent standard `.agents/skills/` (codex reads it natively; claude runs get a bridge copy at `.claude/skills/`).
 
@@ -77,8 +77,8 @@ Because the fixed part is this small, the orchestrator can bend the framework in
 
 ```bash
 yarn setup --task tasks/<id>.yaml --variant no_skill --run 1 --executor claude
-yarn run-executor --run artifacts/<id>/<run-id> --model <model>
-yarn verify --run artifacts/<id>/<run-id> --judge-agent claude --judge-model <model>
+yarn run-executor --run artifacts/<id>/<run-id> --model <model> --effort <effort>
+yarn verify --run artifacts/<id>/<run-id> --judge-agent claude --judge-model <model> --judge-effort <effort>
 ```
 
 Workspaces live outside the repo, under `~/.cache/ethskills-evals` or wherever `EVAL_WORKSPACE_ROOT` points — export it for the whole benchmark, since all three commands read it. `verify` deletes the workspace it graded; `yarn clean-workspaces --delete` reclaims the rest, and an SE2 workspace is gigabytes.

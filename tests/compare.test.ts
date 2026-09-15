@@ -52,6 +52,7 @@ const run = (task: string, content: string | null, rubric: string, pass: boolean
     variant: content === null ? "no_skill" : "with_skill",
     executor: "claude",
     executor_model: "claude-opus-5",
+    executor_reasoning_effort: null,
     created: "2026-08-19T00:00:00.000Z",
     pass,
     expects: null,
@@ -282,6 +283,15 @@ test("an unrecorded model is not known to equal a recorded one", () => {
   const [, kept] = compareSkill(skill, tasks, unrecorded).rows;
 
   assert.deepEqual(kept.before?.models, ["claude (model unrecorded)"]);
+  assert.equal(kept.modelMoved, true);
+});
+
+test("the same model at another effort is a different stack", () => {
+  const efforts = steady.map(run => ({ ...run, executor_reasoning_effort: run.skill_content === "big" ? "medium" : "high" }));
+  const [, kept] = compareSkill(skill, tasks, efforts).rows;
+
+  assert.deepEqual(kept.before?.models, ["claude-opus-5 · medium"]);
+  assert.deepEqual(kept.after?.models, ["claude-opus-5 · high"]);
   assert.equal(kept.modelMoved, true);
 });
 

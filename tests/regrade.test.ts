@@ -50,12 +50,12 @@ const UNGRADED = {
 test("--regrade is refused on a run that has never been graded", () => {
   const runDir = fixtureRun(UNGRADED, true);
 
-  assert.match(verify(["--run", runDir, "--judge-agent", "claude", "--regrade", "why"]), /nothing to regrade/);
+  assert.match(verify(["--run", runDir, "--judge-agent", "claude", "--judge-model", "claude-opus-5", "--judge-effort", "medium", "--regrade", "why"]), /nothing to regrade/);
 });
 
 test("a graded run is refused without --regrade, and the message names the flag", () => {
   const runDir = fixtureRun({ ...UNGRADED, pass: false }, true);
-  const output = verify(["--run", runDir, "--judge-agent", "claude"]);
+  const output = verify(["--run", runDir, "--judge-agent", "claude", "--judge-model", "claude-opus-5", "--judge-effort", "medium"]);
 
   assert.match(output, /run already graded/);
   assert.match(output, /--regrade --reason/);
@@ -64,19 +64,26 @@ test("a graded run is refused without --regrade, and the message names the flag"
 test("--regrade demands a stated reason before it spends a judge call", () => {
   const runDir = fixtureRun({ ...UNGRADED, pass: false }, true);
 
-  assert.match(verify(["--run", runDir, "--judge-agent", "claude", "--regrade"]), /--reason/);
+  assert.match(verify(["--run", runDir, "--judge-agent", "claude", "--judge-model", "claude-opus-5", "--judge-effort", "medium", "--regrade"]), /--reason/);
 });
 
 test("--regrade refuses evidence git does not track, since no other clone could reproduce it", () => {
   const runDir = fixtureRun({ ...UNGRADED, pass: false }, true);
 
-  assert.match(verify(["--run", runDir, "--judge-agent", "claude", "--regrade", "why"]), /not tracked by git/);
+  assert.match(verify(["--run", runDir, "--judge-agent", "claude", "--judge-model", "claude-opus-5", "--judge-effort", "medium", "--regrade", "why"]), /not tracked by git/);
+});
+
+test("a judge with no stated effort is refused before any record is read", () => {
+  const runDir = fixtureRun({ ...UNGRADED, pass: false }, true);
+  const output = verify(["--run", runDir, "--judge-agent", "claude", "--judge-model", "claude-opus-5", "--regrade", "why"]);
+
+  assert.match(output, /missing --judge-effort/);
 });
 
 test("--regrade refuses a run whose evidence was never captured at all", () => {
   const runDir = fixtureRun({ ...UNGRADED, pass: false }, false);
 
-  assert.match(verify(["--run", runDir, "--judge-agent", "claude", "--regrade", "why"]), /nothing to regrade|no output in/);
+  assert.match(verify(["--run", runDir, "--judge-agent", "claude", "--judge-model", "claude-opus-5", "--judge-effort", "medium", "--regrade", "why"]), /nothing to regrade|no output in/);
 });
 
 // The source record is the one thing a regrade must not touch — it is the reading the
@@ -87,7 +94,7 @@ test("a refused regrade leaves the source result.yaml byte-identical", () => {
   const resultPath = path.join(runDir, "result.yaml");
   const before = readFileSync(resultPath);
 
-  verify(["--run", runDir, "--judge-agent", "claude", "--regrade", "why"]);
+  verify(["--run", runDir, "--judge-agent", "claude", "--judge-model", "claude-opus-5", "--judge-effort", "medium", "--regrade", "why"]);
 
   assert.deepEqual(readFileSync(resultPath), before);
   assert.equal(existsSync(`${runDir}-regrade-1`), false);
