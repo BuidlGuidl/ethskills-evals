@@ -40,7 +40,7 @@ const Summary = () => {
   const activeCell = pool(activeModels.map(([, comparison]) => comparison.totals[column]));
   return <>
     <header className="page-header grid-intro">
-      <h1>How AI agents perform on Ethereum tasks, with and without ethskills.</h1>
+      <h1>EthSkills evaluation</h1>
     </header>
     <ArmSwitch arm={arm} onChange={value => setParams(writeArm(params, value), { replace: true })} />
     <Grid label="Pass rates by skill and model" total
