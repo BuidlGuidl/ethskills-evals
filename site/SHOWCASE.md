@@ -529,3 +529,36 @@ that skill. The three-column block is `site/src/components/ComparisonBlock.tsx`.
 
 Not done: a footnote naming the tokenizer under the block; the "what failed before the
 rewrite" section from the `mistakes/` records, which needs the indexer to read them.
+
+## 16. The grid
+
+The home page shows how AI agents perform on Ethereum tasks, with and without ethskills.
+Skills form the rows. Models form the columns, in manifest order.
+Each row links to its skill page. A Total column counts the row's runs across models.
+
+The switch selects No skill, Old skill, or New skill. New skill is the default.
+The URL records the choice in `?arm=`. Old skill uses the manifest's before version. New skill uses its after version.
+The row shows the selected version's lines and tokens. No skill hides those counts.
+Cells and their run lists use `compareEntry`, including its existing selection rules.
+
+A filled cell shows a rounded pass percentage and the run count beneath it. Colors use that rounded percentage.
+Rates below 50% are red. Rates from 50% to below 80% are amber. Rates of 80% or more are green.
+A cell with no runs shows an en dash titled "Not run yet" and cannot open a panel.
+The legend below the grid says that more models are being run.
+The existing combined comparison follows under "What the rewrites changed".
+
+A filled cell opens a panel on the right with the runs behind that count, grouped by task.
+Total panels group those tasks by model. Version sizes appear only when all models in the row used the same version.
+Each task shows its kind and a collapsed prompt. Each run shows its date, result, and check dots.
+Opening a run shows its checks, recorded usage, and transcript link.
+Runs with earlier checks show numbered results without current check wording. Each run list sorts by date.
+Filled dots mean pass. Hollow dots mean fail.
+The panel closes with Escape, a backdrop click, or its Close button.
+Focus stays inside the panel and returns to the cell when it closes.
+The skill page uses the same grid, with tasks as rows and the three arms as columns.
+Its comparison block, usage medians, and skill text diff remain in place.
+
+The site uses the existing dark palette by default.
+Inter and Source Code Pro load locally through `@fontsource-variable/inter` and `@fontsource-variable/source-code-pro`.
+The logos come from the Supabase evals repo, whose code uses Apache 2.0.
+The marks name the harness: the Claude mark means Claude Code, and the OpenAI mark means Codex.

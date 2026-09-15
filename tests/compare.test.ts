@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { compareEntry, sameRubric, summarize, tally } from "../site/src/lib/compare.js";
+import { compareEntry, pool, sameRubric, tally } from "../site/src/lib/compare.js";
 import { selectShowcase } from "../lib/showcase.js";
 import type { Entry, Index, Run, Skill, Task } from "../site/src/lib/types.js";
 
@@ -220,18 +220,17 @@ test("usage takes per-run medians across all rows, preserves zeros and requires 
   assert.deepEqual(zero.usage.before, { tokens: 0, duration_s: 0, cost_usd: 0, runs: 1, recorded: { tokens: 1, duration_s: 1, cost_usd: 1 } });
 });
 
-test("summaries follow manifest order, separate models and return versions, totals and usage", () => {
+test("pool combines model cells without losing counts or check revisions", () => {
   const other = { ...entry, model: "another-model" };
-  const summaries = summarize({ ...index, showcase: [other, entry], runs: [...runs, { ...runs[0], model: other.model }] });
-  assert.deepEqual(summaries.map(row => [row.skill, row.model, row.runs]), [[skill.name, other.model, 1], [skill.name, entry.model, 8]]);
-  const summary = summaries[1];
-  const comparison = compareEntry(entry, index);
-  assert.equal(summary.tasks, 2);
-  assert.equal(summary.beforeVersion?.lines, 547);
-  assert.equal(summary.afterVersion?.lines, 39);
-  assert.deepEqual(summary.usage, comparison.usage);
-  assert.deepEqual([summary.noSkill, summary.before, summary.after], Object.values(comparison.totals));
-  assert.deepEqual(summarize({ ...index, showcase: undefined }), []);
+  const both = { ...index, showcase: [other, entry], runs: [...runs, { ...runs[0], model: other.model }] };
+  const comparisons = both.showcase.map(entry => compareEntry(entry, both));
+  assert.deepEqual(comparisons.map(comparison => comparison.totals.before?.total), [1, 3]);
+  assert.equal(pool(comparisons.map(comparison => comparison.totals.before))?.total, 4);
+  assert.equal(pool(comparisons.flatMap(comparison => Object.values(comparison.totals)))?.total, 9);
+  assert.equal(pool([]), null);
+  assert.equal(pool([null]), null);
+  assert.deepEqual(pool([null, { passed: 1, total: 2, rubrics: ["b"] }, { passed: 2, total: 3, rubrics: ["a", "b"] }]),
+    { passed: 3, total: 5, rubrics: ["a", "b"] });
 });
 
 test("real showcase entries contain only comparable tasks and their runs", () => {
@@ -263,5 +262,5 @@ test("real showcase entries contain only comparable tasks and their runs", () =>
       assert.equal(result.rows.reduce((sum, row) => sum + (row[column]?.total ?? 0), 0), result.totals[column]?.total ?? 0);
     }
   }
-  assert.equal(summarize(real).reduce((sum, row) => sum + row.runs, 0), 353);
+  assert.equal(pool((real.showcase ?? []).flatMap(entry => Object.values(compareEntry(entry, real).totals)))?.total, 353);
 });

@@ -1,107 +1,86 @@
-import { Link } from "react-router-dom";
-import { PassCount, ResultsLegend } from "../components/PassCount.js";
+import { useEffect, useMemo, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
+import { ArmSwitch } from "../components/ArmSwitch.js";
+import { Grid } from "../components/Grid.js";
+import { RunPanel } from "../components/RunPanel.js";
 import { ComparisonBlock } from "../components/ComparisonBlock.js";
-import { summarize, type Cell } from "../lib/compare.js";
+import { compareEntry, pool } from "../lib/compare.js";
 import { useIndex } from "../lib/data.js";
-import { count, tokens } from "../lib/format.js";
+import { count, thousands } from "../lib/format.js";
+import { ARM_COLUMNS, ARM_LABELS, readArm, writeArm } from "../lib/grid.js";
+
 const Summary = () => {
   const index = useIndex();
-  const rows = summarize(index);
-  const sum = (column: "noSkill" | "before" | "after"): Cell | null => {
-    const cells = rows.map(row => row[column]).filter((cell): cell is Cell => cell !== null);
-    return cells.length === 0 ? null : {
-      passed: cells.reduce((total, cell) => total + cell.passed, 0),
-      total: cells.reduce((total, cell) => total + cell.total, 0),
-      rubrics: [...new Set(cells.flatMap(cell => cell.rubrics))],
-    };
-  };
-  const versions = rows.filter(row => row.beforeVersion && row.afterVersion);
-  const versionTokens = (column: "beforeVersion" | "afterVersion") => {
-    const values = rows.map(row => {
-      const version = row[column];
-      return version?.tokens ?? null;
-    });
-    // A partial sum would understate the combined skill text.
+  const [params, setParams] = useSearchParams();
+  const arm = readArm(params);
+  const column = ARM_COLUMNS[arm];
+  const [selected, setSelected] = useState<{ skill: string; model: string } | null>(null);
+  useEffect(() => { setSelected(null); }, [arm]);
+  const matrix = useMemo(() => {
+    const matrix = new Map<string, Map<string, ReturnType<typeof compareEntry>>>();
+    for (const entry of index.showcase ?? []) {
+      let models = matrix.get(entry.skill);
+      if (!models) { models = new Map(); matrix.set(entry.skill, models); }
+      models.set(entry.model, compareEntry(entry, index));
+    }
+    return matrix;
+  }, [index]);
+  const models = [...new Set((index.showcase ?? []).map(entry => entry.model))];
+  const comparisons = [...matrix.values()].flatMap(models => [...models.values()]);
+  const versions = comparisons.filter(comparison => comparison.before && comparison.after);
+  const versionTokens = (column: "before" | "after") => {
+    const values = comparisons.map(comparison => comparison[column]?.tokens ?? null);
     return values.length && values.every((value): value is number => value !== null)
       ? values.reduce((total, value) => total + value, 0) : null;
   };
-  const skills = new Set(rows.map(row => row.skill)).size;
-  const models = new Set(rows.map(row => row.model)).size;
-  const tasks = rows.reduce((total, row) => total + row.tasks, 0);
-  const runs = rows.reduce((total, row) => total + row.runs, 0);
-  return (<>
-    <header className="page-header intro">
-      <h1>Skill evals</h1>
-      <p className="lede">Each skill is tested on the same tasks, with and without it, before and after a rewrite, on one model.</p>
+  const tasks = comparisons.reduce((total, comparison) => total + comparison.rows.length, 0);
+  const runs = comparisons.reduce((total, comparison) => total + Object.values(comparison.runs).reduce((n, arm) => n + arm.length, 0), 0);
+  const activeModels = selected ? [...(matrix.get(selected.skill) ?? [])]
+    .filter(([model]) => selected.model === "total" || model === selected.model) : [];
+  const activeCell = pool(activeModels.map(([, comparison]) => comparison.totals[column]));
+  return <>
+    <header className="page-header grid-intro">
+      <h1>How AI agents perform on Ethereum tasks, with and without ethskills.</h1>
     </header>
-    <ComparisonBlock title="All skills"
-      subline={`${count(skills, "skill")}, ${count(models, "model")}, ${count(tasks, "task")}, ${count(runs, "run")}`}
-      noSkill={sum("noSkill")} before={sum("before")} after={sum("after")}
-      beforeLines={versions.length ? versions.reduce((total, row) => total + row.beforeVersion!.lines, 0) : null}
-      afterLines={versions.length ? versions.reduce((total, row) => total + row.afterVersion!.lines, 0) : null}
-      beforeTokens={versionTokens("beforeVersion")} afterTokens={versionTokens("afterVersion")}
+    <ArmSwitch arm={arm} onChange={value => setParams(writeArm(params, value), { replace: true })} />
+    <Grid label="Pass rates by skill and model" total
+      rows={[...matrix].map(([skill, entries]) => {
+        const selectedVersions = [...entries.values()].map(comparison => arm === "none" ? null : comparison[arm === "old" ? "before" : "after"]);
+        const version = selectedVersions[0];
+        const sharedVersion = version && selectedVersions.every(other => other?.id === version.id) ? version : null;
+        const cells = Object.fromEntries(models.map(model => [model, entries.get(model)?.totals[column] ?? null]));
+        return { key: skill, label: <Link to={`/skill/${skill}`}>{skill}</Link>, cells, total: pool(Object.values(cells)),
+          sub: sharedVersion ? `${thousands(sharedVersion.lines)} lines, ${thousands(sharedVersion.tokens)} tokens` : undefined };
+      })}
+      columns={models.map(model => {
+        const executor = index.runs.find(run => run.model === model)?.executor;
+        const icon = executor === "claude" ? "claude" : executor === "codex" ? "openai" : null;
+        return { key: model, label: <span className="model-chip">{icon && <img width="16" height="16"
+          src={`${import.meta.env.BASE_URL}icons/${icon}.svg`}
+          alt={executor === "claude" ? "Claude Code" : "Codex"} />}{model}</span> };
+      })}
+      onCellClick={(skill, model) => setSelected({ skill, model })} note="More models are being run."
     />
-    <section aria-labelledby="results-heading">
-      <div className="section-heading">
-        <h2 id="results-heading">By skill</h2>
-        <p className="muted small">{index.tasks.length} tasks · {index.runs.length} runs</p>
-      </div>
-      <ResultsLegend />
-      <div className="scroll" role="region" aria-label="Skill results" tabIndex={0}>
-        <table className="grid summary-table">
-          <caption className="sr-only">Pass rates by skill and model, before and after the rewrite.</caption>
-          <thead>
-            <tr>
-              <th scope="col">Skill</th>
-              <th scope="col">Model</th>
-              <th scope="col" className="num">Tasks</th>
-              <th scope="col" className="num">Runs</th>
-              <th scope="col" className="num">Without skill</th>
-              <th scope="col" className="num secondary">Before rewrite</th>
-              <th scope="col" className="num after">After rewrite</th>
-              <th scope="col" className="num">Lines<span className="cell-detail">before to after</span></th>
-              <th scope="col" className="num">Tokens per run<span className="cell-detail">median, before to after</span></th>
-            </tr>
-          </thead>
-          <tbody>{rows.map(row => (<tr key={`${row.skill}/${row.model}`}>
-            <th scope="row">
-              <Link to={`/skill/${row.skill}`}>{row.skill}</Link>
-            </th>
-            <td className="model">{row.model}</td>
-            <td className="num">
-              <Link to={`/tasks#${row.skill}`}>{row.tasks}</Link>
-            </td>
-            <td className="num">{row.runs}</td>
-            <td className="num">
-              <PassCount cell={row.noSkill} />
-            </td>
-            <td className="num secondary"><PassCount cell={row.before} /></td>
-            <td className="num after">
-              <PassCount cell={row.after} before={row.before} />
-            </td>
-            <td className="num compact">{row.beforeVersion && row.afterVersion ? `${row.beforeVersion.lines} → ${row.afterVersion.lines}` : "Not recorded"}</td>
-            <td className="num compact">{row.usage.before.tokens !== null && row.usage.after.tokens !== null ? `${tokens(row.usage.before.tokens)} → ${tokens(row.usage.after.tokens)}` : "Not recorded"}</td>
-          </tr>))}</tbody>
-        </table>
-      </div>
-      <p className="footnote">Token counts include recorded cache use. Compare counts only within the same model, since models count tokens differently.</p>
+    <section aria-labelledby="rewrites-heading">
+      <h2 id="rewrites-heading">What the rewrites changed</h2>
+      <ComparisonBlock title="All skills"
+        subline={`${count(matrix.size, "skill")}, ${count(models.length, "model")}, ${count(tasks, "task")}, ${count(runs, "run")}`}
+        noSkill={pool(comparisons.map(comparison => comparison.totals.noSkill))}
+        before={pool(comparisons.map(comparison => comparison.totals.before))}
+        after={pool(comparisons.map(comparison => comparison.totals.after))}
+        beforeLines={versions.length ? versions.reduce((total, comparison) => total + comparison.before!.lines, 0) : null}
+        afterLines={versions.length ? versions.reduce((total, comparison) => total + comparison.after!.lines, 0) : null}
+        beforeTokens={versionTokens("before")} afterTokens={versionTokens("after")}
+      />
+      <a className="small" href={`https://github.com/${index.generated.repo}/issues/1`}>Read why we chose these tasks</a>
     </section>
-    <section aria-label="How we test skills">
-      <ul className="intro-pointers">
-        <li>A <strong>quiz</strong> asks the model to reason and calculate. A <strong>goal</strong> tests whether it uses the skill's advice during a build without a reminder.</li>
-        <li>We run each task several times <strong>with the skill</strong> and <strong>without it</strong>. Each run gets a fresh workspace and its own branch.</li>
-        <li>A separate model checks every run. This <strong>blind judge</strong> sees the task's checks but does not know whether the model had the skill.</li>
-        <li>We rewrite the skill, often cutting its length. Then we repeat the tasks on the same model.</li>
-      </ul>
-      <details className="task-detail">
-        <summary>Why we use quizzes and goals</summary>
-        <ul>
-          <li><strong>Quizzes test whether the model can use a fact.</strong> "What does a 100k USDC flash loan on Aave V3 cost all-in?" needs a calculation. Asking for the fee alone tests recall or lookup.</li>
-          <li><strong>Goals test whether the model uses advice without a reminder.</strong> The build needs a decision covered by the skill. The prompt never names that decision.</li>
-        </ul>
-        <a className="small" href={`https://github.com/${index.generated.repo}/issues/1`}>Read why we chose these tasks</a>
-      </details>
-    </section>
-  </>);
+    {selected && activeCell && <RunPanel title={selected.model === "total" ? `${selected.skill}, all models` : `${selected.skill} on ${selected.model}`}
+      subline={`${ARM_LABELS[arm]}, ${activeCell.passed} of ${activeCell.total} runs passed`}
+      groups={activeModels.flatMap(([model, comparison]) => comparison.rows.flatMap((row, position) => {
+        const task = index.tasks.find(task => task.id === row.task);
+        return task ? [{ task, model, heading: selected.model === "total" && position === 0 ? model : undefined,
+          runs: comparison.runs[column].filter(run => run.task === task.id) }] : [];
+      }))} onClose={() => setSelected(null)} footer={<Link to={`/skill/${selected.skill}`}>Open the skill page</Link>} />}
+  </>;
 };
 export default Summary;
