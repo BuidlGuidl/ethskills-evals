@@ -8,8 +8,8 @@ const MAX_TOOL_RESULT_CHARS = 400;
 type TranscriptHeader = {
   run: string;
   executor: Executor;
-  model: string | null;
-  reasoningEffort: string | null;
+  model: string;
+  reasoningEffort: string;
   exit: number;
   workspacePath: string;
   // The harness's usage record, which is where codex's footer gets its duration and its
@@ -268,9 +268,7 @@ const renderCodex = (raw: string, stderr: string, header: TranscriptHeader) => {
   if (usage !== null && usage.total_tokens !== null) {
     const basis = usage.cost_usd !== null
       ? `list price for ${header.model} as of ${PRICES_CHECKED} (${PRICES_SOURCE}); codex reports no price`
-      : header.model === null
-        ? "none — the run used codex's own default model, which the record cannot name, so no price could be looked up"
-        : `none — ${header.model} has no row in lib/prices.ts`;
+      : `none — ${header.model} has no row in lib/prices.ts`;
 
     sections.push(runStatsSection({
       // A codex turn is one user prompt, always 1 in exec; it is not the unit claude's
@@ -307,7 +305,7 @@ export const buildTranscript = (header: TranscriptHeader, stdout: string, stderr
   const heading = [
     `# Executor transcript — ${header.run}`,
     "",
-    `**executor**: ${header.executor}  |  **model**: ${header.model ?? "cli default"}  |  **effort**: ${header.reasoningEffort ?? "cli default"}  |  **exit**: ${header.exit}`,
+    `**executor**: ${header.executor}  |  **model**: ${header.model}  |  **effort**: ${header.reasoningEffort}  |  **exit**: ${header.exit}`,
     `**workspace**: ${header.workspacePath}`,
   ].join("\n");
   const body = header.executor === "claude" ? renderClaude(stdout, stderr) : renderCodex(stdout, stderr, header);

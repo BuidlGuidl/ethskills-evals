@@ -73,7 +73,7 @@ test("--regrade refuses evidence git does not track, since no other clone could 
   assert.match(verify(["--run", runDir, "--judge-agent", "claude", "--judge-model", "claude-opus-5", "--judge-effort", "medium", "--regrade", "why"]), /not tracked by git/);
 });
 
-test("a judge with no stated effort is refused before any record is read", () => {
+test("a judge with no stated effort is refused before the judge is called", () => {
   const runDir = fixtureRun({ ...UNGRADED, pass: false }, true);
   const output = verify(["--run", runDir, "--judge-agent", "claude", "--judge-model", "claude-opus-5", "--regrade", "why"]);
 

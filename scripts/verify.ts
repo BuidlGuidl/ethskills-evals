@@ -9,7 +9,7 @@ import { resolveEffort, resolveModel } from "../lib/effort.js";
 import { buildEvidence, snapshotOutput, writeDiff } from "../lib/evidence.js";
 import { detectBrokenShell } from "../lib/executor-health.js";
 import { judgeExpectations } from "../lib/judge.js";
-import { expectSha, inputSha, isRecord, loadTaskSpec, loadYamlFile, parseArgs, requireString } from "../lib/task.js";
+import { expectSha, inputSha, isRecord, loadTaskSpec, loadYamlFile, nullableString, optionalArg, parseArgs, requireString } from "../lib/task.js";
 import { parseUsageRecord } from "../lib/usage.js";
 import type { Executor, ExecutorRecord, ExpectStatus, JudgeSpec, ResultRecord, Variant } from "../lib/types.js";
 import { pruneEmptyParent, readWorkspacePath } from "../lib/workspace.js";
@@ -30,14 +30,13 @@ const resolveJudge = (args: Record<string, string | boolean>): JudgeSpec => {
   }
 
   const agent = parseAgent(requireString(args["judge-agent"], "--judge-agent"));
-  const optional = (flag: string) => (args[flag] === undefined ? null : requireString(args[flag], `--${flag}`));
 
   // Resolved here rather than inside the runner so that result.yaml records the model and
   // effort that actually graded, and a missing one stops verify before the judge is paid for.
   return {
     agent,
-    model: resolveModel(agent, optional("judge-model"), "--judge-model"),
-    reasoning_effort: resolveEffort(agent, optional("judge-effort"), "--judge-effort"),
+    model: resolveModel(agent, optionalArg(args, "judge-model"), "--judge-model"),
+    reasoning_effort: resolveEffort(agent, optionalArg(args, "judge-effort"), "--judge-effort"),
   };
 };
 
@@ -91,20 +90,17 @@ const loadResultRecord = (resultPath: string): ResultRecord => {
     run: requireString(loaded.run, "run"),
     executor: parseExecutor(requireString(loaded.executor, "executor")),
     variant: parseVariant(requireString(loaded.variant, "variant")),
-    skill_version: loaded.skill_version === null ? null : requireString(loaded.skill_version, "skill_version"),
+    skill_version: nullableString(loaded.skill_version, "skill_version"),
     input_sha: loaded.input_sha === undefined ? undefined : requireString(loaded.input_sha, "input_sha"),
-    skill_content:
-      loaded.skill_content === undefined || loaded.skill_content === null
-        ? null
-        : requireString(loaded.skill_content, "skill_content"),
+    skill_content: nullableString(loaded.skill_content, "skill_content"),
     created: requireString(loaded.created, "created"),
-    executor_model: loaded.executor_model === undefined || loaded.executor_model === null
-      ? null
-      : requireString(loaded.executor_model, "executor_model"),
-    executor_reasoning_effort: loaded.executor_reasoning_effort === undefined || loaded.executor_reasoning_effort === null
-      ? null
-      : requireString(loaded.executor_reasoning_effort, "executor_reasoning_effort"),
+    executor_model: nullableString(loaded.executor_model, "executor_model"),
+    executor_reasoning_effort: nullableString(loaded.executor_reasoning_effort, "executor_reasoning_effort"),
     executor_exit: typeof loaded.executor_exit === "number" ? loaded.executor_exit : undefined,
+    // Read for the same reason as `retracted`: a regrade on a clone without the gitignored
+    // capture cannot re-detect it, so dropping it here would launder a harness failure into
+    // a clean-looking grade.
+    harness_failure: loaded.harness_failure === undefined ? undefined : requireString(loaded.harness_failure, "harness_failure"),
     usage: parseUsageRecord(loaded.usage),
     expect_sha: loaded.expect_sha === undefined ? undefined : requireString(loaded.expect_sha, "expect_sha"),
     expects: loaded.expects === undefined ? undefined : readExpects(loaded.expects),
@@ -140,11 +136,8 @@ const loadExecutorRecord = (runDir: string, optional = false): ExecutorRecord | 
 
   return {
     executor: parseExecutor(requireString(loaded.executor, "executor")),
-    model: loaded.model === null || loaded.model === undefined ? null : requireString(loaded.model, "model"),
-    reasoning_effort:
-      loaded.reasoning_effort === null || loaded.reasoning_effort === undefined
-        ? null
-        : requireString(loaded.reasoning_effort, "reasoning_effort"),
+    model: nullableString(loaded.model, "model"),
+    reasoning_effort: nullableString(loaded.reasoning_effort, "reasoning_effort"),
     started: requireString(loaded.started, "started"),
     finished: requireString(loaded.finished, "finished"),
     exit: typeof loaded.exit === "number" ? loaded.exit : null,

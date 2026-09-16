@@ -52,6 +52,20 @@ test("codex takes the flag over the operator's config, and the config when there
   });
 });
 
+// codex accepts the value locally and the API rejects it mid-run, so an unvalidated typo
+// costs a run dir rather than a command that fails to start.
+test("a codex effort outside the API's enum is refused, from the flag and from the config", () => {
+  withOperatorConfig(`model = "gpt-5.6-sol"\nmodel_reasoning_effort = "hihg"\n`, () => {
+    assert.throws(() => resolveEffort("codex", "hihg", "--effort"), /unknown --effort for codex: hihg/);
+    assert.throws(() => resolveEffort("codex", null, "--effort"), /unknown --effort for codex: hihg/);
+  });
+
+  // The two stacks do not take the same set: codex has none and minimal, claude does not.
+  assert.equal(resolveEffort("codex", "none", "--effort"), "none");
+  assert.equal(resolveEffort("codex", "minimal", "--effort"), "minimal");
+  assert.throws(() => resolveEffort("claude", "none", "--effort"), /unknown --effort for claude: none/);
+});
+
 test("codex with neither a flag nor a top-level setting is refused, not recorded as null", () => {
   withOperatorConfig(`[profiles.work]\nmodel = "gpt-5.6-sol"\nmodel_reasoning_effort = "high"\n`, () => {
     assert.throws(() => resolveModel("codex", null, "--judge-model"), /missing --judge-model: no top-level model/);
