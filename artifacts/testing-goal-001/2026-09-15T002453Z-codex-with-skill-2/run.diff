@@ -1,0 +1,124 @@
+diff --git a/test/UsdtYieldVaultFindings.t.sol b/test/UsdtYieldVaultFindings.t.sol
+new file mode 100644
+index 0000000..7f92a0e
+--- /dev/null
++++ b/test/UsdtYieldVaultFindings.t.sol
+@@ -0,0 +1,115 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.28;
++
++import {Test} from "forge-std/Test.sol";
++import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
++
++import {UsdtYieldVault} from "../src/UsdtYieldVault.sol";
++import {MockUSDT} from "./mocks/MockUSDT.sol";
++import {MockAavePool, MockAToken} from "./mocks/MockAavePool.sol";
++
++contract UsdtYieldVaultFindingsTest is Test {
++    MockUSDT internal usdt;
++    MockAavePool internal pool;
++    MockAToken internal aUsdt;
++    UsdtYieldVault internal vault;
++
++    address internal owner = makeAddr("owner");
++    address internal alice = makeAddr("alice");
++    address internal bob = makeAddr("bob");
++
++    function setUp() public {
++        usdt = new MockUSDT();
++        pool = new MockAavePool(address(usdt));
++        aUsdt = pool.aToken();
++        vault = new UsdtYieldVault(address(usdt), address(aUsdt), address(pool), 0, owner);
++
++        usdt.mint(alice, 10_000e6);
++        usdt.mint(bob, 10_000e6);
++        vm.prank(alice);
++        usdt.approve(address(vault), type(uint256).max);
++        vm.prank(bob);
++        usdt.approve(address(vault), type(uint256).max);
++    }
++
++    function _deposit(address user, uint256 assets) internal returns (uint256 shares) {
++        vm.prank(user);
++        shares = vault.deposit(assets);
++    }
++
++    function _withdraw(address user, uint256 shares) internal {
++        vm.prank(user);
++        vault.withdraw(shares);
++    }
++
++    /// A vault's recorded assets must equal the assets it actually controls after every operation.
++    /// Two withdrawals show that the unrecorded gap grows by one fee each time.
++    function test_AccountingMustEqualCustodyAfterTwoWithdrawals() public {
++        uint256 aliceShares = _deposit(alice, 1_000e6);
++        uint256 bobShares = _deposit(bob, 1_000e6);
++
++        _withdraw(alice, aliceShares / 2);
++        _withdraw(bob, bobShares / 2);
++
++        assertEq(aUsdt.balanceOf(address(vault)), vault.totalAssets(), "aUSDT custody drifted from accounting");
++    }
++
++    /// When all claims are burned, no depositor can ever redeem the fee left in Aave.
++    function test_LastWithdrawalMustNotLeaveOrphanedAssets() public {
++        uint256 shares = _deposit(alice, 1_000e6);
++        _withdraw(alice, shares);
++
++        assertEq(aUsdt.balanceOf(address(vault)), 0, "assets remain after all shares are burned");
++    }
++
++    /// Search the whole owner-settable fee domain. Every accepted fee must leave a minimum
++    /// deposit operational; the implementation accepts values that make subtraction underflow.
++    function testFuzz_AcceptedDepositFeeMustPermitDeposit(uint256 feeBps) public {
++        feeBps = bound(feeBps, vault.BPS_DENOMINATOR() + 1, type(uint256).max);
++        vm.prank(owner);
++        vault.setDepositFee(feeBps);
++
++        vm.prank(alice);
++        vault.deposit(vault.MIN_DEPOSIT());
++    }
++
++    function test_DepositFeeAtDenominatorMustRemainOperational() public {
++        vm.prank(owner);
++        vault.setDepositFee(vault.BPS_DENOMINATOR());
++
++        vm.prank(alice);
++        vault.deposit(vault.MIN_DEPOSIT());
++    }
++
++    function test_DepositFeeJustAboveDenominatorMustRemainOperational() public {
++        vm.prank(owner);
++        vault.setDepositFee(vault.BPS_DENOMINATOR() + 1);
++
++        vm.prank(alice);
++        vault.deposit(vault.MIN_DEPOSIT());
++    }
++}
++
++contract UsdtYieldVaultMainnetForkTest is Test {
++    address internal constant USDT = 0xdAC17F958D2ee523a2206206994597C13D831ec7;
++    address internal constant AAVE_POOL = 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2;
++    address internal constant A_USDT = 0x23878914EFE38d27C4D67Ab83ed1b93A74D4086a;
++    uint256 internal constant PINNED_BLOCK = 25_979_000;
++
++    function test_PinnedMainnet_USDTCanBeSuppliedAndWithdrawnThroughAave() public {
++        vm.createSelectFork(vm.envString("MAINNET_RPC_URL"), PINNED_BLOCK);
++
++        address depositor = makeAddr("mainnet depositor");
++        UsdtYieldVault vault = new UsdtYieldVault(USDT, A_USDT, AAVE_POOL, 0, address(this));
++        deal(USDT, depositor, 1_000e6);
++
++        vm.startPrank(depositor);
++        (bool approved,) = USDT.call(abi.encodeWithSignature("approve(address,uint256)", address(vault), 1_000e6));
++        require(approved, "USDT approval failed");
++        uint256 shares = vault.deposit(1_000e6);
++        vault.withdraw(shares);
++        vm.stopPrank();
++
++        assertEq(IERC20(USDT).balanceOf(depositor), 997e6);
++    }
++}
+
+# Untracked files and status
+ A test/UsdtYieldVaultFindings.t.sol

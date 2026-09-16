@@ -1,0 +1,242 @@
+diff --git a/FINDINGS.md b/FINDINGS.md
+new file mode 100644
+index 0000000..c693ad1
+--- /dev/null
++++ b/FINDINGS.md
+@@ -0,0 +1,151 @@
++# UsdtYieldVault deployment findings
++
++## Sign-off decision
++
++**Do not deploy this contract to mainnet.** A deposit using the specified, real
++mainnet USDT and Aave V3 pool reverts before Aave is called. Even with a
++standards-compliant mock token, withdrawals make the vault's accounting diverge
++from its Aave custody and strand the withdrawal fees. The deposit fee is also
++unbounded and can be configured above 100%, disabling all deposits.
++
++All evidence tests are new and live in `test/UsdtYieldVaultEvidence.t.sol`. No
++file under `src/`, `test/UsdtYieldVault.t.sol`, or `test/mocks/` was changed.
++
++## Critical: real mainnet USDT makes every deposit revert
++
++### How it was found
++
++The existing mock implements the conventional ERC-20 ABI and returns `bool`.
++Mainnet USDT does not return data from `approve`. The vault invokes
++`usdt.approve(...)` directly through `IERC20`, so Solidity expects and decodes a
++boolean return value. The empty return data causes the vault to revert after it
++has transferred the user's USDT into the vault and before it calls Aave. The
++transaction rollback returns the USDT, but no user can deposit.
++
++The test forks Ethereum at block `25,961,714`, deploys the unchanged vault with
++the addresses in the deployment specification, funds a depositor, grants the
++vault allowance using OpenZeppelin's compatibility wrapper, and attempts a real
++deposit. The trace shows `transferFrom` succeeding, USDT `approve` returning
++`[Stop]` with no value, and the vault immediately reverting. There is no call to
++the Aave pool.
++
++### Reproduction evidence
++
++```console
++$ forge test --match-test test_Fork_MainnetUsdtDepositSucceeds -vvvv 2>&1 | sed -n '/UsdtYieldVault::deposit/,/Backtrace:/p'
++    ├─ [64074] UsdtYieldVault::deposit(1000000000 [1e9])
++    │   ├─ [34830] 0xdAC17F958D2ee523a2206206994597C13D831ec7::transferFrom(fork-alice: [0xa22A55d31A9837787D2c841C76F260eCc869cF94], UsdtYieldVault: [0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f], 1000000000 [1e9])
++    │   │   ├─ emit Transfer(from: fork-alice: [0xa22A55d31A9837787D2c841C76F260eCc869cF94], to: UsdtYieldVault: [0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f], value: 1000000000 [1e9])
++    │   │   └─ ← [Stop]
++    │   ├─ [24953] 0xdAC17F958D2ee523a2206206994597C13D831ec7::approve(0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2, 1000000000 [1e9])
++    │   │   ├─ emit Approval(owner: UsdtYieldVault: [0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f], spender: 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2, value: 1000000000 [1e9])
++    │   │   └─ ← [Stop]
++    │   └─ ← [Revert] EvmError: Revert
++    └─ ← [Revert] EvmError: Revert
++
++Backtrace:
++```
++
++### Recommended fix
++
++Replace the raw `approve` with OpenZeppelin `SafeERC20.forceApprove` (or a safe
++equivalent that accepts empty return data and handles nonzero-to-nonzero
++allowance tokens). Keep a pinned-fork regression test against real USDT and the
++real Aave pool.
++
++## High: every withdrawal creates untracked Aave assets
++
++### How it was found
++
++The vault subtracts `grossAssets` from `totalAssetsStored`, but asks Aave to
++withdraw only `netAssets`. The difference remains as aUSDT in the vault while it
++is removed from the accounting used by every share conversion. After the sole
++depositor deposits 1,000 USDT and exits, the vault reports zero assets and zero
++shares while still holding 3 USDT of aUSDT. This contradicts the stated design
++that fees accrue to shareholders; those assets are not claimable by any existing
++shareholder. Repeating sequences accumulates the discrepancy. The same stored
++balance design also omits Aave interest from share value.
++
++### Reproduction evidence
++
++```console
++$ forge test --match-test test_WithdrawalMustNotCreateUntrackedAaveAssets -vv
++No files changed, compilation skipped
++2026-09-12T13:45:57.345089Z  WARN evm::traces::external: etherscan config not found
++
++Ran 1 test for test/UsdtYieldVaultEvidence.t.sol:UsdtYieldVaultEvidenceTest
++[FAIL: custody diverged from accounting: 3000000 != 0] test_WithdrawalMustNotCreateUntrackedAaveAssets() (gas: 250624)
++Suite result: FAILED. 0 passed; 1 failed; 0 skipped; finished in 820.43µs (155.02µs CPU time)
++
++Ran 1 test suite in 10.31ms (820.43µs CPU time): 0 tests passed, 1 failed, 0 skipped (1 total tests)
++
++Failing tests:
++Encountered 1 failing test in test/UsdtYieldVaultEvidence.t.sol:UsdtYieldVaultEvidenceTest
++[FAIL: custody diverged from accounting: 3000000 != 0] test_WithdrawalMustNotCreateUntrackedAaveAssets() (gas: 250624)
++
++Encountered a total of 1 failing tests, 0 tests succeeded
++
++Tip: Run `forge test --rerun` to retry only the 1 failed test
++```
++
++### Recommended fix
++
++Base `totalAssets` and conversions on actual Aave custody (the aUSDT balance),
++so both retained fees and Aave yield remain in the share price. Specify the
++last-share exit explicitly: waive the fee, pay it to a defined recipient, or
++track it as a separate reserve, rather than leave assets in a zero-share vault.
++Add a handler-driven invariant asserting accounting equals custody after random
++multi-user deposit/withdraw sequences and simulated/real yield accrual.
++
++## Medium: the owner can configure a deposit fee above 100%
++
++### How it was found
++
++`setDepositFee` and the constructor accept every `uint256`. A value above 10,000
++bps is accepted, after which `amount - fee` underflows and every otherwise valid
++deposit reverts. This can also be deployed as the initial state.
++
++### Reproduction evidence
++
++```console
++$ forge test --match-test test_OwnerCannotConfigureFeeAboveOneHundredPercent -vv
++Compiling 1 files with Solc 0.8.28
++Solc 0.8.28 finished in 1.20s
++Compiler run successful!
++2026-09-12T13:45:52.571784Z  WARN evm::traces::external: etherscan config not found
++
++Ran 1 test for test/UsdtYieldVaultEvidence.t.sol:UsdtYieldVaultEvidenceTest
++[FAIL: fee above 100% was accepted: 10001 > 10000] test_OwnerCannotConfigureFeeAboveOneHundredPercent() (gas: 21158)
++Suite result: FAILED. 0 passed; 1 failed; 0 skipped; finished in 721.60µs (71.01µs CPU time)
++
++Ran 1 test suite in 10.52ms (721.60µs CPU time): 0 tests passed, 1 failed, 0 skipped (1 total tests)
++
++Failing tests:
++Encountered 1 failing test in test/UsdtYieldVaultEvidence.t.sol:UsdtYieldVaultEvidenceTest
++[FAIL: fee above 100% was accepted: 10001 > 10000] test_OwnerCannotConfigureFeeAboveOneHundredPercent() (gas: 21158)
++
++Encountered a total of 1 failing tests, 0 tests succeeded
++
++Tip: Run `forge test --rerun` to retry only the 1 failed test
++```
++
++### Recommended fix
++
++Reject fees above a documented maximum in both the constructor and setter with
++a custom error. Fuzz the entire accepted input domain and test the exact maximum
++and the first value above it. A production maximum should likely be materially
++below 100%, not merely `<= BPS_DENOMINATOR`.
++
++## Assessment of the previous evidence
++
++The original 39 tests pass, but they perform none of the searches needed for
++this vault: no full-domain fuzz test of the owner-settable fee, no handler-driven
++stateful invariant relating shares/accounting to custody, and no pinned fork
++against the two production integrations. Line and function coverage therefore
++did not exercise the behavior of the actual underlying token or validate the
++vault's core solvency/accounting property.
++
++`slither .` could not be completed in this workspace because the installed
++launcher has no importable Slither package (`ModuleNotFoundError: No module named
++'slither'`). That is an additional incomplete release check, not evidence of a
++contract finding.
+diff --git a/test/UsdtYieldVaultEvidence.t.sol b/test/UsdtYieldVaultEvidence.t.sol
+new file mode 100644
+index 0000000..6a7740d
+--- /dev/null
++++ b/test/UsdtYieldVaultEvidence.t.sol
+@@ -0,0 +1,75 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.28;
++
++import {Test} from "forge-std/Test.sol";
++import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
++import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
++
++import {UsdtYieldVault} from "../src/UsdtYieldVault.sol";
++import {MockUSDT} from "./mocks/MockUSDT.sol";
++import {MockAavePool, MockAToken} from "./mocks/MockAavePool.sol";
++
++contract UsdtYieldVaultEvidenceTest is Test {
++    using SafeERC20 for IERC20;
++
++    MockUSDT internal usdt;
++    MockAavePool internal pool;
++    MockAToken internal aUsdt;
++    UsdtYieldVault internal vault;
++
++    address internal owner = makeAddr("owner");
++    address internal alice = makeAddr("alice");
++
++    function setUp() public {
++        usdt = new MockUSDT();
++        pool = new MockAavePool(address(usdt));
++        aUsdt = pool.aToken();
++        vault = new UsdtYieldVault(address(usdt), address(aUsdt), address(pool), 10, owner);
++
++        usdt.mint(alice, 10_000e6);
++        vm.prank(alice);
++        usdt.approve(address(vault), type(uint256).max);
++    }
++
++    function test_OwnerCannotConfigureFeeAboveOneHundredPercent() public {
++        vm.prank(owner);
++        vault.setDepositFee(10_001);
++
++        assertLe(vault.depositFeeBps(), vault.BPS_DENOMINATOR(), "fee above 100% was accepted");
++    }
++
++    function test_WithdrawalMustNotCreateUntrackedAaveAssets() public {
++        vm.prank(alice);
++        uint256 shares = vault.deposit(1_000e6);
++
++        vm.prank(alice);
++        vault.withdraw(shares);
++
++        assertEq(aUsdt.balanceOf(address(vault)), vault.totalAssets(), "custody diverged from accounting");
++    }
++}
++
++contract UsdtYieldVaultMainnetEvidenceTest is Test {
++    using SafeERC20 for IERC20;
++
++    address internal constant USDT = 0xdAC17F958D2ee523a2206206994597C13D831ec7;
++    address internal constant A_USDT = 0x23878914EFE38d27C4D67Ab83ed1b93A74D4086a;
++    address internal constant AAVE_POOL = 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2;
++    uint256 internal constant PINNED_BLOCK = 25_961_714;
++
++    function test_Fork_MainnetUsdtDepositSucceeds() public {
++        vm.createSelectFork("https://ethereum-rpc.publicnode.com", PINNED_BLOCK);
++
++        address alice = makeAddr("fork-alice");
++        UsdtYieldVault vault = new UsdtYieldVault(USDT, A_USDT, AAVE_POOL, 10, address(this));
++        deal(USDT, alice, 1_000e6);
++
++        vm.prank(alice);
++        IERC20(USDT).forceApprove(address(vault), type(uint256).max);
++
++        vm.prank(alice);
++        vault.deposit(1_000e6);
++
++        assertGt(vault.shareBalance(alice), 0);
++    }
++}
+
+# Untracked files and status
+ A FINDINGS.md
+ A test/UsdtYieldVaultEvidence.t.sol

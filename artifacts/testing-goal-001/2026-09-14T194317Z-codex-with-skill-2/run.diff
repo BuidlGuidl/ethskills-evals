@@ -1,0 +1,153 @@
+diff --git a/test/AdversarialVault.t.sol b/test/AdversarialVault.t.sol
+new file mode 100644
+index 0000000..ce4eacb
+--- /dev/null
++++ b/test/AdversarialVault.t.sol
+@@ -0,0 +1,105 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.28;
++
++import {Test} from "forge-std/Test.sol";
++import {StdInvariant} from "forge-std/StdInvariant.sol";
++
++import {UsdtYieldVault} from "../src/UsdtYieldVault.sol";
++import {MockUSDT} from "./mocks/MockUSDT.sol";
++import {MockAavePool, MockAToken} from "./mocks/MockAavePool.sol";
++
++contract WithdrawalHandler is Test {
++    UsdtYieldVault internal immutable vault;
++    MockUSDT internal immutable usdt;
++    address internal immutable actor;
++
++    constructor(UsdtYieldVault _vault, MockUSDT _usdt) {
++        vault = _vault;
++        usdt = _usdt;
++        actor = address(this);
++        usdt.approve(address(vault), type(uint256).max);
++    }
++
++    function deposit(uint256 amount) external {
++        amount = bound(amount, vault.MIN_DEPOSIT(), 10_000e6);
++        usdt.mint(actor, amount);
++        vault.deposit(amount);
++    }
++
++    function withdraw(uint256 seed) external {
++        uint256 balance = vault.shareBalance(actor);
++        if (balance == 0) return;
++        vault.withdraw(bound(seed, 1, balance));
++    }
++}
++
++contract VaultAccountingInvariantTest is StdInvariant, Test {
++    UsdtYieldVault internal vault;
++    MockUSDT internal usdt;
++    MockAToken internal aUsdt;
++    WithdrawalHandler internal handler;
++
++    function setUp() public {
++        usdt = new MockUSDT();
++        MockAavePool pool = new MockAavePool(address(usdt));
++        aUsdt = pool.aToken();
++        vault = new UsdtYieldVault(address(usdt), address(aUsdt), address(pool), 10, address(this));
++        handler = new WithdrawalHandler(vault, usdt);
++        targetContract(address(handler));
++    }
++
++    function invariant_recordedAssetsEqualAaveCustody() public view {
++        assertEq(aUsdt.balanceOf(address(vault)), vault.totalAssets());
++    }
++}
++
++contract VaultAdversarialTest is Test {
++    UsdtYieldVault internal vault;
++    MockUSDT internal usdt;
++    MockAToken internal aUsdt;
++    address internal alice = makeAddr("adversarial alice");
++    address internal owner = makeAddr("adversarial owner");
++
++    function setUp() public {
++        usdt = new MockUSDT();
++        MockAavePool pool = new MockAavePool(address(usdt));
++        aUsdt = pool.aToken();
++        vault = new UsdtYieldVault(address(usdt), address(aUsdt), address(pool), 10, owner);
++        usdt.mint(alice, 100_000e6);
++        vm.prank(alice);
++        usdt.approve(address(vault), type(uint256).max);
++    }
++
++    function test_TwoWithdrawalsAccumulateUnaccountedWithdrawalFees() public {
++        vm.prank(alice);
++        uint256 shares = vault.deposit(1_000e6);
++
++        vm.prank(alice);
++        vault.withdraw(shares / 2);
++        assertEq(aUsdt.balanceOf(address(vault)) - vault.totalAssets(), 1_500_000, "gap after first withdrawal");
++
++        vm.prank(alice);
++        vault.withdraw(shares - shares / 2);
++        assertEq(aUsdt.balanceOf(address(vault)), vault.totalAssets(), "Aave custody must equal recorded assets");
++    }
++
++    function testFuzz_OwnerAcceptedFeeMustPermitMinimumDeposit(uint256 feeBps) public {
++        feeBps = bound(feeBps, 0, type(uint32).max);
++        vm.prank(owner);
++        vault.setDepositFee(feeBps);
++
++        vm.prank(alice);
++        uint256 shares = vault.deposit(vault.MIN_DEPOSIT());
++        assertGt(shares, 0, "an accepted fee must leave deposits usable");
++    }
++
++    function test_AccruedAaveBalanceMustIncreaseRedeemableAssets() public {
++        vm.prank(alice);
++        vault.deposit(1_000e6);
++        uint256 beforeYield = vault.balanceOfUnderlying(alice);
++
++        deal(address(aUsdt), address(vault), aUsdt.balanceOf(address(vault)) + 100e6);
++
++        assertEq(vault.balanceOfUnderlying(alice), beforeYield + 100e6, "Aave yield must be redeemable");
++    }
++}
+diff --git a/test/MainnetFork.t.sol b/test/MainnetFork.t.sol
+new file mode 100644
+index 0000000..d504b61
+--- /dev/null
++++ b/test/MainnetFork.t.sol
+@@ -0,0 +1,32 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.28;
++
++import {Test} from "forge-std/Test.sol";
++import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
++
++import {UsdtYieldVault} from "../src/UsdtYieldVault.sol";
++
++contract MainnetForkTest is Test {
++    uint256 internal constant PINNED_BLOCK = 25_977_000;
++    address internal constant USDT = 0xdAC17F958D2ee523a2206206994597C13D831ec7;
++    address internal constant A_USDT = 0x23878914EFE38d27C4D67Ab83ed1b93A74D4086a;
++    address internal constant AAVE_POOL = 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2;
++
++    function test_PinnedMainnetRealUsdtCanSupplyAndWithdrawTwice() public {
++        vm.createSelectFork(vm.envString("MAINNET_RPC_URL"), PINNED_BLOCK);
++        address alice = makeAddr("fork alice");
++        UsdtYieldVault vault = new UsdtYieldVault(USDT, A_USDT, AAVE_POOL, 10, address(this));
++        deal(USDT, alice, 2_000e6);
++        vm.prank(alice);
++        IERC20(USDT).approve(address(vault), type(uint256).max);
++
++        vm.startPrank(alice);
++        uint256 firstShares = vault.deposit(1_000e6);
++        uint256 secondShares = vault.deposit(1_000e6);
++        vault.withdraw(firstShares);
++        vault.withdraw(secondShares);
++        vm.stopPrank();
++
++        assertEq(vault.totalShares(), 0);
++    }
++}
+
+# Untracked files and status
+ A test/AdversarialVault.t.sol
+ A test/MainnetFork.t.sol
