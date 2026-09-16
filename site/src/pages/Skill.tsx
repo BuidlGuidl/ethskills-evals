@@ -149,7 +149,7 @@ const Skill = () => {
       <Link className="back" to="/">All skills</Link>
       <div className="section-heading">
         <h1>{name}</h1>
-        <a className="small" href={`https://ethskills.com/${name}/SKILL.md`}>upstream ↗</a>
+        <a target="_blank" rel="noopener noreferrer" className="small" href={`https://ethskills.com/${name}/SKILL.md`}>upstream ↗</a>
       </div>
     </header>
     {entries.map(entry => <EntryResults key={`${entry.skill}/${entry.model}`} entry={entry} />)}

@@ -26,7 +26,7 @@ const Doc = ({ kind }: { kind: "report" | "pr" }) => {
   return (
     <article>
       <p className="muted small">
-        <a href={found.url}>{kind === "report" ? (found as { file: string }).file : `pull request #${number}`}</a>
+        <a target="_blank" rel="noopener noreferrer" href={found.url}>{kind === "report" ? (found as { file: string }).file : `pull request #${number}`}</a>
       </p>
       <h1>{title}</h1>
       {error !== null && <p className="note">{error}</p>}

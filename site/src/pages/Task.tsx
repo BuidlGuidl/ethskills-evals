@@ -80,7 +80,7 @@ const Task = () => {
               </td>
               <td className="num">{tokens(run.usage.tokens)}</td>
               <td className="num">{duration(run.usage.duration_s)}</td>
-              <td>{run.transcript_url ? <a href={run.transcript_url} aria-label={`Open transcript for ${run.run}`}>Read transcript ↗</a> : "Not recorded"}</td>
+              <td>{run.transcript_url ? <a target="_blank" rel="noopener noreferrer" href={run.transcript_url} aria-label={`Open transcript for ${run.run}`}>Read transcript ↗</a> : "Not recorded"}</td>
             </tr>;
           })}</tbody>
         </table>

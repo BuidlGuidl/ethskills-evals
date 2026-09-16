@@ -106,7 +106,7 @@ const Summary = () => {
       <p>Each run starts with a fresh executor. A separate judge process grades the output against the task checks. The judge can use the same model as the executor.</p>
       <p>Open a table cell to inspect tasks and runs. Open the skill page for the rewrite, usage records, and source reports.</p>
       <p>“Old skill” and “New skill” are the selected original and revised versions. The revised version is not necessarily the latest version. Small samples, task coverage, and historical judge settings limit what these results establish.</p>
-      <a href={`https://github.com/${index.generated.repo}/issues/1`}>Read why we chose these tasks ↗</a>
+      <a target="_blank" rel="noopener noreferrer" href={`https://github.com/${index.generated.repo}/issues/1`}>Read why we chose these tasks ↗</a>
     </details>
     {selected && activeCell && <RunPanel title={selected.model === "total" ? `${selected.skill}, all models` : `${selected.skill} on ${selected.model}`}
       subline={`${ARM_LABELS[arm]}, ${activeCell.passed} of ${activeCell.total} runs passed`}
