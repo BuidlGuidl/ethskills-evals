@@ -67,12 +67,11 @@ const TaskRows = ({ task, runs, initiallyOpen }: { task: Task; runs: Run[]; init
   </>;
 };
 
-export const RunPanel = ({ title, subline, groups, controls, headerLink, footer, onClose }: {
+export const RunPanel = ({ title, subline, groups, controls, footer, onClose }: {
   title: string;
   subline: string;
   groups: { task: Task; runs: Run[]; model?: string; heading?: string }[];
   controls?: ReactNode;
-  headerLink?: ReactNode;
   footer?: ReactNode;
   onClose: () => void;
 }) => {
@@ -119,9 +118,7 @@ export const RunPanel = ({ title, subline, groups, controls, headerLink, footer,
       aria-describedby={sublineId} tabIndex={-1}>
       <header className="run-panel-header">
         <div className="panel-title">
-          <div className="panel-title-line"><h2 id={titleId}>{title}</h2>
-            {headerLink && <span className="small">{headerLink}</span>}
-          </div>
+          <h2 id={titleId}>{title}</h2>
           <p id={sublineId} className="muted small">{armLabel}</p>
         </div>
         <p className="panel-header-status">{allRuns.length ? <>{passed} of {allRuns.length} runs pass / <span className={`rate-${rateBucket(rate)}`}>{rate}%</span></> : "Not run yet"}</p>

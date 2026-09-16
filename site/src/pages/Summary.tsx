@@ -110,7 +110,7 @@ const Summary = () => {
         const task = index.tasks.find(task => task.id === row.task);
         return task ? [{ task, model, heading: selected.model === "total" && position === 0 ? model : undefined,
           runs: comparison.runs[panelColumn].filter(run => run.task === task.id) }] : [];
-      }))} onClose={() => setSelected(null)} headerLink={<Link to={`/skill/${selected.skill}`}>View skill details →</Link>} />}
+      }))} onClose={() => setSelected(null)} footer={<Link className="panel-action" to={`/skill/${selected.skill}`}>View skill details →</Link>} />}
   </>;
 };
 export default Summary;

@@ -74,7 +74,7 @@ const EntryResults = ({ entry }: {
         groups={(selected.arm === "total" ? ARMS : [selected.arm]).map(arm => ({ task: selectedTask, model: arm,
           heading: selected.arm === "total" ? ARM_LABELS[arm] : undefined,
           runs: comparison.runs[ARM_COLUMNS[arm]].filter(run => run.task === selectedTask.id) }))}
-        onClose={() => setSelected(null)} footer={<Link to={`/task/${selectedTask.id}`}>Open the task page</Link>} />}
+        onClose={() => setSelected(null)} footer={<Link className="panel-action" to={`/task/${selectedTask.id}`}>Open the task page →</Link>} />}
     </section>
     <section aria-label="Tokens, time and cost">
       <h2>Tokens, time and cost</h2>
