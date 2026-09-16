@@ -69,7 +69,7 @@ The orchestrating agent works from `AGENTS.md`, the full playbook including ever
 
 Every run leaves a record behind: what the executor changed (`run.diff`, or a snapshot of the files for a task with no starting repo), its transcript, `executor.yaml` with the model, the effort and the exit, and the graded `result.yaml`. The orchestrating agent never performs the task itself.
 
-Executors are pluggable: `--executor claude`, `--executor codex` or `--executor opencode`. Skills install at the cross-agent standard `.agents/skills/` (codex reads it natively; claude runs get a bridge copy at `.claude/skills/`, opencode runs at `.opencode/skills/`). An opencode model is named the way opencode names it, e.g. `--model openrouter/z-ai/glm-5.3 --effort medium`.
+Executors are pluggable: `--executor claude`, `--executor codex` or `--executor opencode`. Skills install at the cross-agent standard `.agents/skills/` (codex reads it natively; claude runs get a bridge copy at `.claude/skills/`, opencode runs at `.opencode/skills/`). An opencode model is named the way opencode names it, and its effort is one its catalog entry lists — `opencode models openrouter --verbose` shows them — e.g. `--model openrouter/z-ai/glm-5.3 --effort low` (kimi-k3 and glm-5.3 take `low`, `high`, `max`). opencode always reads `~/.opencode`, so `run-executor` refuses to start while that dir holds skills, agents, plugins or an `opencode.json`; move them aside for the benchmark.
 
 Because the fixed part is this small, the orchestrator can bend the framework into shapes it wasn't written for, like comparing two similar skills from different developers.
 

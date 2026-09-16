@@ -7,7 +7,7 @@ import yaml from "js-yaml";
 import { readSkillContentId } from "../lib/skill.js";
 import { inputSha, loadTaskSpec, parseArgs, requireString } from "../lib/task.js";
 import { EXECUTORS, type Executor, type ResultRecord, type Variant } from "../lib/types.js";
-import { WORKSPACE_MANIFEST, WORKSPACE_POINTER, copyTree, pruneEmptyParent, removeTree, seedWorkspaceRepo, workspaceRoot } from "../lib/workspace.js";
+import { WORKSPACE_MANIFEST, WORKSPACE_POINTER, copyTree, pruneEmptyParent, removeTree, seedWorkspaceRepo, workspaceRoot, SKILL_BRIDGE_DIRS } from "../lib/workspace.js";
 
 const ROOT = process.cwd();
 const VARIANTS = new Set<Variant>(["no_skill", "with_skill"]);
@@ -85,15 +85,8 @@ const installSkill = async (sourceDir: string, skillName: string, executor: Exec
   await access(sourceDir, constants.R_OK);
   await copySkill(sourceDir, agentsDestination);
 
-  if (executor === "claude") {
-    await copySkill(sourceDir, path.join(workspacePath, ".claude", "skills", skillName));
-  }
-
-  // opencode reads .agents/skills natively, but the harness turns that discovery off for its
-  // runs (lib/opencode-home.ts: it is the same switch that loads the operator's global
-  // ~/.agents/skills), so the copy it reads is the one in its own config dir.
-  if (executor === "opencode") {
-    await copySkill(sourceDir, path.join(workspacePath, ".opencode", "skills", skillName));
+  for (const bridge of SKILL_BRIDGE_DIRS[executor]) {
+    await copySkill(sourceDir, path.join(workspacePath, bridge, "skills", skillName));
   }
 };
 
