@@ -6,7 +6,7 @@ import { RunPanel } from "../components/RunPanel.js";
 import { compareEntry, pool } from "../lib/compare.js";
 import { useIndex } from "../lib/data.js";
 import { count, thousands } from "../lib/format.js";
-import { ARM_COLUMNS, ARM_LABELS, readArm, writeArm, type Arm } from "../lib/grid.js";
+import { ARM_COLUMNS, readArm, writeArm, type Arm } from "../lib/grid.js";
 
 const Summary = () => {
   const index = useIndex();
@@ -32,7 +32,6 @@ const Summary = () => {
   const activeModels = selected ? [...(matrix.get(selected.skill) ?? [])]
     .filter(([model]) => selected.model === "total" || model === selected.model) : [];
   const panelColumn = ARM_COLUMNS[selected?.arm ?? arm];
-  const activeCell = pool(activeModels.map(([, comparison]) => comparison.totals[panelColumn]));
   const overall = [
     { key: "none", label: "Without skill", cell: pool(comparisons.map(item => item.totals.noSkill)) },
     { key: "old", label: "Original skill", cell: pool(comparisons.map(item => item.totals.before)) },
@@ -104,14 +103,14 @@ const Summary = () => {
       <p>Results apply to the tasks, models, and skill versions tested. “New skill” means the revised version tested here.</p>
       <a target="_blank" rel="noopener noreferrer" href={`https://github.com/${index.generated.repo}/issues/1`}>Read why we chose these tasks ↗</a>
     </details>
-    {selected && <RunPanel title={selected.model === "total" ? `${selected.skill}, all models` : `${selected.skill} on ${selected.model}`}
-      subline={`${ARM_LABELS[selected.arm]}, ${activeCell?.passed ?? 0} of ${activeCell?.total ?? 0} runs passed`}
+    {selected && <RunPanel title={`Task results for the ${selected.skill} skill`}
+      subline={selected.model === "total" ? "All models" : selected.model}
       controls={<ArmSwitch arm={selected.arm} onChange={value => setSelected({ ...selected, arm: value })} />}
       groups={activeModels.flatMap(([model, comparison]) => comparison.rows.flatMap((row, position) => {
         const task = index.tasks.find(task => task.id === row.task);
         return task ? [{ task, model, heading: selected.model === "total" && position === 0 ? model : undefined,
           runs: comparison.runs[panelColumn].filter(run => run.task === task.id) }] : [];
-      }))} onClose={() => setSelected(null)} footer={<Link to={`/skill/${selected.skill}`}>Open the skill page</Link>} />}
+      }))} onClose={() => setSelected(null)} headerLink={<Link to={`/skill/${selected.skill}`}>View skill details →</Link>} />}
   </>;
 };
 export default Summary;
