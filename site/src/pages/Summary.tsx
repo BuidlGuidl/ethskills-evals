@@ -58,7 +58,7 @@ const Summary = () => {
           <strong>{cell ? `${Math.round(100 * cell.passed / cell.total)}%` : "Not tested"}</strong>
           <span>{cell ? `${cell.passed} of ${cell.total} runs passed` : "No results"}</span>
           <div className="summary-bar" aria-hidden="true"><span style={{ width: `${cell ? 100 * cell.passed / cell.total : 0}%` }} /></div>
-          {key !== "none" && <div className="summary-text">
+          {key !== "none" && uniqueVersions.length > 0 && <div className="summary-text">
             <p>Skill text</p>
             <dl>
               {reductions.map(({ metric, before, after, reduction }) => <div key={metric}>
