@@ -96,7 +96,7 @@ const Summary = () => {
       onCellClick={(skill, model) => setSelected({ skill, model, arm })} note="More models are being run."
     />
     </section>
-    <details className="summary-method">
+    <details className="summary-method" open>
       <summary>How to read this report</summary>
       <p>A run passes only if it meets every task check. Each run starts in a fresh session. A separate judge checks the output and may use the same model.</p>
       <p>Select a table cell to compare runs. Open a skill page to see the text changes and full reports.</p>
