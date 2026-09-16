@@ -24,7 +24,7 @@ const TaskRows = ({ task, runs, initiallyOpen }: { task: Task; runs: Run[]; init
       onClick={toggle} onKeyDown={event => activateRow(event, toggle)}>
       <th scope="row"><span className="panel-row-label"><Chevron />{task.id}</span></th>
       <td className="muted">{task.kind === "quiz" ? "Quiz" : "Goal"}</td>
-      <td className={`panel-status rate-${rateBucket(rate)}`}><span>{passed}/{runs.length} · {rate}%</span></td>
+      <td className={`panel-status ${runs.length ? `rate-${rateBucket(rate)}` : "muted"}`}><span>{runs.length ? `${passed}/${runs.length} · ${rate}%` : "Not run yet"}</span></td>
     </tr>
     {open && [...runs].sort((a, b) => (a.created ?? "").localeCompare(b.created ?? "") || a.run.localeCompare(b.run)).map((run, i) => {
       const earlier = run.rubric !== null && task.rubric !== null && run.rubric !== task.rubric;
@@ -67,10 +67,11 @@ const TaskRows = ({ task, runs, initiallyOpen }: { task: Task; runs: Run[]; init
   </>;
 };
 
-export const RunPanel = ({ title, subline, groups, footer, onClose }: {
+export const RunPanel = ({ title, subline, groups, controls, footer, onClose }: {
   title: string;
   subline: string;
   groups: { task: Task; runs: Run[]; model?: string; heading?: string }[];
+  controls?: ReactNode;
   footer?: ReactNode;
   onClose: () => void;
 }) => {
@@ -117,9 +118,11 @@ export const RunPanel = ({ title, subline, groups, footer, onClose }: {
       aria-describedby={sublineId} tabIndex={-1}>
       <header className="run-panel-header">
         <div className="panel-title"><h2 id={titleId}>{title}</h2><p id={sublineId} className="muted small">{armLabel}</p></div>
-        <p className="panel-header-status">{passed} of {allRuns.length} runs pass / <span className={`rate-${rateBucket(rate)}`}>{rate}%</span></p>
+        <p className="panel-header-status">{allRuns.length ? <>{passed} of {allRuns.length} runs pass / <span className={`rate-${rateBucket(rate)}`}>{rate}%</span></> : "Not run yet"}</p>
         <button className="panel-close" type="button" aria-label="Close panel" onClick={onClose}>×</button>
       </header>
+      {controls && <div className="panel-controls">{controls}</div>}
+      {allRuns.length === 0 && <p className="panel-empty muted">No runs are available for this selection.</p>}
       <div className="table-card scroll panel-table-card">
         <table className="table panel-table">
           <thead><tr><th scope="col">Task</th><th scope="col">Kind</th><th scope="col">Status</th></tr></thead>
