@@ -74,7 +74,7 @@ const EntryResults = ({ entry }: {
         groups={(selected.arm === "total" ? ARMS : [selected.arm]).map(arm => ({ task: selectedTask, model: arm,
           heading: selected.arm === "total" ? ARM_LABELS[arm] : undefined,
           runs: comparison.runs[ARM_COLUMNS[arm]].filter(run => run.task === selectedTask.id) }))}
-        onClose={() => setSelected(null)} footer={<Link to={`/task/${selectedTask.id}`}>Open the task page</Link>} />}
+        onClose={() => setSelected(null)} footer={<Link className="panel-action" to={`/task/${selectedTask.id}`}>Open the task page →</Link>} />}
     </section>
     <section aria-label="Tokens, time and cost">
       <h2>Tokens, time and cost</h2>
@@ -149,7 +149,7 @@ const Skill = () => {
       <Link className="back" to="/">All skills</Link>
       <div className="section-heading">
         <h1>{name}</h1>
-        <a className="small" href={`https://ethskills.com/${name}/SKILL.md`}>upstream ↗</a>
+        <a target="_blank" rel="noopener noreferrer" className="small" href={`https://ethskills.com/${name}/SKILL.md`}>upstream ↗</a>
       </div>
     </header>
     {entries.map(entry => <EntryResults key={`${entry.skill}/${entry.model}`} entry={entry} />)}

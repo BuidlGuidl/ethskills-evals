@@ -17,6 +17,15 @@ export const renderMarkdown = (source: string, base: string) => {
     if (!/^[a-z][a-z0-9+.-]*:/i.test(href) && !href.startsWith("#") && !href.startsWith("/")) {
       anchor.setAttribute("href", new URL(href, base).href);
     }
+
+    // Include relative report links after resolving them to their source website.
+    try {
+      const url = new URL(anchor.getAttribute("href") ?? "", window.location.href);
+      if ((url.protocol === "https:" || url.protocol === "http:") && url.origin !== window.location.origin) {
+        anchor.setAttribute("target", "_blank");
+        anchor.setAttribute("rel", "noopener noreferrer");
+      }
+    } catch { /* Leave malformed links unchanged. */ }
   }
 
   return doc.body.innerHTML;

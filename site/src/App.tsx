@@ -28,9 +28,10 @@ const App = () => {
       <nav className="wrap bar" aria-label="Main navigation">
         <Link className="brand" to="/">ethskills <span>evals</span>
         </Link>
-        <NavLink to="/tasks">tasks</NavLink>
-        <a href={`https://github.com/${index.generated.repo}`}>repo ↗</a>
-        <span className="build-meta">{index.generated.commit ? <a href={`https://github.com/${index.generated.repo}/commit/${index.generated.commit}`}>{index.generated.commit.slice(0, 7)}</a> : "unknown commit"}<span> · </span>
+        <NavLink to="/" end>Overview</NavLink>
+        <NavLink to="/tasks">Tasks</NavLink>
+        <a target="_blank" rel="noopener noreferrer" href={`https://github.com/${index.generated.repo}`}>repo ↗</a>
+        <span className="build-meta">{index.generated.commit ? <a target="_blank" rel="noopener noreferrer" href={`https://github.com/${index.generated.repo}/commit/${index.generated.commit}`}>{index.generated.commit.slice(0, 7)}</a> : "unknown commit"}<span> · </span>
           <time dateTime={index.generated.at}>{index.generated.at.slice(0, 10)}</time>
         </span>
       </nav>
@@ -50,7 +51,7 @@ const App = () => {
     </main>
     <footer className="wrap site-footer">
       <span>ethskills evals</span>
-      <a href={`https://github.com/${index.generated.repo}#readme`}>Run an ethskills benchmark ↗</a>
+      <a target="_blank" rel="noopener noreferrer" href={`https://github.com/${index.generated.repo}#readme`}>Run an ethskills benchmark ↗</a>
     </footer>
   </>;
 };
