@@ -28,7 +28,7 @@ const opencodeEfforts = (model: string, flag: string): string[] => {
   }
 
   if (efforts.length === 0) {
-    throw new Error(`${flag}: ${model} takes no reasoning effort, so no effort can be recorded for it`);
+    throw new Error(`${flag}: ${model} lists no reasoning efforts in the catalog, so opencode would send none whatever --variant says, and the record cannot name one`);
   }
 
   return efforts;

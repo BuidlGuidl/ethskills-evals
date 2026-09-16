@@ -89,6 +89,9 @@ export type ExecutorRecord = {
   // --effort or the operator's top-level `model_reasoning_effort =`. null only on records
   // made before #118.
   reasoning_effort?: string | null;
+  // opencode only: the pinned models catalog the run's efforts and prices came from
+  // (lib/opencode-home.ts), so a re-pin partway through a benchmark shows in the record.
+  models_catalog?: string;
   started: string;
   finished: string | null;
   exit: number | null;

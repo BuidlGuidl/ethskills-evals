@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -55,24 +56,29 @@ export const MANAGED_OPENCODE_DIRS = process.platform === "darwin"
   ? ["/Library/Application Support/opencode", "/etc/opencode"]
   : process.platform === "win32" ? [path.join(process.env.ProgramData ?? "C:\\ProgramData", "opencode")] : ["/etc/opencode"];
 
+// A managed Mac can also carry opencode settings as a preferences plist, which opencode reads
+// ahead of everything else; any file named for opencode in there counts.
+export const MANAGED_PREFERENCES_DIR = process.platform === "darwin" ? "/Library/Managed Preferences" : null;
+
 // What opencode loads from a config dir. ~/.opencode also holds opencode's own npm install
-// for its plugins (package.json, node_modules/, bin/), which is not configuration.
+// for its plugins (package.json, node_modules/, bin/), which is not configuration. AGENTS.md
+// is read from the XDG config dir only, and is listed so the harness's own config dir is
+// checked for it too.
 const CONFIG_ENTRIES = new Set([
-  "opencode.json", "opencode.jsonc", "config.json",
+  "opencode.json", "opencode.jsonc", "config.json", "AGENTS.md",
   "agent", "agents", "command", "commands", "mode", "modes",
   "plugin", "plugins", "skill", "skills", "tool", "tools", "themes",
 ]);
 
-export const operatorConfigFound = (operatorDir = operatorOpencodeDir(), managedDirs = MANAGED_OPENCODE_DIRS): string[] => {
-  const found: string[] = [];
+const configEntriesIn = (dir: string) =>
+  existsSync(dir) ? readdirSync(dir).filter(entry => CONFIG_ENTRIES.has(entry)).map(entry => path.join(dir, entry)) : [];
 
-  if (existsSync(operatorDir)) {
-    for (const entry of readdirSync(operatorDir)) {
-      if (CONFIG_ENTRIES.has(entry)) {
-        found.push(path.join(operatorDir, entry));
-      }
-    }
-  }
+export const operatorConfigFound = (
+  operatorDir = operatorOpencodeDir(),
+  managedDirs = MANAGED_OPENCODE_DIRS,
+  managedPreferences = MANAGED_PREFERENCES_DIR,
+): string[] => {
+  const found = configEntriesIn(operatorDir);
 
   for (const managed of managedDirs) {
     if (existsSync(managed)) {
@@ -80,8 +86,22 @@ export const operatorConfigFound = (operatorDir = operatorOpencodeDir(), managed
     }
   }
 
+  if (managedPreferences !== null && existsSync(managedPreferences)) {
+    for (const entry of readdirSync(managedPreferences)) {
+      if (entry.toLowerCase().includes("opencode")) {
+        found.push(path.join(managedPreferences, entry));
+      }
+    }
+  }
+
   return found;
 };
+
+// The harness's shared config dir is the one place every run reads that a run can also
+// write to — an executor that puts an AGENTS.md or a skills/ there hands it to every run
+// after it. Anything opencode would load from it is a refusal, same as the operator's dir;
+// opencode's own plugin install (package.json, node_modules/) is expected there.
+export const harnessConfigFound = (home = harnessOpencodeHome()) => configEntriesIn(path.join(home, "config", "opencode"));
 
 export const harnessOpencodeHome = () => path.resolve(process.env.EVAL_OPENCODE_HOME || path.join(HARNESS_ROOT, ".opencode-home"));
 
@@ -94,6 +114,55 @@ export const opencodeRunHome = (runDir: string) => {
 };
 
 const authPath = (runDir: string) => path.join(opencodeRunHome(runDir), "data", "opencode", "auth.json");
+// Beside the credential: the pid of the run-executor that wrote it, so a later run can tell a
+// live run's key from one a killed run-executor never got to delete.
+const ownerPath = (runDir: string) => path.join(opencodeRunHome(runDir), "owner.pid");
+
+const processAlive = (pid: number) => {
+  try {
+    process.kill(pid, 0);
+
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+};
+
+// forgetOpencodeCredential runs when the child exits, which a SIGKILL of run-executor itself
+// skips; the key would then sit under .opencode-home/runs/ until someone noticed. Every run
+// start sweeps the runs of every earlier run-executor that is no longer alive.
+export const forgetStaleCredentials = (home = harnessOpencodeHome()): string[] => {
+  const runs = path.join(home, "runs");
+  const removed: string[] = [];
+
+  if (!existsSync(runs)) {
+    return removed;
+  }
+
+  for (const task of readdirSync(runs)) {
+    const taskDir = path.join(runs, task);
+
+    for (const run of existsSync(taskDir) ? readdirSync(taskDir) : []) {
+      const runHome = path.join(taskDir, run);
+      const auth = path.join(runHome, "data", "opencode", "auth.json");
+
+      if (!existsSync(auth)) {
+        continue;
+      }
+
+      const owner = existsSync(path.join(runHome, "owner.pid")) ? Number(readFileSync(path.join(runHome, "owner.pid"), "utf8")) : NaN;
+
+      if (Number.isFinite(owner) && processAlive(owner)) {
+        continue;
+      }
+
+      rmSync(auth, { force: true });
+      removed.push(auth);
+    }
+  }
+
+  return removed;
+};
 
 // Written under a unique name and renamed into place, as codex-home does: two runs may
 // overlap, and a half-written file is worse than none.
@@ -149,12 +218,17 @@ export type Catalog = Record<string, { env?: string[]; models?: Record<string, C
 
 export const loadCatalog = (file: string): Catalog => JSON.parse(readFileSync(file, "utf8")) as Catalog;
 
+// What executor.yaml records about the catalog a run read its efforts and prices from: a
+// re-pin partway through a benchmark would otherwise be invisible in the record.
+export const catalogSha = (file: string) => createHash("sha256").update(readFileSync(file)).digest("hex").slice(0, 12);
+
 // The efforts `--variant` can name for a model, read from the same catalog opencode reads
-// them from: an `effort` entry under reasoning_options lists them; a reasoning model with
-// no such entry gets opencode's own default set for an OpenRouter model (low, medium,
-// high — provider/transform.ts); a model without reasoning takes none, and cannot be run,
-// because the record has to name an effort that was actually sent. null when the catalog
-// does not know the model at all.
+// them from: the `effort` entry under reasoning_options, and nothing else. A model without
+// one — no reasoning, an empty list, a toggle-only entry — takes no effort on OpenRouter
+// (opencode's own fallback covers openai/ ids, which the catalog lists anyway, and names
+// none for qwen, deepseek, minimax, kimi or glm), and cannot be run, because the record has
+// to name an effort that was actually sent. That is 127 of 247 OpenRouter reasoning models
+// on the 2026-09-16 catalog. null when the catalog does not know the model at all.
 export const catalogEfforts = (catalog: Catalog, model: string): string[] | null => {
   const slash = model.indexOf("/");
 
@@ -168,13 +242,7 @@ export const catalogEfforts = (catalog: Catalog, model: string): string[] | null
     return null;
   }
 
-  const listed = (entry.reasoning_options ?? []).find(option => option.type === "effort")?.values;
-
-  if (listed !== undefined) {
-    return listed;
-  }
-
-  return entry.reasoning === true ? ["low", "medium", "high"] : [];
+  return (entry.reasoning_options ?? []).find(option => option.type === "effort")?.values ?? [];
 };
 
 // Every environment variable that would enable a provider other than OpenRouter: the
@@ -236,6 +304,17 @@ export const opencodeEnv = ({ runDir, workspacePath, model }: OpencodeRun): Node
     );
   }
 
+  const written = harnessConfigFound(home);
+
+  if (written.length > 0) {
+    throw new Error(
+      `the harness's shared opencode config dir holds configuration a run would load: ${written.join(", ")}. `
+        + "Nothing of the harness's goes there, so an earlier run wrote it; look at what it did, then delete it.",
+    );
+  }
+
+  forgetStaleCredentials(home);
+
   const key = process.env.OPENROUTER_API_KEY;
 
   if (!key) {
@@ -250,6 +329,7 @@ export const opencodeEnv = ({ runDir, workspacePath, model }: OpencodeRun): Node
   mkdirSync(path.dirname(authPath(runDir)), { recursive: true });
   mkdirSync(path.join(runHome, "state"), { recursive: true });
   replaceFile(authPath(runDir), `${JSON.stringify({ openrouter: { type: "api", key } }, null, 2)}\n`, 0o600);
+  replaceFile(ownerPath(runDir), `${process.pid}\n`);
 
   const dropped = new Set([...catalogProviderEnv(catalog), "OPENROUTER_API_KEY"]);
   const env: NodeJS.ProcessEnv = {};
