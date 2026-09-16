@@ -232,7 +232,7 @@ yarn run-stats --tasks <id>,<id> [--since 2026-08-27] [--variant no_skill] [--sk
 It reads the `## run stats` footer `run-executor` writes into each committed `transcript.md`,
 falling back to the raw `## result` block older transcripts carry instead — the same result event
 under different labels, so those runs are derivable too — and to `result.yaml`'s `usage` block for
-what neither holds, which on pre-`--json` codex runs is the token total. It prints per-task medians per executor and variant with
+what neither holds, which on pre-`--json` codex runs is the token total. Codex runs made before `exec --json` are grouped apart from the rest, as `codex (pre-json tokens)`: their `total_tokens` is the old `tokens used` line, a different unit from every other total in the table. It prints per-task medians per executor and variant with
 the cost range beside them and the median `total_tokens`, and says `(n with no stats)` for runs
 that carry none of the three — whose cost and duration this repo simply does not have.
 
@@ -284,7 +284,7 @@ Every report ends with this table. Answer the last row honestly: sometimes the e
 
 ## What gets committed
 
-Committed: task specs, vendored skills under test, workspace templates under `templates/`, and per run `result.yaml`, `baseline.sha`, `executor.yaml`, `transcript.md`, `run.diff`, plus mistake records and reports. Gitignored: the raw executor capture beside `transcript.md` (`transcript.jsonl`/`transcript.log`), `executor.err`, `output/`, and `workspace.path` — an absolute path on one machine, pointing at a workspace `verify` has already deleted, so it is stale for every reader but the one who made it.
+Committed: task specs, vendored skills under test, workspace templates under `templates/`, and per run `result.yaml`, `baseline.sha`, `executor.yaml`, `transcript.md`, `run.diff`, plus mistake records and reports. Gitignored: the raw executor capture beside `transcript.md` (`transcript.jsonl`, and `transcript.log` on codex runs made before `exec --json`), `executor.err`, `output/`, and `workspace.path` — an absolute path on one machine, pointing at a workspace `verify` has already deleted, so it is stale for every reader but the one who made it.
 
 This line said the opposite until 2026-08-20 — transcripts gitignored, `output/` committed — while `.gitignore` and all 210 committed runs did the reverse. Follow `.gitignore`; the transcript is what a reviewer re-derives a report's claims from, so it is the record that has to survive.
 

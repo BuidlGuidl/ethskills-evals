@@ -1,5 +1,5 @@
 import { PRICES_CHECKED, PRICES_SOURCE } from "./prices.js";
-import { claudeTokens, codexRunTokens, jsonEvents } from "./usage.js";
+import { claudeTokens, jsonEvents } from "./usage.js";
 import type { Executor, RunUsage } from "./types.js";
 
 const MAX_TOOL_INPUT_CHARS = 200;
@@ -11,9 +11,11 @@ type TranscriptHeader = {
   model: string | null;
   exit: number;
   workspacePath: string;
-  // The harness's usage record. codex's footer needs it for duration and derived cost;
-  // claude's footer comes from its own result event.
-  usage?: RunUsage;
+  // The harness's usage record, which is where codex's footer gets its duration and its
+  // derived cost — codex reports neither. null for a run with no usage to report: an
+  // interrupted one, whose partial tokens beside a whole session's work would read as a
+  // cheap run rather than a dead one. claude's footer comes from its own result event.
+  usage: RunUsage | null;
 };
 
 const truncate = (value: string, limit: number) => {
@@ -57,6 +59,37 @@ const resultText = (content: unknown): string => {
   }
 
   return "";
+};
+
+type FooterStats = {
+  turns: number | null;
+  duration_s: number | null;
+  cost_usd: number | null;
+  // codex only: what kind of dollars those are. A claude cost is claude's own, and its
+  // absence from the footer is what tells the parser so.
+  costBasis: string | null;
+  inputTotal: number | null;
+  output: number | null;
+  cacheCreation: number | null;
+  cacheRead: number | null;
+};
+
+// One footer for both stacks, because parseFooter in lib/usage.ts reads exactly these lines
+// back out of the committed transcript: two renderers assembling it by hand drifted apart
+// once already. "?" is a field the run did not report, and the parser reads each side of a
+// pair on its own, so one "?" never costs the number beside it.
+const runStatsSection = (stats: FooterStats) => {
+  const show = (value: number | null) => (value === null ? "?" : String(value));
+
+  return [
+    "## run stats",
+    `- turns: ${show(stats.turns)}`,
+    `- duration: ${show(stats.duration_s)}s`,
+    `- cost: $${show(stats.cost_usd)}`,
+    ...(stats.costBasis === null ? [] : [`- cost basis: ${stats.costBasis}`]),
+    `- tokens in/out: ${show(stats.inputTotal)}/${show(stats.output)}`,
+    `- of which cache write/read: ${show(stats.cacheCreation)}/${show(stats.cacheRead)}`,
+  ].join("\n");
 };
 
 // claude -p --output-format stream-json emits one JSON event per line. The rendered
@@ -115,16 +148,19 @@ const renderClaude = (raw: string, stderr: string) => {
       // Input is the three-way sum, not the `input_tokens` field: under prompt caching that
       // field is the uncached remainder and reads as a run that was handed nothing.
       const tokens = claudeTokens((event.usage ?? {}) as Record<string, unknown>);
-      const show = (value: number | null) => (value === null ? "?" : String(value));
+      const number = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : null);
+      const durationMs = number(event.duration_ms);
 
-      sections.push([
-        "## run stats",
-        `- turns: ${String(event.num_turns ?? "?")}`,
-        `- duration: ${Math.round(Number(event.duration_ms ?? 0) / 1000)}s`,
-        `- cost: $${String(event.total_cost_usd ?? "?")}`,
-        `- tokens in/out: ${show(tokens.inputTotal)}/${show(tokens.output)}`,
-        `- of which cache write/read: ${show(tokens.cacheCreation)}/${show(tokens.cacheRead)}`,
-      ].join("\n"));
+      sections.push(runStatsSection({
+        turns: number(event.num_turns),
+        duration_s: durationMs === null ? null : Math.round(durationMs / 1000),
+        cost_usd: number(event.total_cost_usd),
+        costBasis: null,
+        inputTotal: tokens.inputTotal,
+        output: tokens.output,
+        cacheCreation: tokens.cacheCreation,
+        cacheRead: tokens.cacheRead,
+      }));
     }
   }
 
@@ -140,6 +176,11 @@ const renderClaude = (raw: string, stderr: string) => {
 };
 
 const renderCodexItem = (item: Record<string, unknown>): string | null => {
+  // A patch or a command that failed is the most informative line in a run, and status is the
+  // only place a file_change says so — without it a rejected patch reads exactly like an
+  // applied one.
+  const status = typeof item.status === "string" && item.status !== "completed" ? ` → ${item.status}` : "";
+
   if (item.type === "agent_message") {
     return typeof item.text === "string" && item.text.trim().length > 0 ? `## assistant\n${item.text.trim()}` : null;
   }
@@ -154,7 +195,7 @@ const renderCodexItem = (item: Record<string, unknown>): string | null => {
   if (item.type === "file_change") {
     const changes = Array.isArray(item.changes) ? (item.changes as Record<string, unknown>[]) : [];
 
-    return `## assistant\n${changes.map(change => `- **patch** ${String(change.kind)} \`${String(change.path)}\``).join("\n")}`;
+    return `## assistant\n${changes.map(change => `- **patch** ${String(change.kind)} \`${String(change.path)}\`${status}`).join("\n")}`;
   }
 
   // Dropped for the same reason claude's thinking blocks are: the report reads what the agent
@@ -163,14 +204,41 @@ const renderCodexItem = (item: Record<string, unknown>): string | null => {
     return null;
   }
 
-  return `## assistant\n- **${String(item.type)}** \`${toolSummary(item)}\``;
+  return `## assistant\n- **${String(item.type)}** \`${toolSummary(item)}\`${status}`;
+};
+
+// One line per event for the operator's terminal. Under --json codex's session moves to
+// stdout, which the harness captures to a file, so without this a codex run is a blank
+// terminal for twenty minutes and a hung sandbox looks exactly like a working agent.
+export const codexProgress = (line: string): string | null => {
+  const { events } = jsonEvents(line);
+  const event = events[0];
+
+  if (event === undefined) {
+    return null;
+  }
+
+  if (event.type === "turn.completed") {
+    const usage = (event.usage ?? {}) as Record<string, unknown>;
+
+    return `· turn complete (${String(usage.input_tokens ?? "?")} in / ${String(usage.output_tokens ?? "?")} out)`;
+  }
+
+  if (event.type !== "item.completed" || !event.item || typeof event.item !== "object") {
+    return null;
+  }
+
+  const item = event.item as Record<string, unknown>;
+  const rendered = renderCodexItem(item);
+
+  return rendered === null ? null : `· ${truncate(rendered.replace(/^## assistant\n/, "").split("\n")[0], 120)}`;
 };
 
 // `codex exec --json` puts one event per line on stdout: every message, command and patch as
 // an item, and a turn.completed with that turn's usage. stderr is then diagnostics only, like
-// claude's. Rendered to the same sections claude gets, so transcript.md means the same thing
-// on both stacks, with the stats footer built from the harness's usage record — codex reports
-// no duration or price, so both come from there.
+// claude's. Rendered to the same sections claude gets — including the same truncation of
+// command output, so a codex transcript.md is neither more nor less complete than a claude
+// one, and the untruncated capture is the gitignored transcript.jsonl on both stacks.
 const renderCodex = (raw: string, stderr: string, header: TranscriptHeader) => {
   const sections: string[] = [];
   const { events, unparsed } = jsonEvents(raw);
@@ -192,24 +260,31 @@ const renderCodex = (raw: string, stderr: string, header: TranscriptHeader) => {
     }
   }
 
-  const tokens = codexRunTokens(raw);
+  const usage = header.usage;
 
-  if (tokens !== null) {
-    const show = (value: number | null) => (value === null ? "?" : String(value));
-    const cost = header.usage?.cost_usd ?? null;
-    const basis = cost === null
-      ? `none — no list price for ${header.model ?? "the cli default model"} in lib/prices.ts`
-      : `list price for ${header.model} as of ${PRICES_CHECKED} (${PRICES_SOURCE}); codex reports no price`;
+  // No usage, or a run that died before its first turn.completed: no footer, rather than one
+  // that reports a whole run's work as a handful of tokens.
+  if (usage !== null && usage.total_tokens !== null) {
+    const basis = usage.cost_usd !== null
+      ? `list price for ${header.model} as of ${PRICES_CHECKED} (${PRICES_SOURCE}); codex reports no price`
+      : header.model === null
+        ? "none — the run used codex's own default model, which the record cannot name, so no price could be looked up"
+        : `none — ${header.model} has no row in lib/prices.ts`;
 
-    sections.push([
-      "## run stats",
-      "- turns: ?",
-      `- duration: ${show(header.usage?.duration_s ?? null)}s`,
-      `- cost: $${show(cost)}`,
-      `- cost basis: ${basis}`,
-      `- tokens in/out: ${show(tokens.inputTotal)}/${show(tokens.output)}`,
-      `- of which cache write/read: ${show(tokens.cacheCreation)}/${show(tokens.cacheRead)}`,
-    ].join("\n"));
+    sections.push(runStatsSection({
+      // A codex turn is one user prompt, always 1 in exec; it is not the unit claude's
+      // num_turns counts, so the field stays unreported rather than lying with a 1.
+      turns: null,
+      duration_s: usage.duration_s,
+      cost_usd: usage.cost_usd,
+      costBasis: basis,
+      inputTotal: usage.input_tokens === null && usage.cache_creation_input_tokens === null && usage.cache_read_input_tokens === null
+        ? null
+        : (usage.input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0),
+      output: usage.output_tokens,
+      cacheCreation: usage.cache_creation_input_tokens,
+      cacheRead: usage.cache_read_input_tokens,
+    }));
   }
 
   // A codex that crashed before its first event, or one launched without --json, leaves

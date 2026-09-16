@@ -89,10 +89,14 @@ tokens used: 12345
 const command = (output: string, exitCode: number) =>
   JSON.stringify({ type: "item.completed", item: { type: "command_execution", command: "ls", aggregated_output: output, exit_code: exitCode } });
 
-const detectJsonl = (jsonl: string) => {
+const detectJsonl = (jsonl: string, stderr?: string) => {
   const runDir = mkdtempSync(path.join(tmpdir(), "eval-run-"));
 
   writeFileSync(path.join(runDir, "transcript.jsonl"), jsonl);
+
+  if (stderr !== undefined) {
+    writeFileSync(path.join(runDir, "executor.err"), stderr);
+  }
 
   try {
     return detectBrokenShell(runDir, "codex");
@@ -111,6 +115,18 @@ test("a dead sandbox is caught in codex's --json command output", () => {
 
 test("--json output after the first successful command is the run talking, not the harness", () => {
   assert.equal(detectJsonl(`${command("ok\n", 0)}\n${command(BWRAP_FAILURE, 1)}\n`), null);
+});
+
+// With an event stream beside it, executor.err is codex's diagnostics and nothing else, so a
+// sandbox signature there came from the run — a `cat` of this repo's own tests, say, which the
+// event stream would have bounded but a stderr scan cannot.
+test("a --json run's stderr is read for diagnostics only", () => {
+  assert.equal(detectJsonl(`${command("ok\n", 0)}\n`, BWRAP_FAILURE), null);
+
+  const found = detectJsonl(`${command("ok\n", 0)}\n`, SNAPSHOT_FAILURE);
+
+  assert.notEqual(found, null);
+  assert.match(found!.capturePath, /executor\.err$/);
 });
 
 // executor.err is gitignored, so a run dir that came from a clone has none. Missing capture

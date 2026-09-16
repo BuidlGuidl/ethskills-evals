@@ -7,8 +7,9 @@ import { finished } from "node:stream/promises";
 import yaml from "js-yaml";
 import { codexEnv, codexReasoningArgs, operatorCodexReasoningEffort, resolveCodexModel } from "../lib/codex-home.js";
 import { detectBrokenShell } from "../lib/executor-health.js";
+import { hasCodexPrice } from "../lib/prices.js";
 import { loadYamlFile, parseArgs, requireString } from "../lib/task.js";
-import { buildTranscript } from "../lib/transcript.js";
+import { buildTranscript, codexProgress } from "../lib/transcript.js";
 import { buildUsage } from "../lib/usage.js";
 import type { Executor, ExecutorRecord } from "../lib/types.js";
 import { readWorkspacePath } from "../lib/workspace.js";
@@ -140,6 +141,16 @@ const main = async () => {
   // none and codex's own default ran.
   const reasoningEffort = executor === "codex" ? operatorCodexReasoningEffort() : null;
   const env = executor === "codex" ? codexEnv() : process.env;
+
+  // Asked here, before the spawn, because runs are append-only: a model with no row in
+  // lib/prices.ts records cost_usd: null permanently, and finding that out afterwards means a
+  // whole run was spent to learn it. Not fatal — a run without a cost is still a run.
+  if (executor === "codex" && !hasCodexPrice(model)) {
+    console.warn(
+      `run-executor: no list price for ${model ?? "codex's own default model"} in lib/prices.ts, so this run will record `
+        + `cost_usd: null. Add its row from the pricing page first if the run needs a cost. Ctrl-C now; this run is about to start.`,
+    );
+  }
   const { file, args: commandArgs } = buildCommand(executor, model, reasoningEffort);
   const startedAt = Date.now();
   const record: ExecutorRecord = {
@@ -170,9 +181,33 @@ const main = async () => {
 
   child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");
+  // --json moves codex's session from stderr to stdout, which is captured to a file, so
+  // without an echo the operator watches a blank terminal for twenty minutes and cannot tell
+  // a wedged sandbox from a working agent. One line per event, on stderr, where codex's own
+  // session log used to appear.
+  let pending = "";
+  const progress = (chunk: string) => {
+    if (executor !== "codex") {
+      return;
+    }
+
+    const lines = (pending + chunk).split("\n");
+
+    pending = lines.pop() ?? "";
+
+    for (const line of lines) {
+      const summary = codexProgress(line);
+
+      if (summary !== null) {
+        process.stderr.write(`${summary}\n`);
+      }
+    }
+  };
+
   child.stdout.on("data", (chunk: string) => {
     chunks.push(chunk);
     outStream.write(chunk);
+    progress(chunk);
   });
   child.stderr.on("data", (chunk: string) => {
     errors.push(chunk);
@@ -218,9 +253,12 @@ const main = async () => {
   await Promise.all([finished(outStream), finished(errStream)]);
 
   // Measured before the transcript is written, because codex's stats footer is built from it.
+  // An interrupted run gets no footer, for the same reason its usage never reaches
+  // executor.yaml below: half a session's tokens against a whole session's work reads as a
+  // cheap run rather than a dead one, and run-stats reads the transcript first.
   const usage = buildUsage(executor, chunks.join(""), errors.join(""), Date.now() - startedAt, model);
   const transcript = buildTranscript(
-    { run: requireString(result.run, "run"), executor, model, exit, workspacePath, usage },
+    { run: requireString(result.run, "run"), executor, model, exit, workspacePath, usage: interrupted ? null : usage },
     chunks.join(""),
     errors.join(""),
   );
@@ -237,7 +275,10 @@ const main = async () => {
   // as a cheap run rather than a dead one.
   await writeRecord(recordPath, { ...record, finished: new Date().toISOString(), exit, usage });
 
-  if (executor === "codex" && usage.total_tokens !== null && usage.cost_usd === null) {
+  // Only a run that reported a token split and still has no cost: that is a missing price.
+  // A run with no split at all (a codex launched by hand without --json) has nothing to price,
+  // and telling its operator to add a pricing row would not have helped.
+  if (executor === "codex" && usage.input_tokens !== null && usage.cost_source === null) {
     console.warn(`run-executor: no list price for codex model ${model ?? "(cli default)"} in lib/prices.ts; cost_usd recorded as null`);
   }
 

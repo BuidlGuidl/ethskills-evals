@@ -12,8 +12,9 @@
 // sum per turn, not per request) and any non-standard service tier.
 //
 // The same table, arithmetic and six-decimal rounding as agents-arena-backend's
-// packages/backend/src/pricing.ts (rates read there 2026-09-08), so a codex run costs the same
-// in both repos. Two differences, both on rows that never meet: this table prices cache writes
+// packages/backend/src/pricing.ts, so a codex run costs the same in both repos. That table
+// read its rates on 2026-09-08; PRICES_CHECKED below is when they were last checked against
+// the pricing page from here, which is the date a transcript footer cites. Two differences, both on rows that never meet: this table prices cache writes
 // at their own rate where the page lists one (the backend folds them into fresh input), and it
 // carries the older gpt-5.x rows from the pricing page. Change a rate in both places.
 //
@@ -48,6 +49,11 @@ export const CODEX_PRICES: Record<string, TokenPrice> = {
   "gpt-5": { input: 1.25, cached_input: 0.125, cache_write: null, output: 10 },
   "gpt-5-mini": { input: 0.25, cached_input: 0.025, cache_write: null, output: 2 },
 };
+
+// Asked before a run rather than after it: runs are append-only, so a model missing from the
+// table cannot be priced later — the tokens it would have been priced from are the only record
+// and the cost field stays null for good.
+export const hasCodexPrice = (model: string | null) => model !== null && CODEX_PRICES[model] !== undefined;
 
 export type PricedTokens = {
   uncachedInput: number;
