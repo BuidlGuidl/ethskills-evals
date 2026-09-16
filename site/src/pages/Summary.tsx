@@ -58,14 +58,14 @@ const Summary = () => {
           <strong>{cell ? `${Math.round(100 * cell.passed / cell.total)}%` : "Not tested"}</strong>
           <span>{cell ? `${cell.passed} of ${cell.total} runs passed` : "No results"}</span>
           <div className="summary-bar" aria-hidden="true"><span style={{ width: `${cell ? 100 * cell.passed / cell.total : 0}%` }} /></div>
-          {key !== "none" && <div className={`summary-text summary-text-${key}`}>
+          {key !== "none" && <div className="summary-text">
             <p>Skill text</p>
             <dl>
               {reductions.map(({ metric, before, after, reduction }) => <div key={metric}>
                 <dt>{metric === "lines" ? "Lines" : "Tokens"}</dt>
-                <dd><strong>{thousands(key === "old" ? before : after)}</strong>
-                  {key === "new" && reduction !== null && <span className={`summary-reduction ${reduction > 0 ? "good" : reduction < 0 ? "bad" : "muted"}`}>
-                    {Math.abs(reduction)}% {reduction >= 0 ? "fewer" : "more"}
+                <dd><strong className={before === after ? "muted" : (key === "old" ? before < after : after < before) ? "good" : "bad"}>{thousands(key === "old" ? before : after)}</strong>
+                  {key === "new" && reduction !== null && <span className={`summary-reduction ${after < before ? "good" : after > before ? "bad" : "muted"}`}>
+                    {before === after ? "No change" : `${Math.abs(reduction)}% ${after < before ? "fewer" : "more"}`}
                   </span>}
                 </dd>
               </div>)}
