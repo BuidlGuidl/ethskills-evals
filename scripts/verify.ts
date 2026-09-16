@@ -11,7 +11,7 @@ import { detectBrokenShell } from "../lib/executor-health.js";
 import { judgeExpectations } from "../lib/judge.js";
 import { expectSha, inputSha, isRecord, loadTaskSpec, loadYamlFile, nullableString, optionalArg, parseArgs, requireString } from "../lib/task.js";
 import { parseUsageRecord } from "../lib/usage.js";
-import type { Executor, ExecutorRecord, ExpectStatus, JudgeSpec, ResultRecord, Variant } from "../lib/types.js";
+import type { Executor, ExecutorRecord, ExpectStatus, JudgeSpec, RecordedJudge, ResultRecord, Variant } from "../lib/types.js";
 import { pruneEmptyParent, readWorkspacePath } from "../lib/workspace.js";
 
 const ROOT = process.cwd();
@@ -24,19 +24,49 @@ const VERIFY_ARGS = new Set([
 // context. --judge-agent is required rather than defaulting to the run's executor:
 // the default was silent, and a batch graded by a forgotten flag looks exactly like a
 // batch graded on purpose. Say who grades, every time.
-const resolveJudge = (args: Record<string, string | boolean>): JudgeSpec => {
-  if (args["judge-agent"] === undefined) {
+// `source` is the judge that graded this run, passed on a regrade only: "hold the judge fixed"
+// is otherwise a sentence in AGENTS.md that nothing enforces, and a codex judge quietly picks
+// up today's config.toml instead of what graded the source. Omitted flags fall back to it, and
+// a flag that disagrees with it is refused rather than silently regrading on another stack.
+const resolveJudge = (args: Record<string, string | boolean>, source?: RecordedJudge): JudgeSpec => {
+  const asked = {
+    agent: optionalArg(args, "judge-agent"),
+    model: optionalArg(args, "judge-model"),
+    effort: optionalArg(args, "judge-effort"),
+  };
+
+  if (source !== undefined) {
+    const held: [string, string | null, string | null][] = [
+      ["--judge-agent", asked.agent, source.agent],
+      ["--judge-model", asked.model, source.model],
+      ["--judge-effort", asked.effort, source.reasoning_effort],
+    ];
+
+    for (const [flag, requested, graded] of held) {
+      if (requested !== null && graded !== null && requested !== graded) {
+        throw new Error(
+          `${flag} ${requested} disagrees with the judge that graded this run (${graded}). A regrade is a second `
+            + "reading of one run; changing the judge with the rubric tells you nothing about either. Omit the flag "
+            + "to re-read on the judge that graded it.",
+        );
+      }
+    }
+  }
+
+  const named = asked.agent ?? source?.agent ?? null;
+
+  if (named === null) {
     throw new Error("missing --judge-agent: name the agent doing the grading (claude or codex)");
   }
 
-  const agent = parseAgent(requireString(args["judge-agent"], "--judge-agent"));
+  const agent = parseAgent(named);
 
   // Resolved here rather than inside the runner so that result.yaml records the model and
   // effort that actually graded, and a missing one stops verify before the judge is paid for.
   return {
     agent,
-    model: resolveModel(agent, optionalArg(args, "judge-model"), "--judge-model"),
-    reasoning_effort: resolveEffort(agent, optionalArg(args, "judge-effort"), "--judge-effort"),
+    model: resolveModel(agent, asked.model ?? source?.model ?? null, "--judge-model"),
+    reasoning_effort: resolveEffort(agent, asked.effort ?? source?.reasoning_effort ?? null, "--judge-effort"),
   };
 };
 
@@ -90,7 +120,10 @@ const loadResultRecord = (resultPath: string): ResultRecord => {
     run: requireString(loaded.run, "run"),
     executor: parseExecutor(requireString(loaded.executor, "executor")),
     variant: parseVariant(requireString(loaded.variant, "variant")),
-    skill_version: nullableString(loaded.skill_version, "skill_version"),
+    // Strict on a missing key, unlike the nullable fields below: `skill_version: null` is what
+    // a no_skill run records, so a with_skill record that lost the key would otherwise read as
+    // skill-less and grade cleanly.
+    skill_version: loaded.skill_version === null ? null : requireString(loaded.skill_version, "skill_version"),
     input_sha: loaded.input_sha === undefined ? undefined : requireString(loaded.input_sha, "input_sha"),
     skill_content: nullableString(loaded.skill_content, "skill_content"),
     created: requireString(loaded.created, "created"),
@@ -102,6 +135,18 @@ const loadResultRecord = (resultPath: string): ResultRecord => {
     // a clean-looking grade.
     harness_failure: loaded.harness_failure === undefined ? undefined : requireString(loaded.harness_failure, "harness_failure"),
     usage: parseUsageRecord(loaded.usage),
+    // Read back so a regrade can hold the judge fixed: without this the stack that graded the
+    // source is in the record but invisible to the command re-reading it, and a codex judge
+    // silently falls back to today's config.toml. Older grades name no effort, and some no
+    // model, so neither can be demanded here.
+    judge: isRecord(loaded.judge)
+      ? {
+        agent: parseAgent(requireString(loaded.judge.agent, "judge.agent")),
+        model: nullableString(loaded.judge.model, "judge.model"),
+        reasoning_effort: nullableString(loaded.judge.reasoning_effort, "judge.reasoning_effort"),
+        self_judged: loaded.judge.self_judged === true,
+      }
+      : undefined,
     expect_sha: loaded.expect_sha === undefined ? undefined : requireString(loaded.expect_sha, "expect_sha"),
     expects: loaded.expects === undefined ? undefined : readExpects(loaded.expects),
     pass: loaded.pass === undefined ? undefined : Boolean(loaded.pass),
@@ -252,7 +297,9 @@ const main = async () => {
       : null;
 
     const result = loadResultRecord(resultPath);
-    const judgeSpec = resolveJudge(args);
+    // Only on a regrade: a first grading has no judge to hold to, and the flags are the whole
+    // statement of who is grading.
+    const judgeSpec = resolveJudge(args, regrade ? result.judge : undefined);
     const executorRecord = loadExecutorRecord(runDir, regrade);
 
     if (executorRecord !== null && executorRecord.executor !== result.executor) {

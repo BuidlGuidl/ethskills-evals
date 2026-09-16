@@ -73,6 +73,26 @@ test("--regrade refuses evidence git does not track, since no other clone could 
   assert.match(verify(["--run", runDir, "--judge-agent", "claude", "--judge-model", "claude-opus-5", "--judge-effort", "medium", "--regrade", "why"]), /not tracked by git/);
 });
 
+// "Hold the judge fixed" is the rule a regrade rests on: re-reading one run under a rewritten
+// rubric says something only while the grader is the same. The record now names the whole
+// stack, so the command can hold it rather than the operator remembering to.
+const GRADED_BY = { agent: "codex", model: "gpt-5.6-sol", reasoning_effort: "low", self_judged: true };
+
+test("a regrade reuses the judge that graded the run when the flags are left off", () => {
+  const runDir = fixtureRun({ ...UNGRADED, pass: false, judge: GRADED_BY }, true);
+  const output = verify(["--run", runDir, "--regrade", "why"]);
+
+  // Past the judge resolution and into the evidence guard: no --judge-* flag was needed.
+  assert.match(output, /not tracked by git/);
+});
+
+test("a regrade on a different judge is refused, not silently graded on the new one", () => {
+  const runDir = fixtureRun({ ...UNGRADED, pass: false, judge: GRADED_BY }, true);
+  const output = verify(["--run", runDir, "--judge-agent", "codex", "--judge-model", "gpt-5.4", "--regrade", "why"]);
+
+  assert.match(output, /--judge-model gpt-5\.4 disagrees with the judge that graded this run \(gpt-5\.6-sol\)/);
+});
+
 test("a judge with no stated effort is refused before the judge is called", () => {
   const runDir = fixtureRun({ ...UNGRADED, pass: false }, true);
   const output = verify(["--run", runDir, "--judge-agent", "claude", "--judge-model", "claude-opus-5", "--regrade", "why"]);

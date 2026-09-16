@@ -32,6 +32,16 @@ export type JudgeRecord = JudgeSpec & {
   self_judged: boolean;
 };
 
+// A judge as an existing record carries it. Grades written before the model and effort were
+// required name one or neither, so reading one back cannot demand what a new grade promises;
+// a fresh JudgeRecord satisfies this type, never the other way round.
+export type RecordedJudge = {
+  agent: Executor;
+  model: string | null;
+  reasoning_effort: string | null;
+  self_judged: boolean;
+};
+
 // What a run cost, so a benchmark can report more than pass counts. duration_s is the
 // harness's own wall clock and means the same thing on both stacks; everything else is
 // what the executor reported, hence the nulls. Both stacks give the same four-way token split
@@ -108,7 +118,9 @@ export type ResultRecord = {
   // reads as a clean result, which is the exact condition the refusal exists to expose.
   harness_failure?: string;
   usage?: RunUsage;
-  judge?: JudgeRecord;
+  // RecordedJudge, not JudgeRecord: a grade written before the model and effort were required
+  // names one or neither, and those records still have to be readable.
+  judge?: RecordedJudge;
   // Fingerprint of the expect list this grade was made against. Two runs of one task are
   // comparable only when it matches; an edit to any expect line changes it, which is what
   // makes a stale grade detectable instead of merely wrong.

@@ -18,7 +18,7 @@ const measured = (run: Run) => run.retracted === null;
 export const modelOf = (run: Run) => {
   const model = run.executor_model ?? `${run.executor ?? "unknown"} (model unrecorded)`;
 
-  return run.executor_reasoning_effort ? `${model} · ${run.executor_reasoning_effort}` : model;
+  return `${model} · ${run.executor_reasoning_effort ?? "effort unrecorded"}`;
 };
 
 // A regrade and the run it re-read are one run read twice, and one run can be read many

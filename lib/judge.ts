@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { codexEnv, codexReasoningArgs } from "./codex-home.js";
+import { CLAUDE_LAUNCH } from "./effort.js";
 import type { Executor, ExpectStatus, JudgeSpec } from "./types.js";
 
 export type JudgeResult =
@@ -72,7 +73,7 @@ type Spawned = { ok: true; output: string } | { ok: false; error: string };
 // limit (E2BIG), and `-p` with no positional prompt reads it from stdin.
 const runClaudeJudge = (prompt: string, judge: JudgeSpec): Spawned => {
   const args = [
-    "-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN", "claude", "-p",
+    ...CLAUDE_LAUNCH,
     "--model", judge.model,
     "--effort", judge.reasoning_effort,
     "--setting-sources", "project", "--strict-mcp-config",

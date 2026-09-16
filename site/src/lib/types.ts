@@ -13,7 +13,7 @@ export type Run = {
   created: string | null;
   pass: boolean | null;
   expects: Record<string, ExpectStatus> | null;
-  judge: { agent: string; model: string | null; reasoning_effort?: string | null; self_judged: boolean } | null;
+  judge: { agent: string | null; model: string | null; reasoning_effort: string | null; self_judged: boolean } | null;
   skill_version: string | null;
   skill_content: string | null;
   /** this record re-judges that run's stored evidence; it is a second reading, not a second run */

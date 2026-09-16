@@ -95,12 +95,11 @@ const Task = () => {
               <td className="mono small">{run.skill_content ? run.skill_content.slice(0, 8) : "—"}</td>
               <td className="small">
                 {modelOf(run)}
-                {run.executor_reasoning_effort === null && <span className="muted"> · effort unrecorded</span>}
                 {run.judge?.self_judged === true && (
                   <span
                     className="tag idle"
-                    title={`the judge was the same agent as the executor (${run.judge.model ?? run.judge.agent}${
-                      run.judge.reasoning_effort ? ` · ${run.judge.reasoning_effort}` : ""
+                    title={`the judge was the same agent as the executor (${run.judge.model ?? run.judge.agent ?? "model unrecorded"} · ${
+                      run.judge.reasoning_effort ?? "effort unrecorded"
                     })`}
                   >
                     self-judged
