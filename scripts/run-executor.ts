@@ -6,21 +6,21 @@ import process from "node:process";
 import { finished } from "node:stream/promises";
 import yaml from "js-yaml";
 import { codexEnv, codexReasoningArgs } from "../lib/codex-home.js";
+import { catalogSha, forgetOpencodeCredential, opencodeArgs, opencodeEnv, pinnedCatalogPath } from "../lib/opencode-home.js";
 import { CLAUDE_LAUNCH, resolveEffort, resolveModel } from "../lib/effort.js";
 import { detectBrokenShell } from "../lib/executor-health.js";
 import { hasCodexPrice } from "../lib/prices.js";
 import { loadYamlFile, optionalArg, parseArgs, requireString } from "../lib/task.js";
 import { buildTranscript, codexProgress } from "../lib/transcript.js";
 import { buildUsage } from "../lib/usage.js";
-import type { Executor, ExecutorRecord } from "../lib/types.js";
+import { EXECUTORS, type Executor, type ExecutorRecord } from "../lib/types.js";
 import { readWorkspacePath } from "../lib/workspace.js";
 
 const ROOT = process.cwd();
-const EXECUTORS = new Set<Executor>(["claude", "codex"]);
 const RUN_ARGS = new Set(["run", "model", "effort"]);
 
 const parseExecutor = (value: string): Executor => {
-  if (!EXECUTORS.has(value as Executor)) {
+  if (!EXECUTORS.includes(value as Executor)) {
     throw new Error(`unknown executor in result.yaml: ${value}`);
   }
 
@@ -32,9 +32,10 @@ const parseExecutor = (value: string): Executor => {
 // CODEX_HOME (lib/codex-home.ts) plus two load-bearing flags:
 // `sandbox_workspace_write.network_access=true` (workspace-write blocks network by
 // default, so without it every live-data task fails for the wrong reason) and
-// `--disable shell_snapshot` (see the block above the codex args). Both take the prompt
-// on stdin — TASK.md can outgrow the argv limit.
-const buildCommand = (executor: Executor, model: string, reasoningEffort: string) => {
+// `--disable shell_snapshot` (see the block above the codex args). opencode's isolation is
+// all environment, and its flags are explained beside them (lib/opencode-home.ts). All three
+// take the prompt on stdin — TASK.md can outgrow the argv limit.
+const buildCommand = (executor: Executor, model: string, reasoningEffort: string, workspacePath: string, run: string) => {
   if (executor === "claude") {
     const args = [...CLAUDE_LAUNCH];
 
@@ -49,6 +50,10 @@ const buildCommand = (executor: Executor, model: string, reasoningEffort: string
     );
 
     return { file: "env", args };
+  }
+
+  if (executor === "opencode") {
+    return { file: "opencode", args: opencodeArgs(model, reasoningEffort, workspacePath, run) };
   }
 
   // --disable shell_snapshot keeps the operator's interactive shell out of the run. codex
@@ -133,24 +138,26 @@ const main = async () => {
   // land on argv and in the record: a benchmark whose runs straddle a change of either has
   // nothing else to say so.
   const model = resolveModel(executor, requestedModel, "--model");
-  const reasoningEffort = resolveEffort(executor, requestedEffort, "--effort");
-  const env = executor === "codex" ? codexEnv() : process.env;
+  const reasoningEffort = resolveEffort(executor, requestedEffort, "--effort", model);
+  const run = requireString(result.run, "run");
+  const env = executor === "codex" ? codexEnv() : executor === "opencode" ? opencodeEnv({ runDir, workspacePath, model }) : process.env;
 
   // Asked here, before the spawn, because runs are append-only: a model with no row in
   // lib/prices.ts records cost_usd: null permanently, and finding that out afterwards means a
   // whole run was spent to learn it. Not fatal — a run without a cost is still a run.
   if (executor === "codex" && !hasCodexPrice(model)) {
     console.warn(
-      `run-executor: no list price for ${model ?? "codex's own default model"} in lib/prices.ts, so this run will record `
+      `run-executor: no list price for ${model} in lib/prices.ts, so this run will record `
         + `cost_usd: null. Add its row from the pricing page first if the run needs a cost. Ctrl-C now; this run is about to start.`,
     );
   }
-  const { file, args: commandArgs } = buildCommand(executor, model, reasoningEffort);
+  const { file, args: commandArgs } = buildCommand(executor, model, reasoningEffort, workspacePath, run);
   const startedAt = Date.now();
   const record: ExecutorRecord = {
     executor,
     model,
     reasoning_effort: reasoningEffort,
+    ...(executor === "opencode" ? { models_catalog: catalogSha(pinnedCatalogPath()) } : {}),
     started: new Date(startedAt).toISOString(),
     finished: null,
     exit: null,
@@ -241,6 +248,11 @@ const main = async () => {
     child.on("close", (code, signal) => resolve(code ?? (signal ? 143 : 1)));
   });
 
+  // The key was on disk for the run only; interrupted or not, it goes now.
+  if (executor === "opencode") {
+    forgetOpencodeCredential(runDir);
+  }
+
   // end() only queues the flush; process.exit below drops whatever is still buffered.
   outStream.end();
   errStream.end();
@@ -252,7 +264,7 @@ const main = async () => {
   // cheap run rather than a dead one, and run-stats reads the transcript first.
   const usage = buildUsage(executor, chunks.join(""), errors.join(""), Date.now() - startedAt, model);
   const transcript = buildTranscript(
-    { run: requireString(result.run, "run"), executor, model, reasoningEffort, exit, workspacePath, usage: interrupted ? null : usage },
+    { run, executor, model, reasoningEffort, exit, workspacePath, usage: interrupted ? null : usage },
     chunks.join(""),
     errors.join(""),
   );
@@ -274,6 +286,10 @@ const main = async () => {
   // and telling its operator to add a pricing row would not have helped.
   if (executor === "codex" && usage.input_tokens !== null && usage.cost_source === null) {
     console.warn(`run-executor: no list price for codex model ${model} in lib/prices.ts; cost_usd recorded as null`);
+  }
+
+  if (executor === "opencode" && usage.total_tokens !== null && usage.cost_usd === null) {
+    console.warn(`run-executor: opencode priced every step of ${model} at $0 (a free or subscription model reports no price); cost_usd recorded as null`);
   }
 
   // buildUsage always measures the clock, so duration_s is a number here; cost prints as

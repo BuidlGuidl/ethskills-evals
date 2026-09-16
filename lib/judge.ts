@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { codexEnv, codexReasoningArgs } from "./codex-home.js";
 import { CLAUDE_LAUNCH } from "./effort.js";
-import type { Executor, ExpectStatus, JudgeSpec } from "./types.js";
+import type { ExpectStatus, JudgeAgent, JudgeSpec } from "./types.js";
 
 export type JudgeResult =
   | { ok: true; expects: Record<string, ExpectStatus> }
@@ -151,7 +151,7 @@ const runCodexJudge = (prompt: string, judge: JudgeSpec): Spawned => {
   }
 };
 
-const JUDGE_RUNNERS: Record<Executor, (prompt: string, judge: JudgeSpec) => Spawned> = {
+const JUDGE_RUNNERS: Record<JudgeAgent, (prompt: string, judge: JudgeSpec) => Spawned> = {
   claude: runClaudeJudge,
   codex: runCodexJudge,
 };

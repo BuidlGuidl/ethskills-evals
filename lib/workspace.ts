@@ -9,7 +9,7 @@ import path from "node:path";
 // (snapshot and diff) derive their exclusions from this list, so adding an executor's bridge
 // dir here covers both; a dir listed in one path and missed in the other silently corrupts a
 // benchmark, which is how the skill first leaked into run.diff.
-export const SKILL_INSTALL_DIRS = [".agents", ".claude"];
+export const SKILL_INSTALL_DIRS = [".agents", ".claude", ".opencode"];
 
 // Generated/vendored dirs a scaffolded repo (e.g. create-eth) leaves behind. Evidence
 // captures source the run produced, not gigabytes of node_modules or build output. Missing
