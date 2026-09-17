@@ -1,11 +1,11 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { constants, existsSync, readFileSync } from "node:fs";
+import { constants, existsSync, readFileSync, realpathSync } from "node:fs";
 import { access, cp, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 import yaml from "js-yaml";
-import { readSkillContentId } from "../lib/skill.js";
+import { SKILL_VERSION_LENGTH, readSkillContentId } from "../lib/skill.js";
 import { inputSha, loadTaskSpec, optionalArg, parseArgs, parseBenchmark, requireString } from "../lib/task.js";
 import { EXECUTORS, type Executor, type ResultRecord, type Variant } from "../lib/types.js";
 import { WORKSPACE_MANIFEST, WORKSPACE_POINTER, copyTree, pruneEmptyParent, removeTree, seedWorkspaceRepo, workspaceRoot, SKILL_BRIDGE_DIRS } from "../lib/workspace.js";
@@ -63,13 +63,6 @@ const findGitRoot = (dir: string) => {
   return result.stdout.trim();
 };
 
-// The recorded length of a skill_version is fixed by slicing the full sha, not left to git:
-// `--short`, `--short=<n>` included, only sets a minimum and lengthens the abbreviation as the
-// clone's object count needs, so one commit would record as two versions across operators and a
-// `run-stats --skill-version` filter would silently drop the longer one. Records from before this
-// carry whatever `--short` gave at the time, 7 characters and up.
-const SKILL_VERSION_LENGTH = 8;
-
 const getSkillVersion = (sourceDir: string) => {
   const gitRoot = findGitRoot(sourceDir);
 
@@ -86,37 +79,67 @@ const getSkillVersion = (sourceDir: string) => {
 // which is how a benchmark measures an old text beside the new one on the same task set and
 // harness. Only what git holds for the skill dir is installed, so an uncommitted edit to it
 // cannot ride into an arm that claims to be a commit. skill_version is that commit, which is
-// what build-index already reads the text back from. git itself is always handed the full sha,
-// which a short one could be ambiguous against.
+// what build-index already reads the text back from.
+//
+// The ref is looked up in the repo the skill dir sits in, which is the repo getSkillVersion
+// reads HEAD from — not assumed to be the harness's, so a skill in a nested or sibling repo gets
+// one meaning of skill_version on both paths. The walk up is for a skill the checkout no longer
+// has but an old commit does.
+const locateSkill = (skillSource: string) => {
+  let existing = skillSource;
 
-const resolveSkillRef = (ref: string, skillPath: string) => {
-  const resolved = spawnSync("git", ["-C", ROOT, "rev-parse", "--verify", "--quiet", `${ref}^{commit}`], {
+  while (!existsSync(existing)) {
+    existing = path.dirname(existing);
+  }
+
+  const gitRoot = findGitRoot(existing);
+
+  if (!gitRoot) {
+    throw new Error(`--skill-ref needs the skill in a git repo, and ${skillSource} is in none`);
+  }
+
+  // Both sides through realpath: --show-toplevel is one, and a symlinked path would not sit under it.
+  const resolved = path.join(realpathSync(existing), path.relative(existing, skillSource));
+
+  return { gitRoot, skillPath: path.relative(realpathSync(gitRoot), resolved).split(path.sep).join("/") };
+};
+
+const resolveSkillRef = (ref: string, skillSource: string) => {
+  const { gitRoot, skillPath } = locateSkill(skillSource);
+  // No --quiet: a short ref that matches two commits fails here too, and git's candidates list is
+  // the only thing that tells it from a ref that matches none.
+  const resolved = spawnSync("git", ["-C", gitRoot, "rev-parse", "--verify", `${ref}^{commit}`], {
     encoding: "utf8",
     stdio: "pipe",
   });
 
   if (resolved.status !== 0) {
-    throw new Error(`--skill-ref ${ref} is not a commit in this repo`);
+    throw new Error(`--skill-ref ${ref} does not name one commit in ${gitRoot}\n${resolved.stderr.trim()}`);
   }
 
+  // From here on git is handed the full sha, which a short one could be ambiguous against.
   const full = resolved.stdout.trim();
   const short = full.slice(0, SKILL_VERSION_LENGTH);
-  const present = spawnSync("git", ["-C", ROOT, "cat-file", "-e", `${full}:${skillPath}/SKILL.md`], { stdio: "pipe" });
+  const present = spawnSync("git", ["-C", gitRoot, "cat-file", "-e", `${full}:${skillPath}/SKILL.md`], { stdio: "pipe" });
 
   if (present.status !== 0) {
-    throw new Error(`--skill-ref ${ref}: ${skillPath}/SKILL.md does not exist at ${short}`);
+    throw new Error(`--skill-ref ${ref}: ${skillPath}/SKILL.md does not exist at ${short} in ${gitRoot}`);
   }
 
-  return { full, short };
+  return { full, short, gitRoot, skillPath };
 };
 
-const extractSkillAt = async (sha: string, skillPath: string) => {
+type SkillRef = ReturnType<typeof resolveSkillRef>;
+
+const extractSkillAt = async ({ full, gitRoot, skillPath }: SkillRef) => {
   const dir = await mkdtemp(path.join(tmpdir(), "skill-eval-ref-"));
 
   try {
-    const archive = execFileSync("git", ["-C", ROOT, "archive", "--format=tar", sha, skillPath], { maxBuffer: 64 * 1024 * 1024 });
+    const archive = execFileSync("git", ["-C", gitRoot, "archive", "--format=tar", full, skillPath], { maxBuffer: 64 * 1024 * 1024 });
 
-    execFileSync("tar", ["-x", "-C", dir], { input: archive });
+    // `-f -` spelled out: with no -f, tar reads its build's default device ($TAPE, /dev/st0,
+    // bsdtar's /dev/sa0), which is stdin only where the distro made it so.
+    execFileSync("tar", ["-x", "-f", "-", "-C", dir], { input: archive });
   } catch (error) {
     // The caller only learns the dir once this returns, so a failed extraction cleans up here.
     await rm(dir, { recursive: true, force: true });
@@ -204,8 +227,7 @@ const main = async () => {
     }
 
     // Before anything is written, so a mistyped ref costs no run dir.
-    const skillPath = path.relative(ROOT, resolveRootPath(spec.skill)).split(path.sep).join("/");
-    const skillSha = skillRef === null ? null : resolveSkillRef(skillRef, skillPath);
+    const skillSha = skillRef === null ? null : resolveSkillRef(skillRef, resolveRootPath(spec.skill));
 
     // A retired spec's notes say why it was retired, and its stored grades were produced under
     // wording it no longer carries. Building a workspace for one would draw a fresh sample that
@@ -218,7 +240,8 @@ const main = async () => {
     // A --skill-ref arm carries its ref: an old and a new arm are the same variant, and without it
     // run 1 of each, set up in the same second, would share a run dir and a workspace — and two
     // tasks' runs sharing a parent (below) could put one skill text next door to the other.
-    const arm = skillSha === null ? variant.replaceAll("_", "-") : `${variant.replaceAll("_", "-")}-${skillSha.short}`;
+    const slug = variant.replaceAll("_", "-");
+    const arm = skillSha === null ? slug : `${slug}-${skillSha.short}`;
     const runId = `${timestamp}-${executor}-${arm}-${run}`;
     const runDir = path.join(ROOT, "artifacts", spec.id, runId);
     // Run id above task id, not below: workspaces now outlive setup, and grouping them by task
@@ -253,8 +276,9 @@ const main = async () => {
       let skillSource: string | null = null;
       let skillVersion: string | null = null;
 
-      if (variant === "with_skill" && skillSha !== null) {
-        const at = await extractSkillAt(skillSha.full, skillPath);
+      // A ref implies with_skill: it was refused on any other variant above.
+      if (skillSha !== null) {
+        const at = await extractSkillAt(skillSha);
 
         extracted = at.dir;
         skillSource = at.skillDir;

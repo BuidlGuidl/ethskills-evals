@@ -67,11 +67,28 @@ const parseVerdicts = (output: string, expectations: string[]): JudgeResult => {
 
 type Spawned = { ok: true; output: string } | { ok: false; error: string };
 
+// Both judges run in an empty dir of their own, never in the repo: a CLI discovers what its cwd
+// holds, and this repo's root holds `.claude/skills` and `.agents/skills` (a benchmark's arms and
+// run-id scheme), AGENTS.md, and every task's skill text under `skills/` — none of which a blind
+// grader may see, and any of which can change mid-benchmark without a record showing it. The
+// evidence is all in the prompt, so there is nothing in the repo the judge needs.
+const inJudgeDir = (run: (dir: string) => Spawned): Spawned => {
+  const dir = mkdtempSync(path.join(tmpdir(), "skill-eval-judge-"));
+
+  try {
+    return run(dir);
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+
 // `claude -p` prints the final message to stdout. Both auth env vars are unset so a
 // stray key can't silently swap the account the judge grades under. The prompt goes in
 // on stdin, not argv: repo-shaped runs assemble evidence far larger than the OS argv
 // limit (E2BIG), and `-p` with no positional prompt reads it from stdin.
-const runClaudeJudge = (prompt: string, judge: JudgeSpec): Spawned => {
+const runClaudeJudge = (prompt: string, judge: JudgeSpec): Spawned => inJudgeDir(dir => {
   const args = [
     ...CLAUDE_LAUNCH,
     "--model", judge.model,
@@ -80,6 +97,7 @@ const runClaudeJudge = (prompt: string, judge: JudgeSpec): Spawned => {
   ];
 
   const result = spawnSync("env", args, {
+    cwd: dir,
     input: prompt,
     encoding: "utf8",
     timeout: JUDGE_TIMEOUT_MS,
@@ -95,7 +113,7 @@ const runClaudeJudge = (prompt: string, judge: JudgeSpec): Spawned => {
   }
 
   return { ok: true, output: result.stdout };
-};
+});
 
 // `codex exec` interleaves session logging with the answer on stdout, so take the
 // final message from --output-last-message instead. read-only: the judge reads
@@ -108,8 +126,8 @@ const runClaudeJudge = (prompt: string, judge: JudgeSpec): Spawned => {
 // grader either — which is also why the model arrives resolved (verify does it, so
 // result.yaml names the model that graded). No network flag here on purpose: the judge
 // grades from the evidence in its prompt, so read-only's default deny is correct.
-const runCodexJudge = (prompt: string, judge: JudgeSpec): Spawned => {
-  const dir = mkdtempSync(path.join(tmpdir(), "skill-eval-judge-"));
+const runCodexJudge = (prompt: string, judge: JudgeSpec): Spawned => inJudgeDir(dir => {
+  // Written when codex exits, so the dir it starts in is still empty.
   const messagePath = path.join(dir, "last-message.txt");
   // The effort verify resolved rides along for the same reason the model does: the redirect
   // means codex reads none of the operator's config.toml, and a judge whose effort silently
@@ -126,30 +144,25 @@ const runCodexJudge = (prompt: string, judge: JudgeSpec): Spawned => {
     "-",
   ];
 
-  try {
-    const result = spawnSync("codex", args, {
-      input: prompt,
-      encoding: "utf8",
-      env: codexEnv(),
-      timeout: JUDGE_TIMEOUT_MS,
-      maxBuffer: MAX_OUTPUT_BYTES,
-    });
+  const result = spawnSync("codex", args, {
+    cwd: dir,
+    input: prompt,
+    encoding: "utf8",
+    env: codexEnv(),
+    timeout: JUDGE_TIMEOUT_MS,
+    maxBuffer: MAX_OUTPUT_BYTES,
+  });
 
-    if (result.error) {
-      return { ok: false, error: result.error.message };
-    }
-
-    if (result.status !== 0) {
-      return { ok: false, error: result.stderr.trim() || "judge exited non-zero" };
-    }
-
-    return { ok: true, output: readFileSync(messagePath, "utf8") };
-  } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : String(error) };
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
+  if (result.error) {
+    return { ok: false, error: result.error.message };
   }
-};
+
+  if (result.status !== 0) {
+    return { ok: false, error: result.stderr.trim() || "judge exited non-zero" };
+  }
+
+  return { ok: true, output: readFileSync(messagePath, "utf8") };
+});
 
 const JUDGE_RUNNERS: Record<JudgeAgent, (prompt: string, judge: JudgeSpec) => Spawned> = {
   claude: runClaudeJudge,

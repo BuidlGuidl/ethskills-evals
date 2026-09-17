@@ -5,7 +5,7 @@ import path from "node:path";
 import process from "node:process";
 import yaml from "js-yaml";
 import { orderReadings } from "../lib/readings.js";
-import { normalizeSkillText, skillContentId } from "../lib/skill.js";
+import { SKILL_VERSION_LENGTH, normalizeSkillText, skillContentId } from "../lib/skill.js";
 import { expectSha, inputSha, isRecord, loadTaskSpec, loadYamlFile, parseArgs, readBenchmark, requireString } from "../lib/task.js";
 
 // Builds the json the results site reads, regenerated from the repo in a single pass and
@@ -688,7 +688,7 @@ const main = async () => {
       versions.push({
         skill: name,
         id: currentId,
-        sha: !dirty && head !== null ? head.slice(0, 7) : "worktree",
+        sha: !dirty && head !== null ? head.slice(0, SKILL_VERSION_LENGTH) : "worktree",
         first: "",
         runs: 0,
         text: currentText,

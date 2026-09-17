@@ -13,12 +13,12 @@ The clean re-run from [#119](https://github.com/BuidlGuidl/ethskills-evals/issue
 | --- | --- |
 | Benchmark commit | `UNSET` |
 | Benchmark id | `major-refine-<benchmark commit>` |
-| Old skill ref | `2f0adb01` (the first version of every skill in this repo, "vendor all 19 ethskills skills @ 191dcc1"; gas was added earlier but its text there is the same) |
+| Old skill ref | `2f0adb01554aa3f4feb52a1b3f5797ab2499e933`, recorded as `2f0adb01` (the first version of every skill in this repo, "vendor all 19 ethskills skills @ 191dcc1"; gas was added earlier but its text there is the same) |
 | New skill ref | the benchmark commit |
 | Runs | 3 per arm per task, whatever the task's own `runs:` says |
 | Judge | `--judge-agent claude --judge-model claude-opus-5 --judge-effort medium`, on every stack, every run |
 
-**If the benchmark commit is still `UNSET`, stop.** It is set once #128 and #129 are merged, to the commit on `main` the benchmark measures, written as its first 8 characters (the length `setup` records), and that commit has to contain `setup --skill-ref`. Tell the human; do not pick a commit yourself, because every operator has to land on the same one.
+**If the benchmark commit is still `UNSET`, stop.** It is set once #128 and #129 are merged, to the commit on `main` the benchmark measures, and that commit has to contain `setup --skill-ref`. It is written here in full: `<benchmark commit>` below means its first 8 characters (the length `setup` records) everywhere except after `--skill-ref` and in the git checks, which take the full sha for the reason the old ref does. Tell the human; do not pick a commit yourself, because every operator has to land on the same one.
 
 ### Stacks
 
@@ -36,10 +36,10 @@ Always pass `--model` and `--effort`, codex included: its fallback to `~/.codex/
 | Arm | `setup` flags | Recorded `skill_version` |
 | --- | --- | --- |
 | none | `--variant no_skill` | `null` |
-| old | `--variant with_skill --skill-ref 2f0adb01` | `2f0adb01` |
+| old | `--variant with_skill --skill-ref 2f0adb01554aa3f4feb52a1b3f5797ab2499e933` | `2f0adb01` |
 | new | `--variant with_skill --skill-ref <benchmark commit>` | the benchmark commit |
 
-The new arm goes through `--skill-ref` too, not through the checkout, so a stray local edit under `skills/` cannot reach it. Old and new are both `with_skill`; `setup` puts the ref in their run ids (`…-with-skill-2f0adb01-1`) and records it as `skill_version`, 8 characters, which is what `yarn run-stats --skill-version` filters on. Do not force the trigger: the numbers are trigger-inclusive, as AGENTS.md defines them.
+The old ref is passed in full because 8 characters are only unique until some clone holds a second commit that starts with them, and `setup` refuses an ambiguous ref; what it records is the first 8 either way. The new arm goes through `--skill-ref` too, not through the checkout, so a stray local edit under `skills/` cannot reach it. Old and new are both `with_skill`; `setup` puts the ref in their run ids (`…-with-skill-2f0adb01-1`) and records it as `skill_version`, 8 characters, which is what `yarn run-stats --skill-version` filters on. Do not force the trigger: the numbers are trigger-inclusive, as AGENTS.md defines them.
 
 ## Before the first run
 
