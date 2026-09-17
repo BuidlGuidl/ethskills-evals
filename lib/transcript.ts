@@ -19,6 +19,20 @@ type TranscriptHeader = {
   usage: RunUsage | null;
 };
 
+// Everything below the heading is executor output, and executor output carries whatever the
+// tools it ran printed. A `tsc` banner left raw ANSI colour codes and a run of NUL bytes in
+// one transcript (#133); one NUL is enough for git to treat the file as binary, so `git diff`
+// showed nothing and plain `grep` skipped it. The transcript is the record every report is
+// re-derived from, so it has to be text: escape sequences go, then every control byte except
+// newline and tab. `\r` goes with them — a progress bar's carriage returns would otherwise
+// leave a line that renders as its last frame in one viewer and all of them in another.
+// CSI (colours, cursor moves), OSC (titles, hyperlinks), then every other escape: ESC, any
+// intermediates, one final byte — which is what `ESC(B` (charset reset) and `ESC=` are.
+const ESCAPE_SEQUENCE = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[ -/]*[0-~]/g;
+const CONTROL_BYTE = /[\x00-\x08\x0b-\x1f\x7f]/g;
+
+export const stripControlBytes = (value: string) => value.replace(ESCAPE_SEQUENCE, "").replace(CONTROL_BYTE, "");
+
 const truncate = (value: string, limit: number) => {
   const collapsed = value.trimEnd();
 
@@ -417,5 +431,5 @@ export const buildTranscript = (header: TranscriptHeader, stdout: string, stderr
       ? renderOpencode(stdout, stderr, header)
       : renderCodex(stdout, stderr, header);
 
-  return `${heading}\n\n${body}\n`;
+  return stripControlBytes(`${heading}\n\n${body}\n`);
 };
