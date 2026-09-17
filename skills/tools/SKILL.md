@@ -1,6 +1,6 @@
 ---
 name: tools
-description: Use when picking or installing packages, versions, or a scaffold for an Ethereum project (create-eth), asking whether a toolchain migration is needed for a capability (Hardhat vs Foundry for Solidity fuzz tests), wiring an AI agent to read transactions, balances, or contract data (Blockscout MCP, explorer API), or asking what to install for pay-per-call HTTP payments (x402). Not for choosing which standard to build on (`standards`) or looking up contract addresses (`addresses`).
+description: Use when picking or installing packages, versions, or a scaffold for an Ethereum project (create-eth), asking whether a toolchain migration is needed for a capability (Hardhat vs Foundry for Solidity fuzz tests), wiring an AI agent to read transactions, balances, or contract data (Blockscout MCP, explorer API), or asking what to install for pay-per-call HTTP payments (x402). Not for choosing which standard to build on (`standards`), looking up contract addresses (`addresses`), or working inside the scaffolded app once it exists (`frontend-playbook`).
 ---
 
 # Ethereum Development Tools
