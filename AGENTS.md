@@ -196,7 +196,7 @@ task: gas-cost-estimate-001
 run: 2026-07-06T093000Z-claude-with-skill-1
 executor: claude
 variant: with_skill
-skill_version: 191dcc1                # git short sha of the skill source; null for no_skill
+skill_version: 191dcc1a               # first 8 chars of the skill source's commit; null for no_skill; older runs carry --short, 7+
 input_sha: 4f2b9c1de803               # sha256 of the input this run was given; absent on pre-2026-08-28 runs
 created: 2026-07-06T09:30:00Z
 executor_model: claude-opus-5         # what actually ran; null only on runs made before it was required
