@@ -1,6 +1,6 @@
 ---
 name: qa
-description: Pre-ship audit checklist for Scaffold-ETH 2 dApps — wallet flow, wrong-network gating, external contract registration, Address/AddressInput components, DaisyUI theme and loading states, SE-2 branding cleanup, polling and RPC posture, mobile wallet deep-linking, Phantom. Use when finalizing an SE-2 build, ideally from a fresh reviewer context after the build is complete.
+description: Use when reviewing, auditing, or finalizing a Scaffold-ETH 2 frontend before it ships ("is this ready", "check my dApp", "QA this"), a pre-launch pass over wallet connect, wrong network, transaction buttons, address inputs, theme, branding, RPC, and mobile. Best from a fresh reviewer context after the build is complete. Not for building the UI (`frontend-ux`) or deploying it (`frontend-playbook`).
 ---
 
 # dApp QA — pre-ship audit for Scaffold-ETH 2

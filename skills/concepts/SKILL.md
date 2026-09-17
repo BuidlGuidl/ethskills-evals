@@ -1,6 +1,6 @@
 ---
 name: concepts
-description: The mental models for designing an onchain system — who sends every transaction and why they would, and what the design gives up on censorship resistance, forkability, privacy and security. Use when designing or building anything onchain, before you finish one (the NOTES, README or handoff a build ends with), and when explaining to your human how something onchain actually works.
+description: Use when designing or building anything onchain, especially a contract with a scheduled, periodic, or "automatic" action, an owner-only maintenance function, or a raffle or lottery that needs randomness, when writing the NOTES, README, or handoff a build ends with, and when explaining to your human why something onchain keeps working with nobody running it.
 ---
 
 # Ethereum Concepts

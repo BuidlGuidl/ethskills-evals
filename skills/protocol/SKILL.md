@@ -1,6 +1,6 @@
 ---
 name: protocol
-description: Verify current Ethereum protocol status and fork scope. Use when determining whether a feature is live, planned, scheduled, or under consideration; estimating when it may ship; or making a technical plan that depends on a future protocol change.
+description: Use when asked whether an EIP or Ethereum feature is live on mainnet, scheduled for a named fork, only considered, or just a proposal, when it will ship, or when a plan or dependency rests on a future protocol change. Not for comparing L2s (`l2s`) or standards already deployed (`standards`).
 ---
 
 # Ethereum Protocol Status

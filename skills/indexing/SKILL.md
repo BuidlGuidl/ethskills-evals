@@ -1,6 +1,6 @@
 ---
 name: indexing
-description: Read onchain history from an indexer instead of scanning blocks, and ship that read side to a named production home. Use when building activity feeds, leaderboards, analytics or any read of past onchain events, when designing contract events, or when deploying a subgraph or indexer.
+description: Use when building an activity feed, leaderboard, streak, dashboard, analytics, or any read of past onchain events, when a scan of eth_getLogs or archive reads is proposed for history, when deciding which events a contract emits, or when deploying a subgraph, Ponder, or other indexer to production.
 ---
 
 # Onchain Data and Indexing

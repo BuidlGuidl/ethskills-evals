@@ -1,6 +1,6 @@
 ---
 name: frontend-playbook
-description: Ship Scaffold-ETH 2 dApps from scaffold through fork integration and static production deployment. Use when starting an SE2-compatible Ethereum app, testing it against deployed chain state, or deploying and verifying an SE2 frontend on IPFS.
+description: Use when scaffolding a Scaffold-ETH 2 app with create-eth, running its frontend against a fork of a real chain (yarn fork, whale impersonation, frozen block.timestamp in a demo), or building, uploading, and verifying a static Next.js export on IPFS or ENS. Not for the product-completeness pass (`frontend-ux`), the pre-ship review (`qa`), or contract deployment (`orchestration`).
 ---
 
 # Frontend Playbook
