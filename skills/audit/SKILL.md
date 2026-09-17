@@ -1,6 +1,6 @@
 ---
 name: audit
-description: Use when asked to audit or security-review EVM smart contracts, find vulnerabilities, assess exploit impact, or produce a ranked audit report. For defensive implementation guidance while writing contracts, use the security skill instead.
+description: Use when asked to audit or security-review EVM smart contracts, find vulnerabilities, assess exploit impact, or produce a ranked audit report. Not for defensive guidance while writing contracts (`security`).
 ---
 
 # EVM Smart Contract Audit

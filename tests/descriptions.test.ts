@@ -37,11 +37,6 @@ const frontmatter = (name: string) => {
 // before any of them runs.
 const loadDescriptions = () => new Map(skillNames.map((name) => [name, frontmatter(name)]));
 
-// Every backticked token in a description that is also a skill name is a cross-reference.
-// `forge` in testing's description is a tool, not a skill, and is left alone by this rule.
-const references = (description: string) =>
-  [...description.matchAll(/`([a-z0-9-]+)`/g)].map((m) => m[1]).filter((token) => skillNames.includes(token));
-
 // Sentences end at a period followed by whitespace or the end of the string. A period inside a
 // token (`scaffold.config`, `block.timestamp`) is not a sentence boundary.
 const sentences = (description: string) => description.split(/\.(?=\s|$)/).map((s) => s.trim()).filter(Boolean);
@@ -60,13 +55,13 @@ const cedes = (description: string) =>
 const ONE_WAY: Record<string, string> = {
   "building-blocks->addresses": "addresses is a lookup; nothing in it reads as protocol integration",
   "building-blocks->l2s": "l2s picks a chain; it never names a DEX or lending market",
+  "concepts->ship": "ship scopes a build before it starts; nothing in it reads as how a contract runs unattended",
   "frontend-playbook->frontend-ux": "frontend-ux never mentions scaffolding, forks, or IPFS; nothing to hand back",
   "gas->l2s": "l2s owns non-cost chain choice and does not quote gas",
   "orchestration->frontend-ux": "frontend-ux never mentions launch, deploy, or a live network; nothing to hand back",
   "orchestration->qa": "qa's pre-ship checklist is UI-only and never claims deploy or launch order",
   "protocol->l2s": "l2s compares chains, never whether an EIP is live",
   "protocol->standards": "standards covers deployed ERCs; protocol asks about fork status",
-  "security->audit": "audit is the offensive review; it already sends implementation to security in prose",
   "testing->audit": "audit is the offensive review of source; it never claims running or designing tests",
   "tools->addresses": "addresses is a lookup; nothing in it reads as package choice",
 };
@@ -102,7 +97,12 @@ test("every cede is reciprocated or recorded as one-way", () => {
     for (const target of cedes(fm.description as string)) {
       // Reciprocated means the target cedes something back, not that it mentions the source
       // in passing — a mention with no cede leaves the coin flip in place.
-      const back = cedes(descriptions.get(target)!.description as string).includes(name);
+      const targetDescription = descriptions.get(target)?.description;
+
+      // An unknown target is reported by name in the test above; nothing to reciprocate here.
+      if (typeof targetDescription !== "string") continue;
+
+      const back = cedes(targetDescription).includes(name);
 
       if (!back && !(`${name}->${target}` in ONE_WAY)) {
         unrecorded.push(`${name} says "Not for … (\`${target}\`)" but ${target}'s description never cedes anything to \`${name}\``);
@@ -119,12 +119,16 @@ test("ONE_WAY lists only cedes that exist and are still one-way", () => {
   for (const key of Object.keys(ONE_WAY)) {
     const [name, target] = key.split("->");
     const fm = descriptions.get(name);
+    const targetDescription = descriptions.get(target)?.description;
 
     assert.ok(fm, `ONE_WAY names ${name}, which is not a skill`);
+    assert.equal(typeof targetDescription, "string", `ONE_WAY names ${target}, which is not a skill`);
     assert.ok(cedes(fm.description as string).includes(target), `ONE_WAY has ${key}, but ${name} no longer cedes to ${target}`);
+    // The same predicate as the reciprocity test: a cede back, not a mention. Otherwise the two
+    // tests can demand opposite edits for a target that merely names the source in passing.
     assert.ok(
-      !references(descriptions.get(target)!.description as string).includes(name),
-      `ONE_WAY has ${key}, but ${target} now names \`${name}\` — drop the entry`,
+      !cedes(targetDescription as string).includes(name),
+      `ONE_WAY has ${key}, but ${target} now cedes to \`${name}\` — drop the entry`,
     );
   }
 });
