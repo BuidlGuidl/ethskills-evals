@@ -11,14 +11,14 @@ The clean re-run from [#119](https://github.com/BuidlGuidl/ethskills-evals/issue
 
 | What | Value |
 | --- | --- |
-| Benchmark commit | `UNSET` |
-| Benchmark id | `major-refine-<benchmark commit>` |
+| Benchmark commit | `UNSET`, recorded as `UNSET` |
+| Benchmark id | `major-refine-<benchmark short>` |
 | Old skill ref | `2f0adb01554aa3f4feb52a1b3f5797ab2499e933`, recorded as `2f0adb01` (the first version of every skill in this repo, "vendor all 19 ethskills skills @ 191dcc1"; gas was added earlier but its text there is the same) |
 | New skill ref | the benchmark commit |
 | Runs | 3 per arm per task, whatever the task's own `runs:` says |
 | Judge | `--judge-agent claude --judge-model claude-opus-5 --judge-effort medium`, on every stack, every run |
 
-**If the benchmark commit is still `UNSET`, stop.** It is set once #128 and #129 are merged, to the commit on `main` the benchmark measures, and that commit has to contain `setup --skill-ref`. It is written here in full: `<benchmark commit>` below means its first 8 characters (the length `setup` records) everywhere except after `--skill-ref` and in the git checks, which take the full sha for the reason the old ref does. Tell the human; do not pick a commit yourself, because every operator has to land on the same one.
+**If the benchmark commit is still `UNSET`, stop.** It is set once #128 and #129 are merged, to the commit on `main` the benchmark measures, and that commit has to contain `setup --skill-ref`. Both forms are written into the row, the way the old ref's is: the full sha, then its first 8 characters (the length `setup` records). Below, `<benchmark sha>` is the full one, used after `--skill-ref` and in the git checks for the reason the old ref is passed in full, and `<benchmark short>` is the 8 characters, used everywhere a record or an id carries it. Copy each from the row; never cut the short one yourself, because one operator's slip splits the benchmark id. Tell the human; do not pick a commit yourself, because every operator has to land on the same one.
 
 ### Stacks
 
@@ -37,7 +37,7 @@ Always pass `--model` and `--effort`, codex included: its fallback to `~/.codex/
 | --- | --- | --- |
 | none | `--variant no_skill` | `null` |
 | old | `--variant with_skill --skill-ref 2f0adb01554aa3f4feb52a1b3f5797ab2499e933` | `2f0adb01` |
-| new | `--variant with_skill --skill-ref <benchmark commit>` | the benchmark commit |
+| new | `--variant with_skill --skill-ref <benchmark sha>` | `<benchmark short>` |
 
 The old ref is passed in full because 8 characters are only unique until some clone holds a second commit that starts with them, and `setup` refuses an ambiguous ref; what it records is the first 8 either way. The new arm goes through `--skill-ref` too, not through the checkout, so a stray local edit under `skills/` cannot reach it. Old and new are both `with_skill`; `setup` puts the ref in their run ids (`…-with-skill-2f0adb01-1`) and records it as `skill_version`, 8 characters, which is what `yarn run-stats --skill-version` filters on. Do not force the trigger: the numbers are trigger-inclusive, as AGENTS.md defines them.
 
@@ -49,8 +49,8 @@ Ask at most one question: the stack, if the human did not name one. Recommend th
 2. **The checkout measures the benchmark commit.** Tasks, templates and harness must be byte-identical to it, working tree included:
 
    ```bash
-   git merge-base --is-ancestor <benchmark commit> HEAD
-   git diff --quiet <benchmark commit> -- tasks templates lib scripts package.json yarn.lock tsconfig.json
+   git merge-base --is-ancestor <benchmark sha> HEAD
+   git diff --quiet <benchmark sha> -- tasks templates lib scripts package.json yarn.lock tsconfig.json
    extra=$(git ls-files --others --exclude-standard -- tasks templates lib scripts && git ls-files --others -- 'tasks/*.yaml') && test -z "$extra"
    ```
 
@@ -75,7 +75,7 @@ Run all of them. Do not draft, reword or add tasks, and do not touch an `expect:
 For each task, 3 runs of each of the three arms, 9 in all. Interleave the arms (run 1 of none, old, new, then run 2 of each, …) rather than doing one arm after another, so a model or routing change during the session lands on all three arms instead of on one. Each run is the AGENTS.md loop with the pinned values filled in:
 
 ```bash
-yarn setup --task tasks/<task>.yaml --run <n> --executor <executor> --benchmark major-refine-<benchmark commit> <arm flags>
+yarn setup --task tasks/<task>.yaml --run <n> --executor <executor> --benchmark major-refine-<benchmark short> <arm flags>
 yarn run-executor --run artifacts/<task>/<run-id> --model <model> --effort <effort>
 yarn verify --run artifacts/<task>/<run-id> --judge-agent claude --judge-model claude-opus-5 --judge-effort medium
 ```
@@ -86,5 +86,5 @@ yarn verify --run artifacts/<task>/<run-id> --judge-agent claude --judge-model c
 
 Commit what AGENTS.md "What gets committed" lists, file the mistake records, run `yarn build-index` and commit `site/derived.json` if it changed. Then:
 
-- **Report:** `reports/major-refine-<skill>-<slug>.md`. At the top: the benchmark id, the stack (executor, model, effort), the judge (claude-opus-5, medium), 3 runs per arm, the task list, and `self_judged: true` if this is the Opus stack. The headline per task is pass counts per arm, new vs old vs none (`3/3 · 1/3 · 0/3`); costs come from `yarn run-stats --tasks <ids> --benchmark major-refine-<benchmark commit>`, split per arm with `--variant no_skill`, `--skill-version 2f0adb01` and `--skill-version <benchmark commit>`. End with the AGENTS.md table, answering its skill questions for new vs old as well as for new vs none.
+- **Report:** `reports/major-refine-<skill>-<slug>.md`. At the top: the benchmark id, the stack (executor, model, effort), the judge (claude-opus-5, medium), 3 runs per arm, the task list, and `self_judged: true` if this is the Opus stack. The headline per task is pass counts per arm, new vs old vs none (`3/3 · 1/3 · 0/3`); costs come from `yarn run-stats --tasks <ids> --benchmark major-refine-<benchmark short>`, split per arm with `--variant no_skill`, `--skill-version 2f0adb01` and `--skill-version <benchmark short>`. End with the AGENTS.md table, answering its skill questions for new vs old as well as for new vs none.
 - **PR:** titled `eval: <skill> (<stack>)`, body naming the benchmark id and linking #119. Give the human the link so they can tick the row.
