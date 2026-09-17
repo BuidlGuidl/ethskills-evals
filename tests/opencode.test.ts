@@ -52,7 +52,7 @@ const header = (usage?: ReturnType<typeof buildUsage>, exit = 0) => ({
   reasoningEffort: "low",
   exit,
   workspacePath: "/tmp/ws",
-  usage,
+  usage: usage ?? null,
 });
 
 test("opencode usage sums every step, folds reasoning into output, and takes opencode's own price", () => {
