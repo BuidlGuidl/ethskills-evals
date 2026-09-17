@@ -1,5 +1,13 @@
 export type Variant = "no_skill" | "with_skill";
-export type Executor = "claude" | "codex";
+// The agent CLIs the harness can spawn to perform a run. opencode is the route to open
+// models: it takes any provider/model pair, and the harness drives it through OpenRouter
+// (lib/opencode-home.ts).
+export const EXECUTORS = ["claude", "codex", "opencode"] as const;
+export type Executor = (typeof EXECUTORS)[number];
+// Who can grade. opencode is not here yet: a judge needs a read-only permission set and a
+// final-message capture, neither of which has been exercised on it.
+export const JUDGE_AGENTS = ["claude", "codex"] as const;
+export type JudgeAgent = (typeof JUDGE_AGENTS)[number];
 // A retired task keeps its spec and its artifacts — the record of what it once graded stays
 // readable — but `setup` refuses to build a workspace for it, so a stale prior cannot quietly
 // re-enter a benchmark table. Anything that lists tasks should filter on this rather than on
@@ -20,7 +28,7 @@ export type TaskSpec = {
 export type ExpectStatus = "pass" | "fail";
 
 export type JudgeSpec = {
-  agent: Executor;
+  agent: JudgeAgent;
   model: string;
   reasoning_effort: string;
 };
@@ -36,7 +44,7 @@ export type JudgeRecord = JudgeSpec & {
 // required name one or neither, so reading one back cannot demand what a new grade promises;
 // a fresh JudgeRecord satisfies this type, never the other way round.
 export type RecordedJudge = {
-  agent: Executor;
+  agent: JudgeAgent;
   model: string | null;
   reasoning_effort: string | null;
   self_judged: boolean;
@@ -48,7 +56,10 @@ export type RecordedJudge = {
 // (codex through `exec --json`): input_tokens is the uncached remainder, the two cache fields
 // carry almost the whole run, and total_tokens is the sum of all four. claude also gives turns
 // and its own dollar cost; codex gives neither, so its cost_usd is derived from the split and a
-// list price (lib/prices.ts) and cost_source says which of the two a figure is.
+// list price (lib/prices.ts) and cost_source says which of the two a figure is. opencode
+// reports a cost of its own on every step, priced by opencode from models.dev's list, so it
+// records as `executor` like claude does — and, like claude's, it is a list-price figure, not
+// a bill: OpenRouter charges the routed provider's rate.
 //
 // Codex runs made before `--json` (before 2026-09-15) carry only total_tokens, taken from the
 // `tokens used` line — uncached input plus output, several times smaller than the same run's
@@ -74,9 +85,13 @@ export type RunUsage = {
 export type ExecutorRecord = {
   executor: Executor;
   model: string | null;
-  // Both executors, always passed on argv: --effort for claude, and for codex --effort or the
-  // operator's top-level `model_reasoning_effort =`. null only on records made before #118.
+  // Every executor, always passed on argv: --effort for claude and opencode, and for codex
+  // --effort or the operator's top-level `model_reasoning_effort =`. null only on records
+  // made before #118.
   reasoning_effort?: string | null;
+  // opencode only: the pinned models catalog the run's efforts and prices came from
+  // (lib/opencode-home.ts), so a re-pin partway through a benchmark shows in the record.
+  models_catalog?: string;
   started: string;
   finished: string | null;
   exit: number | null;

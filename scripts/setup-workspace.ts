@@ -6,11 +6,10 @@ import process from "node:process";
 import yaml from "js-yaml";
 import { readSkillContentId } from "../lib/skill.js";
 import { inputSha, loadTaskSpec, parseArgs, requireString } from "../lib/task.js";
-import type { Executor, ResultRecord, Variant } from "../lib/types.js";
-import { WORKSPACE_MANIFEST, WORKSPACE_POINTER, copyTree, pruneEmptyParent, removeTree, seedWorkspaceRepo, workspaceRoot } from "../lib/workspace.js";
+import { EXECUTORS, type Executor, type ResultRecord, type Variant } from "../lib/types.js";
+import { WORKSPACE_MANIFEST, WORKSPACE_POINTER, copyTree, pruneEmptyParent, removeTree, seedWorkspaceRepo, workspaceRoot, SKILL_BRIDGE_DIRS } from "../lib/workspace.js";
 
 const ROOT = process.cwd();
-const EXECUTORS = new Set<Executor>(["claude", "codex"]);
 const VARIANTS = new Set<Variant>(["no_skill", "with_skill"]);
 const SETUP_ARGS = new Set(["task", "executor", "variant", "run"]);
 
@@ -30,8 +29,8 @@ const fail = async (message: string, ...dirs: (string | undefined)[]): Promise<n
 };
 
 const parseExecutor = (value: string): Executor => {
-  if (!EXECUTORS.has(value as Executor)) {
-    throw new Error(`unknown executor: ${value}`);
+  if (!EXECUTORS.includes(value as Executor)) {
+    throw new Error(`unknown executor: ${value} (expected ${EXECUTORS.join(", ")})`);
   }
 
   return value as Executor;
@@ -86,8 +85,8 @@ const installSkill = async (sourceDir: string, skillName: string, executor: Exec
   await access(sourceDir, constants.R_OK);
   await copySkill(sourceDir, agentsDestination);
 
-  if (executor === "claude") {
-    await copySkill(sourceDir, path.join(workspacePath, ".claude", "skills", skillName));
+  for (const bridge of SKILL_BRIDGE_DIRS[executor]) {
+    await copySkill(sourceDir, path.join(workspacePath, bridge, "skills", skillName));
   }
 };
 

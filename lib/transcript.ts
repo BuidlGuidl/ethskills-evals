@@ -40,7 +40,8 @@ const toolSummary = (input: unknown) => {
   if (input && typeof input === "object") {
     const record = input as Record<string, unknown>;
 
-    for (const key of ["command", "file_path", "pattern", "url", "prompt", "query"]) {
+    // filePath is opencode's spelling (read, edit, write); the rest are claude's and codex's.
+    for (const key of ["command", "file_path", "filePath", "pattern", "url", "prompt", "query"]) {
       if (typeof record[key] === "string") {
         return truncate(record[key] as string, MAX_TOOL_INPUT_CHARS);
       }
@@ -299,6 +300,108 @@ const renderCodex = (raw: string, stderr: string, header: TranscriptHeader) => {
   return sections.join("\n\n");
 };
 
+const show = (value: number | null) => (value === null ? "?" : String(value));
+
+// A tool part arrives once it has finished, completed or errored, with its input, its output
+// (or its error), and — for bash — the exit code under metadata. A failed call is rendered
+// too: a run that tried and failed must not read as one that never tried.
+const renderOpencodeTool = (part: Record<string, unknown>): string | null => {
+  const state = part.state && typeof part.state === "object" ? (part.state as Record<string, unknown>) : {};
+
+  if (state.status !== "completed" && state.status !== "error") {
+    return null;
+  }
+
+  const metadata = state.metadata && typeof state.metadata === "object" ? (state.metadata as Record<string, unknown>) : {};
+  const outcome = state.status === "error" ? " → error" : typeof metadata.exit === "number" ? ` → exit ${metadata.exit}` : "";
+  const line = `## assistant\n- **${String(part.tool ?? "tool")}** \`${toolSummary(state.input)}\`${outcome}`;
+  const text = state.status === "error" ? state.error : state.output;
+  const output = truncate(typeof text === "string" ? text : "", MAX_TOOL_RESULT_CHARS);
+
+  return output.length > 0 ? `${line}\n\n${quoteBlock(output)}` : line;
+};
+
+// `opencode run --format json` puts one event per line on stdout: text and tool parts as the
+// model produces them, a step_finish per model call with that step's tokens and price, and
+// an error event when a call fails. Rendered to the same sections as the other two, with the
+// footer built from the harness's usage record, since opencode reports no duration.
+const renderOpencode = (raw: string, stderr: string, header: TranscriptHeader) => {
+  const sections: string[] = [];
+  const { events, unparsed } = jsonEvents(raw);
+  // When opencode compacts a session it re-emits the completed tool parts under their
+  // original ids, so a part is rendered the first time it is seen and never again.
+  const seen = new Set<string>();
+
+  for (const event of events) {
+    const part = event.part && typeof event.part === "object" ? (event.part as Record<string, unknown>) : null;
+
+    if (event.type === "text" && part !== null && typeof part.text === "string" && part.text.trim().length > 0) {
+      sections.push(`## assistant\n${part.text.trim()}`);
+    }
+
+    if (event.type === "tool_use" && part !== null) {
+      const id = typeof part.id === "string" ? part.id : null;
+
+      if (id !== null && seen.has(id)) {
+        continue;
+      }
+
+      const rendered = renderOpencodeTool(part);
+
+      if (rendered !== null) {
+        sections.push(rendered);
+
+        if (id !== null) {
+          seen.add(id);
+        }
+      }
+    }
+
+    if (event.type === "error") {
+      const error = event.error as { message?: unknown; data?: { message?: unknown } } | undefined;
+      const message = typeof error?.data?.message === "string"
+        ? error.data.message
+        : typeof error?.message === "string" ? error.message : JSON.stringify(event);
+
+      sections.push(`## error\n\n${fence(message)}`);
+    }
+
+    // reasoning parts are dropped for the same reason claude's thinking blocks are.
+  }
+
+  // The footer is the harness's usage record, already measured from this same stream by
+  // buildUsage; a run with no usage — died before its first step — gets no footer.
+  const usage = header.usage;
+
+  if (usage !== null && usage.total_tokens !== null) {
+    const inputTotal = (usage.input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0);
+    const basis = usage.cost_usd === null
+      ? "none — opencode priced every step at $0 (a free or subscription model reports no price)"
+      : `reported by opencode: the pinned catalog's list price for ${header.model}; OpenRouter bills the routed provider's rate`;
+
+    sections.push([
+      "## run stats",
+      `- turns: ${show(usage.turns)}`,
+      `- duration: ${show(usage.duration_s)}s`,
+      `- cost: $${show(usage.cost_usd)}`,
+      `- cost source: ${usage.cost_source ?? "?"}`,
+      `- cost basis: ${basis}`,
+      `- tokens in/out: ${inputTotal}/${show(usage.output_tokens)}`,
+      `- of which cache write/read: ${show(usage.cache_creation_input_tokens)}/${show(usage.cache_read_input_tokens)}`,
+    ].join("\n"));
+  }
+
+  if (unparsed.length > 0) {
+    sections.push(`## stdout\n\n${fence(unparsed.join("\n"))}`);
+  }
+
+  if (stderr.trim().length > 0) {
+    sections.push(`## stderr\n\n${fence(stderr)}`);
+  }
+
+  return sections.join("\n\n");
+};
+
 // stdout and stderr both go in: which one holds the transcript is the executor's business,
 // not the caller's.
 export const buildTranscript = (header: TranscriptHeader, stdout: string, stderr: string) => {
@@ -308,7 +411,11 @@ export const buildTranscript = (header: TranscriptHeader, stdout: string, stderr
     `**executor**: ${header.executor}  |  **model**: ${header.model}  |  **effort**: ${header.reasoningEffort}  |  **exit**: ${header.exit}`,
     `**workspace**: ${header.workspacePath}`,
   ].join("\n");
-  const body = header.executor === "claude" ? renderClaude(stdout, stderr) : renderCodex(stdout, stderr, header);
+  const body = header.executor === "claude"
+    ? renderClaude(stdout, stderr)
+    : header.executor === "opencode"
+      ? renderOpencode(stdout, stderr, header)
+      : renderCodex(stdout, stderr, header);
 
   return `${heading}\n\n${body}\n`;
 };

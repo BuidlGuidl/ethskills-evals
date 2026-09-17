@@ -3,7 +3,7 @@ import path from "node:path";
 import process from "node:process";
 import { loadYamlFile, parseArgs, requireString } from "../lib/task.js";
 import { parseTranscriptStats, parseUsageRecord } from "../lib/usage.js";
-import type { CostSource, Executor, RunUsage, Variant } from "../lib/types.js";
+import { EXECUTORS, type CostSource, type Executor, type RunUsage, type Variant } from "../lib/types.js";
 
 // Every number a report puts in a cost table has to come from here, from the committed
 // transcripts, so a reader can re-derive the table instead of trusting it. The wallets report
@@ -176,7 +176,7 @@ const main = () => {
     // Split by executor, and within codex by token unit: a median over two of either
     // describes neither.
     const groups = taskIds.flatMap(taskId =>
-      (["claude", "codex"] as Executor[]).flatMap(executor =>
+      EXECUTORS.flatMap(executor =>
         [false, true].flatMap(legacyTokens =>
           (["no_skill", "with_skill"] as Variant[]).map(v => ({ taskId, executor, legacyTokens, v })))));
 

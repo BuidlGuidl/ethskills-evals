@@ -16,8 +16,14 @@
 // that the team adopt a checklist is not a leak, and 48 such lines across the 581 no_skill runs
 // on disk trip neither — so they require either a provenance claim about checklists the review
 // itself walked, or the vendor namespace those checklists are published under.
+import { SKILL_INSTALL_DIRS } from "./workspace.js";
+
+// The install-path pattern is built from the dirs setup actually writes to, so a bridge dir
+// added for a new executor is caught here without anyone remembering this file.
+const installPath = new RegExp(`\\.(?:${SKILL_INSTALL_DIRS.map(dir => dir.replace(/^\./, "")).join("|")})[\\/\\\\]skills\\b`, "i");
+
 export const SKILL_MENTION_PATTERNS: { label: string; pattern: RegExp }[] = [
-  { label: "skill install path", pattern: /\.(?:claude|agents)[\/\\]skills\b/i },
+  { label: "skill install path", pattern: installPath },
   { label: "SKILL.md reference", pattern: /\bSKILL\.md\b/i },
   { label: "skill self-reference", pattern: /\b(?:the|my|this|provided|installed|attached)\s+skill\b/i },
   {

@@ -29,10 +29,11 @@ type ShellFailure = {
 
 // Keyed by executor, because a diagnosis is only useful if it names something the executor
 // has: telling a claude run to fix codex's bubblewrap sandbox, or to pass a flag claude does
-// not have, is worse than saying nothing. claude's own dead-shell signature is not known
-// yet, so the honest list for it is empty.
+// not have, is worse than saying nothing. claude's and opencode's own dead-shell signatures
+// are not known yet, so the honest list for each is empty.
 export const SHELL_FAILURES: Record<Executor, ShellFailure[]> = {
   claude: [],
+  opencode: [],
   codex: [
     {
       pattern: /codex_core::shell_snapshot: Shell snapshot validation failed/,

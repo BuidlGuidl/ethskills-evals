@@ -107,6 +107,25 @@ export const codexTokens = (usage: Record<string, unknown>): RunTokens => {
   };
 };
 
+// Field by field, null when there is nothing to add up — a run that died before its first
+// usage event has no usage, not zero usage.
+const sumTokens = (parts: RunTokens[]): RunTokens | null => {
+  if (parts.length === 0) {
+    return null;
+  }
+
+  const add = (key: keyof RunTokens) => sum(parts.map(part => part[key]));
+
+  return {
+    input: add("input"),
+    cacheCreation: add("cacheCreation"),
+    cacheRead: add("cacheRead"),
+    inputTotal: add("inputTotal"),
+    output: add("output"),
+    total: add("total"),
+  };
+};
+
 // The three ways codex's usage event could mean something other than what codexTokens reads
 // it as. Each one would move dollars — the cache rates are a tenth of fresh input, and output
 // is the dearest rate in the table — and each is silent otherwise, so a run says so out loud
@@ -153,27 +172,58 @@ export const codexRunTokens = (stdout: string): RunTokens | null => {
     .filter(event => event.type === "turn.completed" && isRecord(event.usage))
     .map(event => event.usage as Record<string, unknown>);
 
-  if (usages.length === 0) {
-    return null;
-  }
-
   for (const usage of usages) {
     for (const warning of codexUsageWarnings(usage)) {
       console.warn(`usage: ${warning}`);
     }
   }
 
-  const turns = usages.map(codexTokens);
-  const add = (key: keyof RunTokens) => sum(turns.map(turn => turn[key]));
+  return sumTokens(usages.map(codexTokens));
+};
+
+// opencode's tokens come in claude's shape already: input is the uncached remainder and the
+// cache split sits beside it under cache.write / cache.read. reasoning is reported apart from
+// output and billed as output (OpenRouter counts it inside max_tokens), so it is folded in —
+// which is also the unit codex's output_tokens is in.
+export const opencodeTokens = (tokens: Record<string, unknown>): RunTokens => {
+  const cache = isRecord(tokens.cache) ? tokens.cache : {};
+  const input = numberOrNull(tokens.input);
+  const cacheCreation = numberOrNull(cache.write);
+  const cacheRead = numberOrNull(cache.read);
+  const output = sum([numberOrNull(tokens.output), numberOrNull(tokens.reasoning)]);
 
   return {
-    input: add("input"),
-    cacheCreation: add("cacheCreation"),
-    cacheRead: add("cacheRead"),
-    inputTotal: add("inputTotal"),
-    output: add("output"),
-    total: add("total"),
+    input,
+    cacheCreation,
+    cacheRead,
+    inputTotal: sum([input, cacheCreation, cacheRead]),
+    output,
+    total: sum([input, cacheCreation, cacheRead, output]),
   };
+};
+
+// `opencode run --format json` closes every model call with a step_finish event whose part
+// carries that step's own tokens and the price opencode put on them (per step, not
+// cumulative — checked against the arena fixture, where the second step's input is the
+// first step's cache read). A run is many steps, one per tool round, so they are summed.
+const opencodeSteps = (stdout: string) =>
+  jsonEvents(stdout).events
+    .filter(event => event.type === "step_finish" && isRecord(event.part))
+    .map(event => event.part as Record<string, unknown>);
+
+const opencodeStepTokens = (steps: Record<string, unknown>[]): RunTokens | null =>
+  sumTokens(steps.filter(part => isRecord(part.tokens)).map(part => opencodeTokens(part.tokens as Record<string, unknown>)));
+
+// opencode prices each step itself, from the catalog's list price for the model that ran. A
+// login it cannot price — a subscription, a local model, a free OpenRouter route — reports 0
+// on every step, which is "no price", not a free run; so a sum that rounds to zero records
+// null. Rounded to a millionth, the precision claude reports at: the raw sum of ten-decimal
+// step costs prints as 0.0019204327000000001.
+const opencodeStepCost = (steps: Record<string, unknown>[]): number | null => {
+  const total = steps.reduce((sum, part) => sum + (numberOrNull(part.cost) ?? 0), 0);
+  const rounded = Math.round(total * 1_000_000) / 1_000_000;
+
+  return rounded > 0 ? rounded : null;
 };
 
 export const codexCost = (model: string | null, tokens: RunTokens) =>
@@ -254,6 +304,30 @@ const parseCodexLogUsage = (sessionLog: string) => {
   };
 };
 
+// An opencode step is one model call — a tool round, the same thing claude counts as a turn.
+// A step that errors or aborts emits no step_finish, so it is in none of these figures.
+const parseOpencodeUsage = (stdout: string) => {
+  const steps = opencodeSteps(stdout);
+  const tokens = opencodeStepTokens(steps);
+
+  if (tokens === null) {
+    return null;
+  }
+
+  const cost = opencodeStepCost(steps);
+
+  return {
+    turns: steps.length,
+    cost_usd: cost,
+    cost_source: sourceOf(cost, "executor"),
+    input_tokens: tokens.input,
+    cache_creation_input_tokens: tokens.cacheCreation,
+    cache_read_input_tokens: tokens.cacheRead,
+    output_tokens: tokens.output,
+    total_tokens: tokens.total,
+  };
+};
+
 // No turn count: a codex "turn" is one user prompt, always 1 in exec, which is not the unit
 // claude's num_turns counts.
 const parseCodexUsage = (stdout: string, stderr: string, model: string | null) => {
@@ -278,9 +352,10 @@ const parseCodexUsage = (stdout: string, stderr: string, model: string | null) =
 };
 
 // Duration is the harness's own measurement rather than the executor's, because it is the
-// one figure both stacks measure the same way. Tokens now share a shape too, and cost is in
-// dollars on both — but claude's is the price it reports and codex's is derived from a list
-// price for `model` (lib/prices.ts), which is why cost_source is recorded beside it. `model`
+// one figure every stack measures the same way. Tokens share a shape too, and cost is in
+// dollars everywhere — but claude's and opencode's is the price the CLI reports and codex's
+// is derived from a list price for `model` (lib/prices.ts), which is why cost_source is
+// recorded beside it. `model`
 // is required rather than defaulted: a codex call that forgets it silently loses the cost.
 export const buildUsage = (
   executor: Executor,
@@ -289,7 +364,11 @@ export const buildUsage = (
   durationMs: number,
   model: string | null,
 ): RunUsage => {
-  const parsed = executor === "claude" ? parseClaudeUsage(stdout) : parseCodexUsage(stdout, stderr, model);
+  const parsed = executor === "claude"
+    ? parseClaudeUsage(stdout)
+    : executor === "opencode"
+      ? parseOpencodeUsage(stdout)
+      : parseCodexUsage(stdout, stderr, model);
 
   return {
     duration_s: Math.round(durationMs / 1000),
@@ -379,8 +458,10 @@ const parseFooter = (text: string) => {
   const [inputTotal, output] = readPair(footer, /^- tokens in\/out: (\d+|\?)\/(\d+|\?)$/m);
   const [cacheCreation, cacheRead] = readPair(footer, /^- of which cache write\/read: (\d+|\?)\/(\d+|\?)$/m);
   const cost = readMatch(footer, /^- cost: \$([\d.]+)$/m);
-  // Only codex footers carry a cost basis line; a claude footer's cost is claude's own.
-  const source = /^- cost basis: list price/m.test(footer) ? "list_price" : "executor";
+  // An explicit line where the footer writes one (opencode); otherwise only codex footers
+  // carry a cost basis line, and a claude footer's cost is claude's own.
+  const explicit = footer.match(/^- cost source: (executor|list_price)$/m);
+  const source = explicit !== null ? (explicit[1] as CostSource) : /^- cost basis: list price/m.test(footer) ? "list_price" : "executor";
 
   return {
     duration_s: readMatch(footer, /^- duration: (\d+)s$/m),

@@ -11,11 +11,10 @@ import { detectBrokenShell } from "../lib/executor-health.js";
 import { judgeExpectations } from "../lib/judge.js";
 import { expectSha, inputSha, isRecord, loadTaskSpec, loadYamlFile, nullableString, optionalArg, parseArgs, requireString } from "../lib/task.js";
 import { parseUsageRecord } from "../lib/usage.js";
-import type { Executor, ExecutorRecord, ExpectStatus, JudgeSpec, RecordedJudge, ResultRecord, Variant } from "../lib/types.js";
+import { EXECUTORS, JUDGE_AGENTS, type Executor, type ExecutorRecord, type ExpectStatus, type JudgeAgent, type JudgeSpec, type RecordedJudge, type ResultRecord, type Variant } from "../lib/types.js";
 import { pruneEmptyParent, readWorkspacePath } from "../lib/workspace.js";
 
 const ROOT = process.cwd();
-const EXECUTORS = new Set<Executor>(["claude", "codex"]);
 const VARIANTS = new Set<Variant>(["no_skill", "with_skill"]);
 const VERIFY_ARGS = new Set([
   "run", "judge-agent", "judge-model", "judge-effort", "grade-failed-run", "keep-workspace", "regrade", "reason", "allow-skill-mention",
@@ -71,19 +70,19 @@ const resolveJudge = (args: Record<string, string | boolean>, source?: RecordedJ
 };
 
 const parseExecutor = (value: string): Executor => {
-  if (!EXECUTORS.has(value as Executor)) {
+  if (!EXECUTORS.includes(value as Executor)) {
     throw new Error(`unknown executor in result.yaml: ${value}`);
   }
 
   return value as Executor;
 };
 
-const parseAgent = (value: string): Executor => {
-  if (!EXECUTORS.has(value as Executor)) {
-    throw new Error(`unknown --judge-agent: ${value} (expected claude or codex)`);
+const parseAgent = (value: string): JudgeAgent => {
+  if (!JUDGE_AGENTS.includes(value as JudgeAgent)) {
+    throw new Error(`unknown --judge-agent: ${value} (expected ${JUDGE_AGENTS.join(" or ")})`);
   }
 
-  return value as Executor;
+  return value as JudgeAgent;
 };
 
 const parseVariant = (value: string): Variant => {
