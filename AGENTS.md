@@ -31,7 +31,7 @@ The skills under `skills/` are vendored at a pinned commit, and a task spec may 
 
 ## The loop
 
-1. `yarn setup --task tasks/<id>.yaml --variant <no_skill|with_skill> --run <n> --executor <claude|codex|opencode> --benchmark <id>` — builds `<run-dir>/workspace`, seeds it as its own git repo and records the baseline sha in `<run-dir>/baseline.sha`.
+1. `yarn setup --task tasks/<id>.yaml --variant <no_skill|with_skill|routing> --run <n> --executor <claude|codex|opencode> --benchmark <id>` — builds `<run-dir>/workspace`, seeds it as its own git repo and records the baseline sha in `<run-dir>/baseline.sha`.
 2. `yarn run-executor --run artifacts/<id>/<run-id> --model <model> --effort <effort>` — spawns the executor in that workspace on `TASK.md`, saves the transcript, records when it finished. Long runs: start it detached (`nohup yarn run-executor … &`) and wait for `finished:` in `executor.yaml`, because a harness that kills the foreground process kills the run.
 3. `yarn verify --run artifacts/<id>/<run-id> --judge-agent <claude|codex> --judge-model <model> --judge-effort <effort>` — assembles evidence, runs the judge, fills `result.yaml`. Use the same judge for every run in the benchmark.
 4. Repeat for every variant and run.
@@ -171,8 +171,11 @@ The task input never changes across variants. Only the workspace does.
 | --- | --- |
 | `no_skill` | task input (+ template) only |
 | `with_skill` | the skill at `.agents/skills/<name>/`, agent decides to use it |
+| `routing` | the skill plus every skill its description cedes to or is ceded to by, agent decides which to use |
 
 `.agents/skills/` is the canonical, executor-neutral location; codex discovers it natively. Claude only lists skills from `.claude/skills/`, so claude runs also get a copy there, and opencode runs get one at `.opencode/skills/`, because the harness switches opencode's `.agents/` discovery off to keep the operator's global `~/.agents/skills` out (see "The three roles"). Supporting a new executor means adding a bridge line in `setup` and its dir to `SKILL_INSTALL_DIRS` in `lib/workspace.ts`, or the skill leaks into the judge's evidence.
+
+**`routing` measures the descriptions, not the skill.** A `with_skill` workspace holds one skill, so "Skill called 3/3" shows that an agent with one relevant skill loads it; it cannot fail for a wrong `Not for … (\`x\`)` cede, because a cede only decides anything when both skills are installed. A routing run installs the task's skill beside every cede neighbour `setup` reads out of the descriptions (`routingNeighbours` in `lib/skill.ts`, both directions), records them as `installed_skills`, and `run-executor` reads which of them the run loaded off `transcript.md` into `skills_loaded`, first reach first — that first name is the routing decision. A skill with no cede in either direction is refused: one skill installed is a `with_skill` run. The run is graded like any other, but its grade is not a with/without measurement and the site keeps it out of both columns; read `skills_loaded` per run and report it as its own table. Same executor and effort as the benchmark it sits beside (#134, after #119).
 
 To force the trigger, prepend one line to the spawn prompt (`Use the <name> skill for this task.`) and say so in the report. Trigger-inclusive and content-only numbers must never blend.
 
@@ -189,10 +192,12 @@ executor: claude
 variant: with_skill
 skill_version: 191dcc1                # git short sha of the skill source; null for no_skill
 input_sha: 4f2b9c1de803               # sha256 of the input this run was given; absent on pre-2026-08-28 runs
+installed_skills: [gas]               # every skill in the workspace, the task's own first; the neighbours too on routing; absent on no_skill and pre-2026-09-17 runs
 created: 2026-07-06T09:30:00Z
 executor_model: claude-opus-5         # what actually ran; null only on runs made before it was required
 executor_reasoning_effort: medium     # every executor, passed on argv; absent or null on runs made before 2026-09-15
 executor_exit: 0                      # verify refuses anything else unless --grade-failed-run
+skills_loaded: [gas]                  # which of installed_skills the run loaded, first reach first (from transcript.md); absent where installed_skills is
 harness_failure:                      # absent unless --grade-failed-run graded over a refusal
 usage:                                # what the run cost; absent on runs made before 2026-08-27
   duration_s: 812                     # the harness's own wall clock — the one figure both stacks share

@@ -161,7 +161,9 @@ export const compareSkill = (skill: Skill, tasks: Task[], runs: Run[]): SkillCom
     .filter(task => task.skill === skill.name)
     .sort((a, b) => a.id.localeCompare(b.id))
     .map(task => {
-      const forTask = mine.filter(run => run.task === task.id);
+      // A routing run carries the task's skill_content too, but it had other skills installed
+      // beside it, so its grade is not a with_skill measurement and stays out of both columns.
+      const forTask = mine.filter(run => run.task === task.id && run.variant !== "routing");
       const cellFor = (version: SkillVersion | null) =>
         version === null ? null : tally(forTask.filter(run => run.skill_content === version.id));
 

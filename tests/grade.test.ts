@@ -75,3 +75,50 @@ test("readBenchmark reads a string, and absent or null as no benchmark without a
   assert.deepEqual(readBenchmark(undefined), { benchmark: null, warning: null });
   assert.deepEqual(readBenchmark(null), { benchmark: null, warning: null });
 });
+
+// Routing (#134): which skills the workspace held is setup's fact and which the run loaded is
+// run-executor's, and a grade has to carry both or the routing answer is only in a gitignored
+// file's neighbour. A regrade re-reads no transcript, so it keeps the first grade's copy.
+const ROUTED: ResultRecord = {
+  ...SOURCE,
+  run: "2026-09-17T100000Z-claude-routing-1",
+  variant: "routing",
+  skill_content: "0123456789ab",
+  installed_skills: ["gas", "l2s"],
+};
+
+const EXECUTOR = {
+  executor: "claude" as const,
+  model: "claude-opus-5",
+  reasoning_effort: "medium",
+  started: "2026-09-17T10:01:00.000Z",
+  finished: "2026-09-17T10:09:00.000Z",
+  exit: 0,
+  skills_loaded: ["l2s", "gas"],
+};
+
+test("a first grading copies installed_skills from setup and skills_loaded from run-executor", () => {
+  const graded = gradedRecord(ROUTED, VERDICT, EXECUTOR, null);
+
+  assert.deepEqual(graded.installed_skills, ["gas", "l2s"]);
+  assert.deepEqual(graded.skills_loaded, ["l2s", "gas"]);
+});
+
+test("a regrade keeps both lists as first graded", () => {
+  const graded = gradedRecord(
+    { ...ROUTED, skills_loaded: ["l2s", "gas"], pass: false, expects: { expect_1: "fail", expect_2: "fail" } },
+    VERDICT,
+    null,
+    { run: `${ROUTED.run}-regrade-1`, reason: "expect_2 reworded", at: "2026-09-18T00:00:00.000Z" },
+  );
+
+  assert.deepEqual(graded.installed_skills, ["gas", "l2s"]);
+  assert.deepEqual(graded.skills_loaded, ["l2s", "gas"]);
+});
+
+test("a run that installed nothing gets neither key, not empty lists", () => {
+  const graded = gradedRecord(SOURCE, VERDICT, { ...EXECUTOR, skills_loaded: undefined }, null);
+
+  assert.equal("installed_skills" in graded, false);
+  assert.equal("skills_loaded" in graded, false);
+});

@@ -19,6 +19,15 @@ export type Regrade = { run: string; reason: string; at: string };
 //
 // Rebuilt field by field rather than spread: loadResultRecord leaves `expects` and `pass`
 // as undefined keys, so spreading would strand `judge` below them in the yaml.
+// Copied from executor.yaml like usage: run-executor read it off the transcript, and a regrade
+// keeps the first grade's copy rather than re-reading, so a routing answer never moves under a
+// rubric edit. Absent stays absent — a run that installed nothing has nothing to say here.
+const skillsLoadedField = (result: ResultRecord, executorRecord: ExecutorRecord | null) => {
+  const loaded = executorRecord === null ? result.skills_loaded : executorRecord.skills_loaded;
+
+  return loaded === undefined ? {} : { skills_loaded: loaded };
+};
+
 export const gradedRecord = (
   result: ResultRecord,
   verdict: Verdict,
@@ -32,6 +41,7 @@ export const gradedRecord = (
   skill_version: result.skill_version,
   ...(result.input_sha === undefined ? {} : { input_sha: result.input_sha }),
   skill_content: result.skill_content,
+  ...(result.installed_skills === undefined ? {} : { installed_skills: result.installed_skills }),
   ...(result.benchmark === undefined ? {} : { benchmark: result.benchmark }),
   created: result.created,
   ...(regrade === null ? {} : { regrade_of: result.run, regrade_reason: regrade.reason, regraded_at: regrade.at }),
@@ -39,6 +49,7 @@ export const gradedRecord = (
   executor_reasoning_effort:
     executorRecord === null ? result.executor_reasoning_effort ?? null : executorRecord.reasoning_effort ?? null,
   executor_exit: executorRecord === null ? result.executor_exit : executorRecord.exit ?? undefined,
+  ...skillsLoadedField(result, executorRecord),
   // Carried like `retracted` below: a run that was graded over a dead shell stays a run
   // that was graded over a dead shell, and a regrade has no capture left to re-detect it
   // from — executor.err is gitignored, so re-deriving it would silently drop the flag.

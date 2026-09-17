@@ -10,6 +10,7 @@ import { catalogSha, forgetOpencodeCredential, opencodeArgs, opencodeEnv, pinned
 import { CLAUDE_LAUNCH, resolveEffort, resolveModel } from "../lib/effort.js";
 import { detectBrokenShell } from "../lib/executor-health.js";
 import { hasCodexPrice } from "../lib/prices.js";
+import { loadedSkills } from "../lib/routing.js";
 import { loadYamlFile, optionalArg, parseArgs, requireString } from "../lib/task.js";
 import { buildTranscript, codexProgress } from "../lib/transcript.js";
 import { buildUsage } from "../lib/usage.js";
@@ -276,10 +277,22 @@ const main = async () => {
     process.exit(2);
   }
 
+  // Which installed skills the run loaded, read off the transcript just written. Recorded on
+  // every run that had a skill to load — on with_skill it is the "Skill called 3/3" a report
+  // used to count by grep; on routing it is the run's whole point (#134). Only names setup
+  // installed count, so a path the executor read by some other spelling records nothing
+  // rather than something else.
+  const installed = Array.isArray(result.installed_skills) ? result.installed_skills.filter((name): name is string => typeof name === "string") : [];
+  const loaded = installed.length === 0 ? null : loadedSkills(transcript, installed);
+
   // Usage is recorded only for a run that finished: an interrupted run returns above with
   // finished null, and half a session's tokens against a whole session's work would read
   // as a cheap run rather than a dead one.
-  await writeRecord(recordPath, { ...record, finished: new Date().toISOString(), exit, usage });
+  await writeRecord(recordPath, { ...record, finished: new Date().toISOString(), exit, usage, ...(loaded === null ? {} : { skills_loaded: loaded }) });
+
+  if (loaded !== null) {
+    console.log(`skills loaded: ${loaded.length === 0 ? "none" : loaded.join(", ")} (installed: ${installed.join(", ")})`);
+  }
 
   // Only a run that reported a token split and still has no cost: that is a missing price.
   // A run with no split at all (a codex launched by hand without --json) has nothing to price,

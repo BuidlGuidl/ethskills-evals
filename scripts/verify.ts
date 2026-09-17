@@ -12,11 +12,10 @@ import { gradedRecord } from "../lib/grade.js";
 import { judgeExpectations } from "../lib/judge.js";
 import { expectSha, inputSha, isRecord, loadTaskSpec, loadYamlFile, nullableString, optionalArg, parseArgs, requireString } from "../lib/task.js";
 import { parseUsageRecord } from "../lib/usage.js";
-import { EXECUTORS, JUDGE_AGENTS, type Executor, type ExecutorRecord, type ExpectStatus, type JudgeAgent, type JudgeSpec, type RecordedJudge, type ResultRecord, type Variant } from "../lib/types.js";
+import { EXECUTORS, JUDGE_AGENTS, VARIANTS, type Executor, type ExecutorRecord, type ExpectStatus, type JudgeAgent, type JudgeSpec, type RecordedJudge, type ResultRecord, type Variant } from "../lib/types.js";
 import { pruneEmptyParent, readWorkspacePath } from "../lib/workspace.js";
 
 const ROOT = process.cwd();
-const VARIANTS = new Set<Variant>(["no_skill", "with_skill"]);
 const VERIFY_ARGS = new Set([
   "run", "judge-agent", "judge-model", "judge-effort", "grade-failed-run", "keep-workspace", "regrade", "reason", "allow-skill-mention",
 ]);
@@ -87,7 +86,7 @@ const parseAgent = (value: string): JudgeAgent => {
 };
 
 const parseVariant = (value: string): Variant => {
-  if (!VARIANTS.has(value as Variant)) {
+  if (!VARIANTS.includes(value as Variant)) {
     throw new Error(`unknown variant in result.yaml: ${value}`);
   }
 
@@ -112,6 +111,20 @@ const readExpects = (value: unknown) => {
   return expects;
 };
 
+// A list of skill names, or nothing: absent on every run made before the field existed, and
+// on no_skill runs, which had nothing to install.
+const optionalNames = (value: unknown, name: string) => {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (!Array.isArray(value) || value.some(item => typeof item !== "string")) {
+    throw new Error(`${name} must be a list of skill names`);
+  }
+
+  return value as string[];
+};
+
 const loadResultRecord = (resultPath: string): ResultRecord => {
   const loaded = loadYamlFile(resultPath);
 
@@ -126,6 +139,7 @@ const loadResultRecord = (resultPath: string): ResultRecord => {
     skill_version: loaded.skill_version === null ? null : requireString(loaded.skill_version, "skill_version"),
     input_sha: loaded.input_sha === undefined ? undefined : requireString(loaded.input_sha, "input_sha"),
     skill_content: nullableString(loaded.skill_content, "skill_content"),
+    installed_skills: optionalNames(loaded.installed_skills, "installed_skills"),
     // null reads as absent: a run that predates the field and a tool that writes every key
     // both mean "no benchmark", and neither should stop a grade.
     benchmark: nullableString(loaded.benchmark, "benchmark") ?? undefined,
@@ -133,6 +147,7 @@ const loadResultRecord = (resultPath: string): ResultRecord => {
     executor_model: nullableString(loaded.executor_model, "executor_model"),
     executor_reasoning_effort: nullableString(loaded.executor_reasoning_effort, "executor_reasoning_effort"),
     executor_exit: typeof loaded.executor_exit === "number" ? loaded.executor_exit : undefined,
+    skills_loaded: optionalNames(loaded.skills_loaded, "skills_loaded"),
     // Read for the same reason as `retracted`: a regrade on a clone without the gitignored
     // capture cannot re-detect it, so dropping it here would launder a harness failure into
     // a clean-looking grade.
@@ -190,6 +205,7 @@ const loadExecutorRecord = (runDir: string, optional = false): ExecutorRecord | 
     finished: requireString(loaded.finished, "finished"),
     exit: typeof loaded.exit === "number" ? loaded.exit : null,
     usage: parseUsageRecord(loaded.usage),
+    skills_loaded: optionalNames(loaded.skills_loaded, "skills_loaded"),
   };
 };
 

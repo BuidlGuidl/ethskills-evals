@@ -1,4 +1,9 @@
-export type Variant = "no_skill" | "with_skill";
+// routing: the task's skill plus every skill it cedes to or from, installed together (#134).
+// A with_skill workspace holds one skill, so it can show that an agent loads the one relevant
+// skill it has; it cannot fail for a wrong "Not for … (`x`)" cede, because a cede only decides
+// anything when both skills are there to choose between.
+export type Variant = "no_skill" | "with_skill" | "routing";
+export const VARIANTS = ["no_skill", "with_skill", "routing"] as const;
 // The agent CLIs the harness can spawn to perform a run. opencode is the route to open
 // models: it takes any provider/model pair, and the harness drives it through OpenRouter
 // (lib/opencode-home.ts).
@@ -96,6 +101,9 @@ export type ExecutorRecord = {
   finished: string | null;
   exit: number | null;
   usage?: RunUsage;
+  // Which of result.yaml's installed_skills the executor loaded, in the order it first reached
+  // for each, read from transcript.md (lib/routing.ts). Absent when nothing was installed.
+  skills_loaded?: string[];
 };
 
 export type ResultRecord = {
@@ -112,6 +120,10 @@ export type ResultRecord = {
   // runs made before the field existed — those are recovered from git history instead, for
   // as long as the branch that holds the sha survives.
   skill_content?: string | null;
+  // Every skill the workspace held, the task's own first. One name on a with_skill run, the
+  // task's skill and its cede neighbours on a routing run; absent on no_skill and on runs made
+  // before the field existed.
+  installed_skills?: string[];
   // The benchmark this run belongs to: one id shared by every run made for one comparison,
   // named at setup. It is what tells a run made for the site's clean re-run from the runs
   // that came before it, which a date cannot: a benchmark takes weeks, and a stray run made
@@ -133,6 +145,9 @@ export type ResultRecord = {
   executor_model?: string | null;
   executor_reasoning_effort?: string | null;
   executor_exit?: number;
+  // Copied from executor.yaml by verify: which of installed_skills the run loaded, first one
+  // first. On a routing run the first name is the answer the run exists to give.
+  skills_loaded?: string[];
   // Only ever set by --grade-failed-run: the run was graded over a refusal, and this says
   // which one. Without it a shell-broken run graded by hand writes executor_exit: 0 and
   // reads as a clean result, which is the exact condition the refusal exists to expose.

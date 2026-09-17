@@ -4,13 +4,12 @@ import { access, cp, mkdir, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import yaml from "js-yaml";
-import { readSkillContentId } from "../lib/skill.js";
+import { readSkillContentId, routingNeighbours } from "../lib/skill.js";
 import { inputSha, loadTaskSpec, parseArgs, parseBenchmark, requireString } from "../lib/task.js";
-import { EXECUTORS, type Executor, type ResultRecord, type Variant } from "../lib/types.js";
+import { EXECUTORS, VARIANTS, type Executor, type ResultRecord, type Variant } from "../lib/types.js";
 import { WORKSPACE_MANIFEST, WORKSPACE_POINTER, copyTree, pruneEmptyParent, removeTree, seedWorkspaceRepo, workspaceRoot, SKILL_BRIDGE_DIRS } from "../lib/workspace.js";
 
 const ROOT = process.cwd();
-const VARIANTS = new Set<Variant>(["no_skill", "with_skill"]);
 const SETUP_ARGS = new Set(["task", "executor", "variant", "run", "benchmark"]);
 
 const fail = async (message: string, ...dirs: (string | undefined)[]): Promise<never> => {
@@ -37,8 +36,8 @@ const parseExecutor = (value: string): Executor => {
 };
 
 const parseVariant = (value: string): Variant => {
-  if (!VARIANTS.has(value as Variant)) {
-    throw new Error(`unknown variant: ${value}`);
+  if (!VARIANTS.includes(value as Variant)) {
+    throw new Error(`unknown variant: ${value} (expected ${VARIANTS.join(", ")})`);
   }
 
   return value as Variant;
@@ -181,14 +180,40 @@ const main = async () => {
 
       await writeFile(path.join(workspacePath, "TASK.md"), spec.input);
 
-      const skillSource = variant === "with_skill" ? resolveRootPath(spec.skill) : null;
+      const skillSource = variant === "no_skill" ? null : resolveRootPath(spec.skill);
       const skillVersion = skillSource ? getSkillVersion(skillSource) : null;
       // Recorded here because it stops being recoverable later: skill_version is a sha that
       // may live only on a branch, and a deleted branch takes the text with it.
       const skillContent = skillSource ? readSkillContentId(skillSource) : null;
+      const installed: string[] = [];
 
       if (skillSource) {
         await installSkill(skillSource, path.basename(skillSource), executor, workspacePath);
+        installed.push(path.basename(skillSource));
+      }
+
+      // A routing run installs the task's skill and every skill its description cedes to or
+      // is ceded to by, so the agent has a choice to get wrong. Its neighbours are read from
+      // the descriptions at setup, not listed in the task spec, because the cede is what is
+      // being tested and a hand-kept list would drift from it. skill_version and skill_content
+      // still name the task's own skill: that is the version under test, and the neighbours
+      // are recorded by name only.
+      if (skillSource && variant === "routing") {
+        const neighbours = routingNeighbours(path.dirname(skillSource), path.basename(skillSource));
+
+        if (neighbours.length === 0) {
+          await fail(
+            `${spec.skill} cedes to no skill and no skill cedes to it, so a routing run would install one skill `
+              + "and measure what with_skill already measures. Add the cede to a description first, or run with_skill.",
+            runDir,
+            workspacePath,
+          );
+        }
+
+        for (const neighbour of neighbours) {
+          await installSkill(path.join(path.dirname(skillSource), neighbour), neighbour, executor, workspacePath);
+          installed.push(neighbour);
+        }
       }
 
       if (!existsSync(path.join(workspacePath, "package.json"))) {
@@ -212,6 +237,7 @@ const main = async () => {
         skill_version: skillVersion,
         input_sha: inputSha(spec.input),
         skill_content: skillContent,
+        ...(installed.length === 0 ? {} : { installed_skills: installed }),
         benchmark,
         created: new Date().toISOString(),
       };
@@ -219,6 +245,11 @@ const main = async () => {
       await writeFile(path.join(runDir, "result.yaml"), yaml.dump(result, { lineWidth: -1 }));
 
       console.log(workspacePath);
+
+      if (variant === "routing") {
+        console.log(`installed ${installed.join(", ")}; run-executor records which of them the run loads`);
+      }
+
       console.log(`Run the executor with: yarn run-executor --run artifacts/${spec.id}/${runId} --model <model> --effort <effort>`);
     } catch (error) {
       await fail(error instanceof Error ? error.message : String(error), runDir, workspacePath);

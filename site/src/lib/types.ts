@@ -1,4 +1,5 @@
-export type Variant = "no_skill" | "with_skill";
+/** routing: the task's skill installed beside its cede neighbours; never a with/without cell */
+export type Variant = "no_skill" | "with_skill" | "routing";
 export type ExpectStatus = "pass" | "fail";
 
 export type Run = {
