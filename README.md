@@ -76,12 +76,12 @@ Because the fixed part is this small, the orchestrator can bend the framework in
 ## Running a benchmark
 
 ```bash
-yarn setup --task tasks/<id>.yaml --variant no_skill --run 1 --executor claude
+yarn setup --task tasks/<id>.yaml --variant no_skill --run 1 --executor claude --benchmark <id>
 yarn run-executor --run artifacts/<id>/<run-id> --model <model> --effort <effort>
 yarn verify --run artifacts/<id>/<run-id> --judge-agent claude --judge-model <model> --judge-effort <effort>
 ```
 
-Workspaces live outside the repo, under `~/.cache/ethskills-evals` or wherever `EVAL_WORKSPACE_ROOT` points — export it for the whole benchmark, since all three commands read it. `verify` deletes the workspace it graded; `yarn clean-workspaces --delete` reclaims the rest, and an SE2 workspace is gigabytes.
+`--benchmark` names the comparison the run is part of; the site selects runs by it, so a benchmark's runs stay apart from stray runs on the same model. Workspaces live outside the repo, under `~/.cache/ethskills-evals` or wherever `EVAL_WORKSPACE_ROOT` points — export it for the whole benchmark, since all three commands read it. `verify` deletes the workspace it graded; `yarn clean-workspaces --delete` reclaims the rest, and an SE2 workspace is gigabytes.
 
 Repeat per variant and run count, then compare `result.yaml`s and write the report. You don't normally type these; the orchestrator does. `AGENTS.md` has the full loop, the intake conversation, and the mistake-record format.
 

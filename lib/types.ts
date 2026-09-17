@@ -112,6 +112,11 @@ export type ResultRecord = {
   // runs made before the field existed — those are recovered from git history instead, for
   // as long as the branch that holds the sha survives.
   skill_content?: string | null;
+  // The benchmark this run belongs to: one id shared by every run made for one comparison,
+  // named at setup. It is what tells a run made for the site's clean re-run from the runs
+  // that came before it, which a date cannot: a benchmark takes weeks, and a stray run made
+  // by hand in that window carries no id. Absent on runs made before the field existed.
+  benchmark?: string;
   created: string;
   // Set only on a regrade: the run whose stored evidence was re-judged. The executor never
   // ran again, so this record is a second reading of one run, not a second run — never

@@ -6,7 +6,7 @@ import process from "node:process";
 import yaml from "js-yaml";
 import { orderReadings } from "../lib/readings.js";
 import { normalizeSkillText, skillContentId } from "../lib/skill.js";
-import { expectSha, inputSha, isRecord, loadTaskSpec, loadYamlFile, parseArgs, requireString } from "../lib/task.js";
+import { expectSha, inputSha, isRecord, loadTaskSpec, loadYamlFile, parseArgs, readBenchmark, requireString } from "../lib/task.js";
 
 // Builds the json the results site reads, regenerated from the repo in a single pass and
 // gitignored: site/public/index.json, everything the tables need, and docs.json beside it
@@ -512,6 +512,8 @@ const main = async () => {
     judge: IndexJudge | null;
     skill_version: string | null;
     skill_content: string | null;
+    /** the benchmark this run was made for, as named at setup; null on runs that predate the field */
+    benchmark: string | null;
     regrade_of: string | null;
     regraded_at: string | null;
     superseded_by: string | null;
@@ -552,6 +554,12 @@ const main = async () => {
         warnings.push(
           `${runDir}: rubric read from tasks/${taskId}.yaml as it stands now, not from the revision this run was graded on`,
         );
+      }
+
+      const { benchmark, warning: benchmarkWarning } = readBenchmark(loaded.benchmark);
+
+      if (benchmarkWarning !== null) {
+        warnings.push(`${runDir}: ${benchmarkWarning}`);
       }
 
       let skillContent: string | null = null;
@@ -606,6 +614,7 @@ const main = async () => {
         judge: parseJudge(loaded.judge),
         skill_version: skillVersion,
         skill_content: skillContent,
+        benchmark,
         regrade_of: typeof loaded.regrade_of === "string" ? loaded.regrade_of : null,
         regraded_at: typeof loaded.regraded_at === "string" ? loaded.regraded_at : null,
         superseded_by: null,
@@ -834,10 +843,22 @@ const main = async () => {
   }
 
   const ungraded = runs.filter(run => run.pass === null).length;
+  // One line per benchmark with its record count, so a mistyped id — which parseBenchmark
+  // cannot tell from a real one — shows up as a benchmark of one while the run is still fresh.
+  const perBenchmark = new Map<string, number>();
+
+  for (const run of runs) {
+    if (run.benchmark !== null) {
+      perBenchmark.set(run.benchmark, (perBenchmark.get(run.benchmark) ?? 0) + 1);
+    }
+  }
+
+  const benchmarks = [...perBenchmark].sort(([a], [b]) => a.localeCompare(b)).map(([id, count]) => `${id} ${count}`).join(", ");
 
   process.stdout.write(
     `wrote ${path.relative(ROOT, outPath)} — ${skills.length} skills, ${tasks.length} tasks, ${runs.length} runs` +
       `${ungraded > 0 ? ` (${ungraded} ungraded)` : ""}, ${reports.length} reports, ${prs.length} pull requests\n` +
+      `${benchmarks.length > 0 ? `benchmarks: ${benchmarks}\n` : ""}` +
       `${changed ? `updated ${path.relative(ROOT, cachePath)} — commit it: the site builds from this cache, not from git\n` : ""}`,
   );
 };

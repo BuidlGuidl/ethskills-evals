@@ -5,13 +5,13 @@ import path from "node:path";
 import process from "node:process";
 import yaml from "js-yaml";
 import { readSkillContentId } from "../lib/skill.js";
-import { inputSha, loadTaskSpec, parseArgs, requireString } from "../lib/task.js";
+import { inputSha, loadTaskSpec, parseArgs, parseBenchmark, requireString } from "../lib/task.js";
 import { EXECUTORS, type Executor, type ResultRecord, type Variant } from "../lib/types.js";
 import { WORKSPACE_MANIFEST, WORKSPACE_POINTER, copyTree, pruneEmptyParent, removeTree, seedWorkspaceRepo, workspaceRoot, SKILL_BRIDGE_DIRS } from "../lib/workspace.js";
 
 const ROOT = process.cwd();
 const VARIANTS = new Set<Variant>(["no_skill", "with_skill"]);
-const SETUP_ARGS = new Set(["task", "executor", "variant", "run"]);
+const SETUP_ARGS = new Set(["task", "executor", "variant", "run", "benchmark"]);
 
 const fail = async (message: string, ...dirs: (string | undefined)[]): Promise<never> => {
   for (const dir of dirs) {
@@ -137,6 +137,10 @@ const main = async () => {
     const executor = parseExecutor(requireString(args.executor, "--executor"));
     const variant = parseVariant(requireString(args.variant, "--variant"));
     const run = requireString(args.run, "--run");
+    // Required, not defaulted: a run with no benchmark id is what the site cannot tell from the
+    // runs that came before, and the orchestrator that forgot the flag is the one that would
+    // have to be asked afterwards which benchmark it meant.
+    const benchmark = parseBenchmark(requireString(args.benchmark, "--benchmark"));
     const taskPath = resolveRootPath(taskArg);
     const spec = loadTaskSpec(taskPath);
 
@@ -208,6 +212,7 @@ const main = async () => {
         skill_version: skillVersion,
         input_sha: inputSha(spec.input),
         skill_content: skillContent,
+        benchmark,
         created: new Date().toISOString(),
       };
 
