@@ -3,7 +3,7 @@ import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, 
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { codexEnv, codexReasoningArgs, operatorCodexModel, operatorCodexReasoningEffort, resolveCodexModel } from "../lib/codex-home.js";
+import { codexEnv, codexReasoningArgs, operatorCodexModel, operatorCodexReasoningEffort } from "../lib/codex-home.js";
 
 // `process.env.X = undefined` stores the string "undefined", which leaves the next test
 // resolving CODEX_HOME to <cwd>/undefined and reading OPENAI_API_KEY as set. Restore by
@@ -113,8 +113,6 @@ test("a logged-out machine fails before the run rather than during it", () => {
 test("the operator's configured model still reaches the run, and lands in the record", () => {
   withHomes({ "auth.json": "{}\n", "config.toml": `service_tier = "default"\nmodel = "gpt-5.6-sol"\n` }, () => {
     assert.equal(operatorCodexModel(), "gpt-5.6-sol");
-    assert.equal(resolveCodexModel(null), "gpt-5.6-sol");
-    assert.equal(resolveCodexModel("gpt-5.6-xhigh"), "gpt-5.6-xhigh");
   });
 });
 
@@ -127,11 +125,9 @@ test("the operator's reasoning effort crosses the redirect too", () => {
     assert.deepEqual(codexReasoningArgs("low"), ["-c", `model_reasoning_effort="low"`]);
   });
 
-  // Nothing configured means codex's own default, which is a legitimate choice: pass no
-  // flag rather than inventing one, and let the record say null.
+  // Nothing configured reads as null here; lib/effort.ts is what refuses to run on it.
   withHomes({ "auth.json": "{}\n", "config.toml": `model = "gpt-5.6-sol"\n` }, () => {
     assert.equal(operatorCodexReasoningEffort(), null);
-    assert.deepEqual(codexReasoningArgs(null), []);
   });
 });
 

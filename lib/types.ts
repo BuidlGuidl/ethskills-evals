@@ -21,13 +21,24 @@ export type ExpectStatus = "pass" | "fail";
 
 export type JudgeSpec = {
   agent: Executor;
-  model: string | null;
+  model: string;
+  reasoning_effort: string;
 };
 
 // self_judged: the same agent CLI performed and graded the run. The judge process is
 // still fresh and blind, and a single-stack benchmark is self-judged by design — but a
 // model is a weak judge of its own mistakes, so the report says so.
 export type JudgeRecord = JudgeSpec & {
+  self_judged: boolean;
+};
+
+// A judge as an existing record carries it. Grades written before the model and effort were
+// required name one or neither, so reading one back cannot demand what a new grade promises;
+// a fresh JudgeRecord satisfies this type, never the other way round.
+export type RecordedJudge = {
+  agent: Executor;
+  model: string | null;
+  reasoning_effort: string | null;
   self_judged: boolean;
 };
 
@@ -63,9 +74,8 @@ export type RunUsage = {
 export type ExecutorRecord = {
   executor: Executor;
   model: string | null;
-  // codex only, and only the operator's top-level `model_reasoning_effort =`: the redirected
-  // CODEX_HOME means codex never reads it, so the harness passes it on argv and names it
-  // here. null is "none configured, codex's default ran", which is a real answer.
+  // Both executors, always passed on argv: --effort for claude, and for codex --effort or the
+  // operator's top-level `model_reasoning_effort =`. null only on records made before #118.
   reasoning_effort?: string | null;
   started: string;
   finished: string | null;
@@ -108,7 +118,9 @@ export type ResultRecord = {
   // reads as a clean result, which is the exact condition the refusal exists to expose.
   harness_failure?: string;
   usage?: RunUsage;
-  judge?: JudgeRecord;
+  // RecordedJudge, not JudgeRecord: a grade written before the model and effort were required
+  // names one or neither, and those records still have to be readable.
+  judge?: RecordedJudge;
   // Fingerprint of the expect list this grade was made against. Two runs of one task are
   // comparable only when it matches; an edit to any expect line changes it, which is what
   // makes a stale grade detectable instead of merely wrong.

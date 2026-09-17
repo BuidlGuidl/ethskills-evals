@@ -215,7 +215,7 @@ const main = async () => {
       await writeFile(path.join(runDir, "result.yaml"), yaml.dump(result, { lineWidth: -1 }));
 
       console.log(workspacePath);
-      console.log(`Run the executor with: yarn run-executor --run artifacts/${spec.id}/${runId} --model <model>`);
+      console.log(`Run the executor with: yarn run-executor --run artifacts/${spec.id}/${runId} --model <model> --effort <effort>`);
     } catch (error) {
       await fail(error instanceof Error ? error.message : String(error), runDir, workspacePath);
     }

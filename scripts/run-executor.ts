@@ -5,10 +5,11 @@ import path from "node:path";
 import process from "node:process";
 import { finished } from "node:stream/promises";
 import yaml from "js-yaml";
-import { codexEnv, codexReasoningArgs, operatorCodexReasoningEffort, resolveCodexModel } from "../lib/codex-home.js";
+import { codexEnv, codexReasoningArgs } from "../lib/codex-home.js";
+import { CLAUDE_LAUNCH, resolveEffort, resolveModel } from "../lib/effort.js";
 import { detectBrokenShell } from "../lib/executor-health.js";
 import { hasCodexPrice } from "../lib/prices.js";
-import { loadYamlFile, parseArgs, requireString } from "../lib/task.js";
+import { loadYamlFile, optionalArg, parseArgs, requireString } from "../lib/task.js";
 import { buildTranscript, codexProgress } from "../lib/transcript.js";
 import { buildUsage } from "../lib/usage.js";
 import type { Executor, ExecutorRecord } from "../lib/types.js";
@@ -16,7 +17,7 @@ import { readWorkspacePath } from "../lib/workspace.js";
 
 const ROOT = process.cwd();
 const EXECUTORS = new Set<Executor>(["claude", "codex"]);
-const RUN_ARGS = new Set(["run", "model"]);
+const RUN_ARGS = new Set(["run", "model", "effort"]);
 
 const parseExecutor = (value: string): Executor => {
   if (!EXECUTORS.has(value as Executor)) {
@@ -33,15 +34,13 @@ const parseExecutor = (value: string): Executor => {
 // default, so without it every live-data task fails for the wrong reason) and
 // `--disable shell_snapshot` (see the block above the codex args). Both take the prompt
 // on stdin — TASK.md can outgrow the argv limit.
-const buildCommand = (executor: Executor, model: string | null, reasoningEffort: string | null) => {
+const buildCommand = (executor: Executor, model: string, reasoningEffort: string) => {
   if (executor === "claude") {
-    const args = ["-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN", "claude", "-p"];
-
-    if (model) {
-      args.push("--model", model);
-    }
+    const args = [...CLAUDE_LAUNCH];
 
     args.push(
+      "--model", model,
+      "--effort", reasoningEffort,
       "--setting-sources", "project",
       "--dangerously-skip-permissions",
       "--strict-mcp-config",
@@ -88,13 +87,9 @@ const buildCommand = (executor: Executor, model: string | null, reasoningEffort:
     "-s", "workspace-write",
     "-c", "sandbox_workspace_write.network_access=true",
     ...codexReasoningArgs(reasoningEffort),
+    "-m", model,
+    "-",
   ];
-
-  if (model) {
-    args.push("-m", model);
-  }
-
-  args.push("-");
 
   return { file: "codex", args };
 };
@@ -105,7 +100,8 @@ const writeRecord = async (recordPath: string, record: ExecutorRecord) =>
 const main = async () => {
   const args = parseArgs(RUN_ARGS);
   const runDir = path.resolve(ROOT, requireString(args.run, "--run"));
-  const requestedModel = args.model === undefined ? null : requireString(args.model, "--model");
+  const requestedModel = optionalArg(args, "model");
+  const requestedEffort = optionalArg(args, "effort");
   const resultPath = path.join(runDir, "result.yaml");
   const recordPath = path.join(runDir, "executor.yaml");
 
@@ -133,13 +129,11 @@ const main = async () => {
 
   const executor = parseExecutor(requireString(result.executor, "executor"));
   const prompt = await readFile(path.join(workspacePath, "TASK.md"), "utf8");
-  // codex reads no config.toml now that CODEX_HOME is redirected, so the operator's
-  // configured model is resolved here and passed on argv — where executor.yaml can record it.
-  const model = executor === "codex" ? resolveCodexModel(requestedModel) : requestedModel;
-  // Same reasoning: it changes the answer, the redirect drops it, and a benchmark whose runs
-  // straddle the change has nothing in the record to say so. null means the operator set
-  // none and codex's own default ran.
-  const reasoningEffort = executor === "codex" ? operatorCodexReasoningEffort() : null;
+  // Resolved before executor.yaml exists, so a refused run leaves the run dir reusable. Both
+  // land on argv and in the record: a benchmark whose runs straddle a change of either has
+  // nothing else to say so.
+  const model = resolveModel(executor, requestedModel, "--model");
+  const reasoningEffort = resolveEffort(executor, requestedEffort, "--effort");
   const env = executor === "codex" ? codexEnv() : process.env;
 
   // Asked here, before the spawn, because runs are append-only: a model with no row in
@@ -175,7 +169,7 @@ const main = async () => {
   const chunks: string[] = [];
   const errors: string[] = [];
 
-  console.log(`${executor}${model ? ` (${model})` : ""} → ${workspacePath}`);
+  console.log(`${executor} (${model} · ${reasoningEffort}) → ${workspacePath}`);
 
   const child = spawn(file, commandArgs, { cwd: workspacePath, env, stdio: ["pipe", "pipe", "pipe"] });
 
@@ -258,7 +252,7 @@ const main = async () => {
   // cheap run rather than a dead one, and run-stats reads the transcript first.
   const usage = buildUsage(executor, chunks.join(""), errors.join(""), Date.now() - startedAt, model);
   const transcript = buildTranscript(
-    { run: requireString(result.run, "run"), executor, model, exit, workspacePath, usage: interrupted ? null : usage },
+    { run: requireString(result.run, "run"), executor, model, reasoningEffort, exit, workspacePath, usage: interrupted ? null : usage },
     chunks.join(""),
     errors.join(""),
   );
@@ -279,7 +273,7 @@ const main = async () => {
   // A run with no split at all (a codex launched by hand without --json) has nothing to price,
   // and telling its operator to add a pricing row would not have helped.
   if (executor === "codex" && usage.input_tokens !== null && usage.cost_source === null) {
-    console.warn(`run-executor: no list price for codex model ${model ?? "(cli default)"} in lib/prices.ts; cost_usd recorded as null`);
+    console.warn(`run-executor: no list price for codex model ${model} in lib/prices.ts; cost_usd recorded as null`);
   }
 
   // buildUsage always measures the clock, so duration_s is a number here; cost prints as

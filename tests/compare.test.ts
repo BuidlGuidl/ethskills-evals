@@ -52,6 +52,7 @@ const run = (task: string, content: string | null, rubric: string, pass: boolean
     variant: content === null ? "no_skill" : "with_skill",
     executor: "claude",
     executor_model: "claude-opus-5",
+    executor_reasoning_effort: null,
     created: "2026-08-19T00:00:00.000Z",
     pass,
     expects: null,
@@ -97,7 +98,9 @@ const runs: Run[] = [
   run("addresses-quiz-002", null, "rubric-kept", true),
 ];
 
-const cell = (passed: number, total: number, rubrics: string[], prompts = ["prompt-1"], models = ["claude-opus-5"]) => ({
+// The fixtures record no effort, which is what a pre-#118 run looks like: the label says so
+// rather than reading as a stack that happens to match a run whose effort is known.
+const cell = (passed: number, total: number, rubrics: string[], prompts = ["prompt-1"], models = ["claude-opus-5 · effort unrecorded"]) => ({
   passed,
   total,
   rubrics,
@@ -272,16 +275,25 @@ test("a change of model is marked on the row and does not leave it out", () => {
 
   assert.equal(kept.modelMoved, true);
   assert.equal(kept.counted, true);
-  assert.deepEqual(kept.after?.models, ["gpt-5.6-terra"]);
+  assert.deepEqual(kept.after?.models, ["gpt-5.6-terra · effort unrecorded"]);
   assert.equal(kept.unaidedModels, true, "the unaided runs are on the older model, not the after column's");
-  assert.ok(comparison.rows.every(row => !row.modelMoved || row.before?.models.join() === "claude-opus-5"));
+  assert.ok(comparison.rows.every(row => !row.modelMoved || row.before?.models.join() === "claude-opus-5 · effort unrecorded"));
 });
 
 test("an unrecorded model is not known to equal a recorded one", () => {
   const unrecorded = steady.map(run => (run.skill_content === "big" ? { ...run, executor_model: null } : run));
   const [, kept] = compareSkill(skill, tasks, unrecorded).rows;
 
-  assert.deepEqual(kept.before?.models, ["claude (model unrecorded)"]);
+  assert.deepEqual(kept.before?.models, ["claude (model unrecorded) · effort unrecorded"]);
+  assert.equal(kept.modelMoved, true);
+});
+
+test("the same model at another effort is a different stack", () => {
+  const efforts = steady.map(run => ({ ...run, executor_reasoning_effort: run.skill_content === "big" ? "medium" : "high" }));
+  const [, kept] = compareSkill(skill, tasks, efforts).rows;
+
+  assert.deepEqual(kept.before?.models, ["claude-opus-5 · medium"]);
+  assert.deepEqual(kept.after?.models, ["claude-opus-5 · high"]);
   assert.equal(kept.modelMoved, true);
 });
 
