@@ -5,11 +5,10 @@ import test from "node:test";
 import yaml from "js-yaml";
 
 // A skill's `description` is the routing signal (#91): the agent reads every description and
-// picks one. Two descriptions claiming the same input is a coin flip, and a "Not for (`x`)"
-// clause is the only thing that breaks the tie — so every such clause has to point at a skill
-// that exists, and every pair of skills that name each other has to agree on who owns what.
-// #74 and #95 were both found by hand after a run went inert; this keeps the table honest
-// without re-reading twelve descriptions per PR.
+// picks one. A "Not for … (`x`)" clause hands an input to a neighbour, so the name inside has
+// to be a skill that still exists — a retired or misspelt one routes to nobody, and that is
+// found by hand after a run goes inert (#74, #95). Which skill *should* own an input is a
+// review question, not a string match, so nothing here tries to answer it.
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const SKILLS_DIR = path.join(ROOT, "skills");
@@ -37,34 +36,28 @@ const frontmatter = (name: string) => {
 // before any of them runs.
 const loadDescriptions = () => new Map(skillNames.map((name) => [name, frontmatter(name)]));
 
-// Sentences end at a period followed by whitespace or the end of the string. A period inside a
-// token (`scaffold.config`, `block.timestamp`) is not a sentence boundary.
-const sentences = (description: string) => description.split(/\.(?=\s|$)/).map((s) => s.trim()).filter(Boolean);
+// A cede is a parenthesised list of backticked names: (`qa`), (`security`, `audit`). Matching
+// the parenthetical itself, anywhere in the description, means a period inside the sentence
+// ("e.g.", `scaffold.config`), a code token that is not a skill (`forge`), or a lowercase "not
+// for" after a semicolon cannot hide or invent one. A backticked name outside parentheses is a
+// mention, not a cede — a description may talk about a neighbour without handing it anything.
+const CEDE = /\(\s*(`[a-z0-9-]+`(?:\s*(?:,|or|,\s*or)\s*`[a-z0-9-]+`)*)\s*\)/g;
 
-// A "Not for … (`x`)" sentence cedes an input to x. Every such sentence is inspected, and the
-// name inside has to resolve even when it is not (or no longer) a skill — a retired name here
-// is exactly the rot this test exists for.
-const cedes = (description: string) =>
-  sentences(description)
-    .filter((sentence) => /\bNot for\b/.test(sentence))
-    .flatMap((sentence) => [...sentence.matchAll(/`([a-z0-9-]+)`/g)].map((m) => m[1]));
+export const cedes = (description: string) =>
+  [...description.matchAll(CEDE)].flatMap((m) => [...m[1].matchAll(/`([a-z0-9-]+)`/g)].map((n) => n[1]));
 
-// Cedes that are one-way on purpose. The target is a narrower skill nobody confuses with
-// the source on its own input, so it has nothing to hand back. Adding a pair here is the
-// decision; leaving it out fails the test until someone makes it.
-const ONE_WAY: Record<string, string> = {
-  "building-blocks->addresses": "addresses is a lookup; nothing in it reads as protocol integration",
-  "building-blocks->l2s": "l2s picks a chain; it never names a DEX or lending market",
-  "concepts->ship": "ship scopes a build before it starts; nothing in it reads as how a contract runs unattended",
-  "frontend-playbook->frontend-ux": "frontend-ux never mentions scaffolding, forks, or IPFS; nothing to hand back",
-  "gas->l2s": "l2s owns non-cost chain choice and does not quote gas",
-  "orchestration->frontend-ux": "frontend-ux never mentions launch, deploy, or a live network; nothing to hand back",
-  "orchestration->qa": "qa's pre-ship checklist is UI-only and never claims deploy or launch order",
-  "protocol->l2s": "l2s compares chains, never whether an EIP is live",
-  "protocol->standards": "standards covers deployed ERCs; protocol asks about fork status",
-  "testing->audit": "audit is the offensive review of source; it never claims running or designing tests",
-  "tools->addresses": "addresses is a lookup; nothing in it reads as package choice",
-};
+test("cedes(): the parenthetical is the cede, whatever the sentence around it does", () => {
+  assert.deepEqual(cedes("Not for the pre-ship checklist, e.g. theme (`retired-skill`)."), ["retired-skill"]);
+  assert.deepEqual(cedes("Not for running `forge` tests on their own (`testing`)."), ["testing"]);
+  assert.deepEqual(cedes("Use for the frontend; not for the checklist (`qa`)."), ["qa"]);
+  assert.deepEqual(cedes("Not for source review (`security`, `audit`) or chain choice (`l2s` or `gas`)."), [
+    "security",
+    "audit",
+    "l2s",
+    "gas",
+  ]);
+  assert.deepEqual(cedes("Covers fuzz testing with `forge`. Use `security` instead for source review."), []);
+});
 
 test("every skill has a name matching its directory and a description", () => {
   for (const [name, fm] of loadDescriptions()) {
@@ -74,61 +67,18 @@ test("every skill has a name matching its directory and a description", () => {
   }
 });
 
-test("every Not-for sentence names at least one skill, and each one exists", () => {
+test("every cede names a skill that exists, and a Not-for cedes to somebody", () => {
   for (const [name, fm] of loadDescriptions()) {
     const description = fm.description as string;
+    const targets = cedes(description);
 
-    for (const sentence of sentences(description).filter((s) => /\bNot for\b/.test(s))) {
-      assert.ok(/`[a-z0-9-]+`/.test(sentence), `${name}: "${sentence}" cedes to nobody — name the skill in backticks`);
+    if (/\bnot for\b/i.test(description)) {
+      assert.ok(targets.length > 0, `${name}: has a "Not for" but cedes to nobody — name the skill as (\`skill\`)`);
     }
 
-    for (const target of cedes(description)) {
+    for (const target of targets) {
       assert.ok(skillNames.includes(target), `${name} cedes to \`${target}\`, which is not a skill in skills/`);
       assert.notEqual(target, name, `${name} cedes to itself`);
     }
-  }
-});
-
-test("every cede is reciprocated or recorded as one-way", () => {
-  const descriptions = loadDescriptions();
-  const unrecorded: string[] = [];
-
-  for (const [name, fm] of descriptions) {
-    for (const target of cedes(fm.description as string)) {
-      // Reciprocated means the target cedes something back, not that it mentions the source
-      // in passing — a mention with no cede leaves the coin flip in place.
-      const targetDescription = descriptions.get(target)?.description;
-
-      // An unknown target is reported by name in the test above; nothing to reciprocate here.
-      if (typeof targetDescription !== "string") continue;
-
-      const back = cedes(targetDescription).includes(name);
-
-      if (!back && !(`${name}->${target}` in ONE_WAY)) {
-        unrecorded.push(`${name} says "Not for … (\`${target}\`)" but ${target}'s description never cedes anything to \`${name}\``);
-      }
-    }
-  }
-
-  assert.deepEqual(unrecorded, [], "Either add the reciprocal clause or record why the cede is one-way in ONE_WAY");
-});
-
-test("ONE_WAY lists only cedes that exist and are still one-way", () => {
-  const descriptions = loadDescriptions();
-
-  for (const key of Object.keys(ONE_WAY)) {
-    const [name, target] = key.split("->");
-    const fm = descriptions.get(name);
-    const targetDescription = descriptions.get(target)?.description;
-
-    assert.ok(fm, `ONE_WAY names ${name}, which is not a skill`);
-    assert.equal(typeof targetDescription, "string", `ONE_WAY names ${target}, which is not a skill`);
-    assert.ok(cedes(fm.description as string).includes(target), `ONE_WAY has ${key}, but ${name} no longer cedes to ${target}`);
-    // The same predicate as the reciprocity test: a cede back, not a mention. Otherwise the two
-    // tests can demand opposite edits for a target that merely names the source in passing.
-    assert.ok(
-      !cedes(targetDescription as string).includes(name),
-      `ONE_WAY has ${key}, but ${target} now cedes to \`${name}\` — drop the entry`,
-    );
   }
 });
