@@ -52,6 +52,13 @@ id, and the old runs stay in `artifacts/` under theirs. `setup` refuses to run w
 rubric fix is not a restart: its regrades inherit the source run's id, and `expect_sha` is what
 tells the readings apart.
 
+**A benchmark several people run gets a skill**, `.agents/skills/benchmark-<name>/SKILL.md`,
+with `.claude/skills/benchmark-<name>` a symlink to it so claude lists it too. It pins what every
+operator has to agree on — the id, the commit, the arms, the stacks, the judge, the run count —
+so the human names only the skill to run, and nobody's defaults leak into a column. This file
+stays the general loop; the skill says only what is particular to that benchmark. Open one when
+the human asks to run a benchmark that has one (`benchmark-major-refine` is #119).
+
 **Editing an expect line is the one exception**, and it is still not an overwrite — see
 "Revising expect lines" below. A rubric fix is not a new measurement, so re-running the
 executor to answer it pays for the wrong thing, and paying it is what makes editing a
@@ -172,6 +179,8 @@ The task input never changes across variants. Only the workspace does.
 | `no_skill` | task input (+ template) only |
 | `with_skill` | the skill at `.agents/skills/<name>/`, agent decides to use it |
 
+`setup --skill-ref <commit>` installs the skill as git holds it at that commit instead of as the checkout has it, and records that commit as `skill_version`, always 8 characters so every clone writes the same one. That is how a benchmark measures two texts of one skill on the same tasks and the same harness: an old arm and a new arm are both `with_skill`, told apart by `skill_version` and `skill_content`, and the ref is in the run id too (`…-with-skill-2f0adb01-1`) so the two arms never share a run dir or a workspace parent. It is refused on `no_skill`, and on a commit where the skill does not exist.
+
 `.agents/skills/` is the canonical, executor-neutral location; codex discovers it natively. Claude only lists skills from `.claude/skills/`, so claude runs also get a copy there, and opencode runs get one at `.opencode/skills/`, because the harness switches opencode's `.agents/` discovery off to keep the operator's global `~/.agents/skills` out (see "The three roles"). Supporting a new executor means adding a bridge line in `setup` and its dir to `SKILL_INSTALL_DIRS` in `lib/workspace.ts`, or the skill leaks into the judge's evidence.
 
 To force the trigger, prepend one line to the spawn prompt (`Use the <name> skill for this task.`) and say so in the report. Trigger-inclusive and content-only numbers must never blend.
@@ -180,7 +189,7 @@ To force the trigger, prepend one line to the spawn prompt (`Use the <name> skil
 
 `artifacts/<task-id>/<run-id>/result.yaml`, one per run. `setup` writes the top half, `verify` the rest.
 
-`skill_version` is the repo's HEAD at setup time, not a hash of the skill, so it only identifies the text as long as that commit stays reachable. A rebase, an amend or a squash-merge orphans it and the run stops being able to say what it was given. Before a branch merges, check every `skill_version` it adds with `git merge-base --is-ancestor <sha> HEAD`; where one is unreachable, restamp it to a reachable commit whose `skills/<name>/SKILL.md` blob is byte-identical (`git rev-parse <sha>:skills/<name>/SKILL.md`) and say so in the report. Restamping to a commit with different text is falsifying the record.
+`skill_version` is the repo's HEAD at setup time (or the `--skill-ref` commit), not a hash of the skill, so it only identifies the text as long as that commit stays reachable. A rebase, an amend or a squash-merge orphans it and the run stops being able to say what it was given. Before a branch merges, check every `skill_version` it adds with `git merge-base --is-ancestor <sha> HEAD`; where one is unreachable, restamp it to a reachable commit whose `skills/<name>/SKILL.md` blob is byte-identical (`git rev-parse <sha>:skills/<name>/SKILL.md`) and say so in the report. Restamping to a commit with different text is falsifying the record.
 
 ```yaml
 task: gas-cost-estimate-001
