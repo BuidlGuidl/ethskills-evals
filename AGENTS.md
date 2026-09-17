@@ -31,7 +31,7 @@ The skills under `skills/` are vendored at a pinned commit, and a task spec may 
 
 ## The loop
 
-1. `yarn setup --task tasks/<id>.yaml --variant <no_skill|with_skill> --run <n> --executor <claude|codex>` — builds `<run-dir>/workspace`, seeds it as its own git repo and records the baseline sha in `<run-dir>/baseline.sha`.
+1. `yarn setup --task tasks/<id>.yaml --variant <no_skill|with_skill> --run <n> --executor <claude|codex> --benchmark <id>` — builds `<run-dir>/workspace`, seeds it as its own git repo and records the baseline sha in `<run-dir>/baseline.sha`.
 2. `yarn run-executor --run artifacts/<id>/<run-id> --model <model>` — spawns the executor in that workspace on `TASK.md`, saves the transcript, records when it finished. Long runs: start it detached (`nohup yarn run-executor … &`) and wait for `finished:` in `executor.yaml`, because a harness that kills the foreground process kills the run.
 3. `yarn verify --run artifacts/<id>/<run-id> --judge-agent <claude|codex> --judge-model <model>` — assembles evidence, runs the judge, fills `result.yaml`. Use the same judge for every run in the benchmark.
 4. Repeat for every variant and run.
@@ -41,6 +41,14 @@ The skills under `skills/` are vendored at a pinned commit, and a task spec may 
 8. Recommend skill edits only where a mistake record shows a real gap.
 
 Runs are append-only. A re-run after a patch is a new run id, never an overwrite.
+
+**`--benchmark <id>` names the comparison a run belongs to**, and every run of one comparison
+carries the same id: same task set, same expect lines, same skill text, one model and effort
+per column, `k` runs per variant, one judge. The site selects runs by this id, so it is what
+keeps a run made for a benchmark apart from a run made by hand a day later on the same model.
+Pick one readable name per benchmark, `2026-09-clean` say, and use it for every `setup` in it;
+if the benchmark has to start over (a task reworded, a rubric fixed), that is a new id, and the
+old runs stay in `artifacts/` under theirs. `setup` refuses to run without one.
 
 **Editing an expect line is the one exception**, and it is still not an overwrite — see
 "Revising expect lines" below. A rubric fix is not a new measurement, so re-running the

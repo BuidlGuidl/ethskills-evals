@@ -95,6 +95,7 @@ const loadResultRecord = (resultPath: string): ResultRecord => {
       loaded.skill_content === undefined || loaded.skill_content === null
         ? null
         : requireString(loaded.skill_content, "skill_content"),
+    benchmark: loaded.benchmark === undefined ? undefined : requireString(loaded.benchmark, "benchmark"),
     created: requireString(loaded.created, "created"),
     executor_model: loaded.executor_model === undefined || loaded.executor_model === null
       ? null
@@ -381,6 +382,7 @@ const main = async () => {
       skill_version: result.skill_version,
       ...(result.input_sha === undefined ? {} : { input_sha: result.input_sha }),
       skill_content: result.skill_content,
+      ...(result.benchmark === undefined ? {} : { benchmark: result.benchmark }),
       created: result.created,
       ...(regrade ? { regrade_of: result.run, regrade_reason: regradeReason as string, regraded_at: new Date().toISOString() } : {}),
       executor_model: executorRecord === null ? result.executor_model ?? null : executorRecord.model,

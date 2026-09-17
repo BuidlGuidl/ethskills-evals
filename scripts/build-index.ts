@@ -493,6 +493,8 @@ const main = async () => {
     judge: unknown;
     skill_version: string | null;
     skill_content: string | null;
+    /** the benchmark this run was made for, as named at setup; null on runs that predate the field */
+    benchmark: string | null;
     regrade_of: string | null;
     regraded_at: string | null;
     superseded_by: string | null;
@@ -586,6 +588,7 @@ const main = async () => {
         judge: loaded.judge ?? null,
         skill_version: skillVersion,
         skill_content: skillContent,
+        benchmark: typeof loaded.benchmark === "string" ? loaded.benchmark : null,
         regrade_of: typeof loaded.regrade_of === "string" ? loaded.regrade_of : null,
         regraded_at: typeof loaded.regraded_at === "string" ? loaded.regraded_at : null,
         superseded_by: null,

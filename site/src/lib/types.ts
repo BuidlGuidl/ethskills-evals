@@ -14,6 +14,8 @@ export type Run = {
   judge: { agent: string; model: string | null; self_judged: boolean } | null;
   skill_version: string | null;
   skill_content: string | null;
+  /** the benchmark this run was made for, as named at setup; null on runs that predate the field */
+  benchmark: string | null;
   /** this record re-judges that run's stored evidence; it is a second reading, not a second run */
   regrade_of: string | null;
   regraded_at: string | null;

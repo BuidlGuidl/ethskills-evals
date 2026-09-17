@@ -58,6 +58,7 @@ const run = (task: string, content: string | null, rubric: string, pass: boolean
     judge: null,
     skill_version: content,
     skill_content: content,
+    benchmark: null,
     regrade_of: null,
     regraded_at: null,
     superseded_by: null,
