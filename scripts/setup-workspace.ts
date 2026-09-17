@@ -5,7 +5,7 @@ import path from "node:path";
 import process from "node:process";
 import yaml from "js-yaml";
 import { readSkillContentId } from "../lib/skill.js";
-import { inputSha, loadTaskSpec, parseArgs, requireString } from "../lib/task.js";
+import { inputSha, loadTaskSpec, parseArgs, parseBenchmark, requireString } from "../lib/task.js";
 import type { Executor, ResultRecord, Variant } from "../lib/types.js";
 import { WORKSPACE_MANIFEST, WORKSPACE_POINTER, copyTree, pruneEmptyParent, removeTree, seedWorkspaceRepo, workspaceRoot } from "../lib/workspace.js";
 
@@ -13,8 +13,6 @@ const ROOT = process.cwd();
 const EXECUTORS = new Set<Executor>(["claude", "codex"]);
 const VARIANTS = new Set<Variant>(["no_skill", "with_skill"]);
 const SETUP_ARGS = new Set(["task", "executor", "variant", "run", "benchmark"]);
-// One token, so it can name a manifest entry or a dir without quoting.
-const BENCHMARK_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 const fail = async (message: string, ...dirs: (string | undefined)[]): Promise<never> => {
   for (const dir of dirs) {
@@ -45,17 +43,6 @@ const parseVariant = (value: string): Variant => {
   }
 
   return value as Variant;
-};
-
-// Required, not defaulted: a run with no benchmark id is what the site cannot tell from the
-// runs that came before, and the orchestrator that forgot the flag is the one that would
-// have to be asked afterwards which benchmark it meant.
-const parseBenchmark = (value: string) => {
-  if (!BENCHMARK_ID.test(value)) {
-    throw new Error(`benchmark id must be letters, digits, '.', '_' or '-', starting with a letter or digit: ${value}`);
-  }
-
-  return value;
 };
 
 const utcRunTimestamp = (date: Date) =>
@@ -151,6 +138,9 @@ const main = async () => {
     const executor = parseExecutor(requireString(args.executor, "--executor"));
     const variant = parseVariant(requireString(args.variant, "--variant"));
     const run = requireString(args.run, "--run");
+    // Required, not defaulted: a run with no benchmark id is what the site cannot tell from the
+    // runs that came before, and the orchestrator that forgot the flag is the one that would
+    // have to be asked afterwards which benchmark it meant.
     const benchmark = parseBenchmark(requireString(args.benchmark, "--benchmark"));
     const taskPath = resolveRootPath(taskArg);
     const spec = loadTaskSpec(taskPath);

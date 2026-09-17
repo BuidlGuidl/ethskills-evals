@@ -28,6 +28,17 @@ export const requireString = (value: unknown, name: string) => {
   return value;
 };
 
+// One token, so it can name a manifest entry or a dir without quoting.
+const BENCHMARK_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+export const parseBenchmark = (value: string) => {
+  if (!BENCHMARK_ID.test(value)) {
+    throw new Error(`benchmark id must be letters, digits, '.', '_' or '-', starting with a letter or digit: ${value}`);
+  }
+
+  return value;
+};
+
 export const requireNumber = (value: unknown, name: string) => {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     throw new Error(`missing required numeric field: ${name}`);

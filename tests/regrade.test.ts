@@ -67,6 +67,25 @@ test("--regrade demands a stated reason before it spends a judge call", () => {
   assert.match(verify(["--run", runDir, "--judge-agent", "claude", "--regrade"]), /--reason/);
 });
 
+test("--benchmark is refused on a first grading, since setup already named it", () => {
+  const runDir = fixtureRun(UNGRADED, true);
+
+  assert.match(verify(["--run", runDir, "--judge-agent", "claude", "--benchmark", "2026-09-clean"]), /only with --regrade/);
+});
+
+test("--benchmark on a regrade is checked before the judge runs", () => {
+  const runDir = fixtureRun({ ...UNGRADED, pass: false }, true);
+
+  assert.match(verify(["--run", runDir, "--judge-agent", "claude", "--regrade", "why", "--benchmark", "2026 09"]), /benchmark id must be/);
+});
+
+test("a record with `benchmark: null` loads as one with no benchmark", () => {
+  const runDir = fixtureRun({ ...UNGRADED, benchmark: null, pass: false }, true);
+
+  // Past the record load and into the evidence guard, which is where an untracked fixture stops.
+  assert.match(verify(["--run", runDir, "--judge-agent", "claude", "--regrade", "why"]), /not tracked by git/);
+});
+
 test("--regrade refuses evidence git does not track, since no other clone could reproduce it", () => {
   const runDir = fixtureRun({ ...UNGRADED, pass: false }, true);
 

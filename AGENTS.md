@@ -17,7 +17,7 @@ Ask one question, wait for the answer, then ask the next. Never batch them. **Wi
 
 **Step 3 — the expectations.** Draft the `expect:` lines and show them. These are the whole grading surface, so make them concrete enough that the judge cannot bluff: name the file, the magnitude, the derivation you want to see. "Does it look right" is not an expect line. Ask the human whether these are the right conditions, and whether any are missing.
 
-**Step 4 — how to run it.** Ask which executor (`claude` or `codex`) and how many runs per variant. Recommend `runs: 3`; fewer is noise. Runs on different executors or models are different benchmarks, so never blend them in one table.
+**Step 4 — how to run it.** Ask which executor (`claude` or `codex`) and how many runs per variant. Recommend `runs: 3`; fewer is noise. Runs on different executors or models are different benchmarks, so never blend them in one table. In the same question, propose the benchmark id every `setup` will carry (see `--benchmark` under "The loop"): the one the human named, or else a readable one you pick, `2026-09-clean` say. One id per comparison, not per task.
 
 Then write `tasks/<id>.yaml` and run the loop. Report back at the end, not during.
 
@@ -25,7 +25,7 @@ Then write `tasks/<id>.yaml` and run the loop. Report back at the end, not durin
 
 The skills under `skills/` are vendored at a pinned commit, and a task spec may already exist under `tasks/`. When it does:
 
-1. Ask exactly one question: the stack. Detect which harness you are running on and propose running everything on it — executor and judge both (claude → opus, codex → the model the harness reads out of `~/.codex/config.toml` and passes explicitly, see "The three roles"). One skill runs on one stack, start to finish. A second stack is a separate benchmark with its own runs and report, never blended into one table.
+1. Ask exactly one question: the stack. Detect which harness you are running on and propose running everything on it — executor and judge both (claude → opus, codex → the model the harness reads out of `~/.codex/config.toml` and passes explicitly, see "The three roles"). One skill runs on one stack, start to finish. A second stack is a separate benchmark with its own runs and report, never blended into one table. Propose the benchmark id in the same breath — the one the human named, or a readable one you pick — so `setup` has it without a second question.
 2. Run the loop as written, grading every run with `--judge-agent <your agent> --judge-model <your model>`.
 3. File the results PR titled `eval: <skill> (<stack>)`, report included.
 
@@ -48,7 +48,9 @@ per column, `k` runs per variant, one judge. The site selects runs by this id, s
 keeps a run made for a benchmark apart from a run made by hand a day later on the same model.
 Pick one readable name per benchmark, `2026-09-clean` say, and use it for every `setup` in it;
 if the benchmark has to start over (a task reworded, a rubric fixed), that is a new id, and the
-old runs stay in `artifacts/` under theirs. `setup` refuses to run without one.
+old runs stay in `artifacts/` under theirs. `setup` refuses to run without one. A rubric fix
+does not re-run anything, so its new id reaches the records through the regrades:
+`verify --regrade --benchmark <new-id>` files each re-reading under it, see "Revising expect lines".
 
 **Editing an expect line is the one exception**, and it is still not an overwrite — see
 "Revising expect lines" below. A rubric fix is not a new measurement, so re-running the
@@ -101,10 +103,10 @@ When you change a task's `expect:` lines after runs exist, the question is wheth
 
 ```bash
 yarn verify --run artifacts/<id>/<run-id> --regrade --reason "<what changed in the rubric and why>" \
-  --judge-agent claude --judge-model <model>
+  --benchmark <new-id> --judge-agent claude --judge-model <model>
 ```
 
-`--regrade` re-judges a run's stored evidence (`run.diff`, `output/`) against the task spec as it stands now. It never re-executes, never touches the source run dir, and writes `<run-id>-regrade-<n>/result.yaml` with `regrade_of` naming the run it re-read and `regrade_reason` saying why. Grade every run of the task, not the failures only — a wording change that flips a fail to a pass usually flips something the other way too. Hold the judge fixed at whatever graded the run originally; changing the wording and the judge together tells you nothing about either. A regrade is a second reading of one run, never a second run: never add it to a pass tally beside its source.
+`--regrade` re-judges a run's stored evidence (`run.diff`, `output/`) against the task spec as it stands now. It never re-executes, never touches the source run dir, and writes `<run-id>-regrade-<n>/result.yaml` with `regrade_of` naming the run it re-read and `regrade_reason` saying why. A rubric fix is a new benchmark, and `--benchmark <new-id>` is how the re-readings land under it while the source runs keep theirs; leave it off and the regrade inherits its source's id, which is right for a re-reading that changed nothing about the rubric (a judge that crashed mid-verdict, say). `verify` takes the flag only with `--regrade`: a first grading's id was named at `setup`. Grade every run of the task, not the failures only — a wording change that flips a fail to a pass usually flips something the other way too. Hold the judge fixed at whatever graded the run originally; changing the wording and the judge together tells you nothing about either. A regrade is a second reading of one run, never a second run: never add it to a pass tally beside its source.
 
 It refuses a run that was never graded, a graded run without the flag, a regrade with no stated reason, and — the one that decides whether any of this works — evidence git does not track. Two fields make a mixed rubric visible rather than something a reader reconstructs from git log:
 

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import yaml from "js-yaml";
+import { parseBenchmark } from "../lib/task.js";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const TASK_ID = "zz-benchmark-test-001";
@@ -51,6 +52,16 @@ test("setup refuses to run without --benchmark, and writes nothing", () => {
     assert.match(setup(["--task", taskPath, ...BASE], workspaceRoot), /--benchmark/);
     assert.equal(existsSync(path.join(ROOT, "artifacts", TASK_ID)), false);
   });
+});
+
+test("a benchmark id is one token of letters, digits, '.', '_' and '-'", () => {
+  for (const id of ["2026-09-clean", "v2", "a.b_c-d"]) {
+    assert.equal(parseBenchmark(id), id);
+  }
+
+  for (const id of ["2026 09", "-lead", ".lead", "", "a/b", "a:b"]) {
+    assert.throws(() => parseBenchmark(id), /benchmark id must be/);
+  }
 });
 
 test("setup refuses a benchmark id that is not one token", () => {

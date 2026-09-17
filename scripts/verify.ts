@@ -9,7 +9,7 @@ import { resolveCodexModel } from "../lib/codex-home.js";
 import { buildEvidence, snapshotOutput, writeDiff } from "../lib/evidence.js";
 import { detectBrokenShell } from "../lib/executor-health.js";
 import { judgeExpectations } from "../lib/judge.js";
-import { expectSha, inputSha, isRecord, loadTaskSpec, loadYamlFile, parseArgs, requireString } from "../lib/task.js";
+import { expectSha, inputSha, isRecord, loadTaskSpec, loadYamlFile, parseArgs, parseBenchmark, requireString } from "../lib/task.js";
 import { parseUsageRecord } from "../lib/usage.js";
 import type { Executor, ExecutorRecord, ExpectStatus, JudgeSpec, ResultRecord, Variant } from "../lib/types.js";
 import { pruneEmptyParent, readWorkspacePath } from "../lib/workspace.js";
@@ -18,7 +18,7 @@ const ROOT = process.cwd();
 const EXECUTORS = new Set<Executor>(["claude", "codex"]);
 const VARIANTS = new Set<Variant>(["no_skill", "with_skill"]);
 const VERIFY_ARGS = new Set([
-  "run", "judge-agent", "judge-model", "grade-failed-run", "keep-workspace", "regrade", "reason", "allow-skill-mention",
+  "run", "judge-agent", "judge-model", "grade-failed-run", "keep-workspace", "regrade", "reason", "benchmark", "allow-skill-mention",
 ]);
 // The judge is a fresh, blind process, never the orchestrator's own contaminated
 // context. --judge-agent is required rather than defaulting to the run's executor:
@@ -95,7 +95,12 @@ const loadResultRecord = (resultPath: string): ResultRecord => {
       loaded.skill_content === undefined || loaded.skill_content === null
         ? null
         : requireString(loaded.skill_content, "skill_content"),
-    benchmark: loaded.benchmark === undefined ? undefined : requireString(loaded.benchmark, "benchmark"),
+    // null reads as absent, like skill_content: a run that predates the field and a tool that
+    // writes every key both mean "no benchmark", and neither should stop a grade.
+    benchmark:
+      loaded.benchmark === undefined || loaded.benchmark === null
+        ? undefined
+        : requireString(loaded.benchmark, "benchmark"),
     created: requireString(loaded.created, "created"),
     executor_model: loaded.executor_model === undefined || loaded.executor_model === null
       ? null
@@ -254,7 +259,15 @@ const main = async () => {
       ? (typeof args.reason === "string" ? args.reason : requireString(args.regrade, "--reason (or --regrade \"<why>\")"))
       : null;
 
+    // A rubric fix starts a new benchmark, and the regrades are how its runs get re-read
+    // under it, so a regrade may name the id its record carries. A first grading may not:
+    // setup named the run's benchmark, and a second answer here would only contradict it.
+    if (args.benchmark !== undefined && !regrade) {
+      throw new Error("--benchmark is set at setup; verify takes it only with --regrade, to file the re-reading under a new benchmark");
+    }
+
     const result = loadResultRecord(resultPath);
+    const benchmark = args.benchmark === undefined ? result.benchmark : parseBenchmark(requireString(args.benchmark, "--benchmark"));
     const judgeSpec = resolveJudge(args);
     const executorRecord = loadExecutorRecord(runDir, regrade);
 
@@ -382,7 +395,7 @@ const main = async () => {
       skill_version: result.skill_version,
       ...(result.input_sha === undefined ? {} : { input_sha: result.input_sha }),
       skill_content: result.skill_content,
-      ...(result.benchmark === undefined ? {} : { benchmark: result.benchmark }),
+      ...(benchmark === undefined ? {} : { benchmark }),
       created: result.created,
       ...(regrade ? { regrade_of: result.run, regrade_reason: regradeReason as string, regraded_at: new Date().toISOString() } : {}),
       executor_model: executorRecord === null ? result.executor_model ?? null : executorRecord.model,

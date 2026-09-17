@@ -537,6 +537,12 @@ const main = async () => {
         );
       }
 
+      // Unquoted `benchmark: 2026-09-17` loads as a Date, and silently reading it as null would
+      // drop the run out of its benchmark — the one thing the field exists to prevent.
+      if (loaded.benchmark !== undefined && loaded.benchmark !== null && typeof loaded.benchmark !== "string") {
+        warnings.push(`${runDir}: benchmark is not a string (${JSON.stringify(loaded.benchmark)}); quote it in result.yaml`);
+      }
+
       let skillContent: string | null = null;
 
       if (skill && skillVersion) {
