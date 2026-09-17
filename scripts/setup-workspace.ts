@@ -6,7 +6,7 @@ import path from "node:path";
 import process from "node:process";
 import yaml from "js-yaml";
 import { readSkillContentId } from "../lib/skill.js";
-import { inputSha, loadTaskSpec, parseArgs, parseBenchmark, requireString } from "../lib/task.js";
+import { inputSha, loadTaskSpec, optionalArg, parseArgs, parseBenchmark, requireString } from "../lib/task.js";
 import { EXECUTORS, type Executor, type ResultRecord, type Variant } from "../lib/types.js";
 import { WORKSPACE_MANIFEST, WORKSPACE_POINTER, copyTree, pruneEmptyParent, removeTree, seedWorkspaceRepo, workspaceRoot, SKILL_BRIDGE_DIRS } from "../lib/workspace.js";
 
@@ -63,6 +63,13 @@ const findGitRoot = (dir: string) => {
   return result.stdout.trim();
 };
 
+// The recorded length of a skill_version is fixed by slicing the full sha, not left to git:
+// `--short`, `--short=<n>` included, only sets a minimum and lengthens the abbreviation as the
+// clone's object count needs, so one commit would record as two versions across operators and a
+// `run-stats --skill-version` filter would silently drop the longer one. Records from before this
+// carry whatever `--short` gave at the time, 7 characters and up.
+const SKILL_VERSION_LENGTH = 8;
+
 const getSkillVersion = (sourceDir: string) => {
   const gitRoot = findGitRoot(sourceDir);
 
@@ -70,21 +77,17 @@ const getSkillVersion = (sourceDir: string) => {
     return "unversioned";
   }
 
-  return execFileSync("git", ["-C", sourceDir, "rev-parse", "--short", "HEAD"], {
+  return execFileSync("git", ["-C", sourceDir, "rev-parse", "HEAD"], {
     encoding: "utf8",
-  }).trim();
+  }).trim().slice(0, SKILL_VERSION_LENGTH);
 };
 
 // --skill-ref installs the skill as it stood at a commit rather than as the checkout has it,
 // which is how a benchmark measures an old text beside the new one on the same task set and
 // harness. Only what git holds for the skill dir is installed, so an uncommitted edit to it
 // cannot ride into an arm that claims to be a commit. skill_version is that commit, which is
-// what build-index already reads the text back from. The recorded length is fixed by slicing the
-// full sha, not left to git: `--short`, `--short=<n>` included, only sets a minimum and lengthens
-// the abbreviation as the clone's object count needs, so one commit would record as two versions
-// across operators and a `run-stats --skill-version` filter would silently drop the longer one.
-// git itself is always handed the full sha, which a short one could be ambiguous against.
-const SKILL_REF_LENGTH = 8;
+// what build-index already reads the text back from. git itself is always handed the full sha,
+// which a short one could be ambiguous against.
 
 const resolveSkillRef = (ref: string, skillPath: string) => {
   const resolved = spawnSync("git", ["-C", ROOT, "rev-parse", "--verify", "--quiet", `${ref}^{commit}`], {
@@ -97,7 +100,7 @@ const resolveSkillRef = (ref: string, skillPath: string) => {
   }
 
   const full = resolved.stdout.trim();
-  const short = full.slice(0, SKILL_REF_LENGTH);
+  const short = full.slice(0, SKILL_VERSION_LENGTH);
   const present = spawnSync("git", ["-C", ROOT, "cat-file", "-e", `${full}:${skillPath}/SKILL.md`], { stdio: "pipe" });
 
   if (present.status !== 0) {
@@ -190,7 +193,7 @@ const main = async () => {
     // runs that came before, and the orchestrator that forgot the flag is the one that would
     // have to be asked afterwards which benchmark it meant.
     const benchmark = parseBenchmark(requireString(args.benchmark, "--benchmark"));
-    const skillRef = args["skill-ref"] === undefined ? null : requireString(args["skill-ref"], "--skill-ref");
+    const skillRef = optionalArg(args, "skill-ref");
     const taskPath = resolveRootPath(taskArg);
     const spec = loadTaskSpec(taskPath);
 

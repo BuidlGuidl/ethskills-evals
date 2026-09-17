@@ -32,14 +32,18 @@ const setup = (args: string[], workspaceRoot: string) => {
 const withTask = (run: (taskPath: string, workspaceRoot: string) => void) => {
   const dir = mkdtempSync(path.join(tmpdir(), "eval-skill-ref-"));
   const taskPath = path.join(dir, `${TASK_ID}.yaml`);
+  const artifacts = path.join(ROOT, "artifacts", TASK_ID);
 
+  // A killed test never reaches the finally below, and the run dir it left would be the one the
+  // next test reads back as its own.
+  rmSync(artifacts, { recursive: true, force: true });
   writeFileSync(taskPath, "skill: skills/addresses\ninput: |\n  Say hello.\nexpect:\n  - says hello\nruns: 1\n");
 
   try {
     run(taskPath, path.join(dir, "workspaces"));
   } finally {
     rmSync(dir, { recursive: true, force: true });
-    rmSync(path.join(ROOT, "artifacts", TASK_ID), { recursive: true, force: true });
+    rmSync(artifacts, { recursive: true, force: true });
   }
 };
 
@@ -82,6 +86,21 @@ test("--skill-ref records the same fixed-length sha however it is spelled", () =
     const record = yaml.load(readFileSync(path.join(ROOT, "artifacts", TASK_ID, runId, "result.yaml"), "utf8")) as Record<string, unknown>;
 
     assert.equal(record.skill_version, FIRST_VERSION);
+  });
+});
+
+test("with_skill without --skill-ref records HEAD at the same fixed length", () => {
+  withTask((taskPath, workspaceRoot) => {
+    const output = setup(args(taskPath, "with_skill"), workspaceRoot);
+
+    assert.equal(output, "", output);
+
+    const [runId] = readdirSync(path.join(ROOT, "artifacts", TASK_ID));
+    const record = yaml.load(readFileSync(path.join(ROOT, "artifacts", TASK_ID, runId, "result.yaml"), "utf8")) as Record<string, unknown>;
+    const head = execFileSync("git", ["-C", ROOT, "rev-parse", "HEAD"], { encoding: "utf8" }).trim().slice(0, 8);
+
+    assert.equal(record.skill_version, head);
+    assert.match(runId, /-claude-with-skill-1$/);
   });
 });
 

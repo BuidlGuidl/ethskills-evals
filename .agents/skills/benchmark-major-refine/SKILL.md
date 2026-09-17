@@ -50,11 +50,11 @@ Ask at most one question: the stack, if the human did not name one. Recommend th
 
    ```bash
    git merge-base --is-ancestor <benchmark commit> HEAD
-   git diff --quiet <benchmark commit> -- tasks templates lib scripts package.json yarn.lock
-   test -z "$(git ls-files --others --exclude-standard -- tasks templates lib scripts)"
+   git diff --quiet <benchmark commit> -- tasks templates lib scripts package.json yarn.lock tsconfig.json
+   extra=$(git ls-files --others --exclude-standard -- tasks templates lib scripts && git ls-files --others -- 'tasks/*.yaml') && test -z "$extra"
    ```
 
-   A non-zero exit on the second means the rubric or the harness moved since the benchmark started. That is a team decision (a new benchmark id), not something to fix on a branch. The third fails on any untracked file there: `git diff` does not see them, and an untracked `tasks/*.yaml` would join the task set below.
+   A non-zero exit on the second means the rubric or the harness moved since the benchmark started. That is a team decision (a new benchmark id), not something to fix on a branch. The third fails on any untracked file there: `git diff` does not see them, and an untracked `tasks/*.yaml` would join the task set below. Its second listing drops `--exclude-standard` for the task specs, because the task set is a glob and a glob picks up a yaml your own gitignore hides; and the `&&` chain is what makes a `git` that failed, and so listed nothing, a failure rather than a pass.
 3. **The branch.** Work on `eval/major-refine-<skill>-<slug>`, cut from `main`.
 4. **`EVAL_WORKSPACE_ROOT` is unset**, or points outside this repo. A workspace inside the repo is a walk up from `tasks/` and from this file, which names the arm the run is in.
 

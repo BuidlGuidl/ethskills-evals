@@ -35,6 +35,9 @@ const withTask = (run: (taskPath: string, workspaceRoot: string) => void) => {
   const taskPath = path.join(dir, `${TASK_ID}.yaml`);
   const artifacts = path.join(ROOT, "artifacts", TASK_ID);
 
+  // A killed test never reaches the finally below, and the run dir it left would be the one the
+  // next test reads back as its own.
+  rmSync(artifacts, { recursive: true, force: true });
   writeFileSync(taskPath, "skill: skills/addresses\ninput: |\n  Say hello.\nexpect:\n  - says hello\nruns: 1\n");
 
   try {
