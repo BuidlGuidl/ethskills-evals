@@ -47,10 +47,10 @@ carries the same id: same task set, same expect lines, same skill text, one mode
 per column, `k` runs per variant, one judge. The site selects runs by this id, so it is what
 keeps a run made for a benchmark apart from a run made by hand a day later on the same model.
 Pick one readable name per benchmark, `2026-09-clean` say, and use it for every `setup` in it;
-if the benchmark has to start over (a task reworded, a rubric fixed), that is a new id, and the
-old runs stay in `artifacts/` under theirs. `setup` refuses to run without one. A rubric fix
-does not re-run anything, so its new id reaches the records through the regrades:
-`verify --regrade --benchmark <new-id>` files each re-reading under it, see "Revising expect lines".
+if the benchmark has to start over (a task reworded, so its runs are made again), that is a new
+id, and the old runs stay in `artifacts/` under theirs. `setup` refuses to run without one. A
+rubric fix is not a restart: its regrades inherit the source run's id, and `expect_sha` is what
+tells the readings apart.
 
 **Editing an expect line is the one exception**, and it is still not an overwrite — see
 "Revising expect lines" below. A rubric fix is not a new measurement, so re-running the
@@ -109,10 +109,10 @@ When you change a task's `expect:` lines after runs exist, the question is wheth
 
 ```bash
 yarn verify --run artifacts/<id>/<run-id> --regrade --reason "<what changed in the rubric and why>" \
-  --benchmark <new-id> --judge-agent claude --judge-model <model> --judge-effort <effort>
+  --judge-agent claude --judge-model <model> --judge-effort <effort>
 ```
 
-`--regrade` re-judges a run's stored evidence (`run.diff`, `output/`) against the task spec as it stands now. It never re-executes, never touches the source run dir, and writes `<run-id>-regrade-<n>/result.yaml` with `regrade_of` naming the run it re-read and `regrade_reason` saying why. A rubric fix is a new benchmark, and `--benchmark <new-id>` is how the re-readings land under it while the source runs keep theirs; leave it off and the regrade inherits its source's id, which is right for a re-reading that changed nothing about the rubric (a judge that crashed mid-verdict, say). `verify` takes the flag only with `--regrade`: a first grading's id was named at `setup`. Grade every run of the task, not the failures only — a wording change that flips a fail to a pass usually flips something the other way too. Hold the judge fixed at whatever graded the run originally; changing the wording and the judge together tells you nothing about either. `verify` holds it for you: on a regrade the judge flags may be omitted, and the judge recorded in the source grade is reused, flags that disagree with it are refused, and a source grade that names no judge still has to be stated in full. A regrade is a second reading of one run, never a second run: never add it to a pass tally beside its source.
+`--regrade` re-judges a run's stored evidence (`run.diff`, `output/`) against the task spec as it stands now. It never re-executes, never touches the source run dir, and writes `<run-id>-regrade-<n>/result.yaml` with `regrade_of` naming the run it re-read and `regrade_reason` saying why. It inherits the source run's `benchmark`: the site supersedes readings along `regrade_of`, so a re-reading filed under another id would take the run out of the benchmark it was made for. Grade every run of the task, not the failures only — a wording change that flips a fail to a pass usually flips something the other way too. Hold the judge fixed at whatever graded the run originally; changing the wording and the judge together tells you nothing about either. `verify` holds it for you: on a regrade the judge flags may be omitted, and the judge recorded in the source grade is reused, flags that disagree with it are refused, and a source grade that names no judge still has to be stated in full. A regrade is a second reading of one run, never a second run: never add it to a pass tally beside its source.
 
 It refuses a run that was never graded, a graded run without the flag, a regrade with no stated reason, and — the one that decides whether any of this works — evidence git does not track. Two fields make a mixed rubric visible rather than something a reader reconstructs from git log:
 
@@ -243,7 +243,7 @@ key per measurement instead of the two bare variant lines — see
 **Every cost or duration number in a report comes out of `yarn run-stats`, never off a keyboard.**
 
 ```bash
-yarn run-stats --tasks <id>,<id> [--since 2026-08-27] [--variant no_skill] [--skill-version <sha>] [--runs]
+yarn run-stats --tasks <id>,<id> [--benchmark <id>] [--since 2026-08-27] [--variant no_skill] [--skill-version <sha>] [--runs]
 ```
 
 It reads the `## run stats` footer `run-executor` writes into each committed `transcript.md`,

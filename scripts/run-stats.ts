@@ -11,7 +11,7 @@ import { EXECUTORS, type CostSource, type Executor, type RunUsage, type Variant 
 // report — one cell took its duration from an aggregate over seven tasks and its cost from the
 // wrong column — and nothing in the repo could have caught it.
 const ROOT = process.cwd();
-const STATS_ARGS = new Set(["tasks", "since", "variant", "skill-version", "runs"]);
+const STATS_ARGS = new Set(["tasks", "since", "benchmark", "variant", "skill-version", "runs"]);
 
 type RunStats = {
   run: string;
@@ -85,7 +85,7 @@ const median = (values: number[]) => {
 // Two with_skill arms of one task differ only by which revision of the skill they read, and
 // the run directory name does not say. skill_version does, so an arm is a filter rather than a
 // date range a reader has to know the boundaries of.
-const collect = (taskIds: string[], since: string | null, variant: Variant | null, skillVersion: string | null) => {
+const collect = (taskIds: string[], since: string | null, benchmark: string | null, variant: Variant | null, skillVersion: string | null) => {
   const stats: RunStats[] = [];
 
   for (const taskId of taskIds) {
@@ -116,6 +116,12 @@ const collect = (taskIds: string[], since: string | null, variant: Variant | nul
       const result = loadYamlFile(resultPath);
       const runVariant = result.variant as Variant;
 
+      // The selector a report wants: a date is not one, since a run made by hand inside a
+      // benchmark's weeks carries no mark that --since could see.
+      if (benchmark !== null && result.benchmark !== benchmark) {
+        continue;
+      }
+
       if (variant !== null && runVariant !== variant) {
         continue;
       }
@@ -144,10 +150,11 @@ const main = () => {
     const args = parseArgs(STATS_ARGS);
     const taskIds = requireString(args.tasks, "--tasks").split(",").map(id => id.trim());
     const since = args.since === undefined ? null : requireString(args.since, "--since");
+    const benchmark = args.benchmark === undefined ? null : requireString(args.benchmark, "--benchmark");
     const variant = args.variant === undefined ? null : (requireString(args.variant, "--variant") as Variant);
     const skillVersion = args["skill-version"] === undefined ? null : requireString(args["skill-version"], "--skill-version");
     const showRuns = args.runs !== undefined;
-    const stats = collect(taskIds, since, variant, skillVersion);
+    const stats = collect(taskIds, since, benchmark, variant, skillVersion);
 
     // A codex cost is derived from a list price, a claude cost is what claude reported; the
     // cell says which, so neither is quoted as the other.

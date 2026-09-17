@@ -52,6 +52,21 @@ export const nullableString = (value: unknown, name: string) =>
 export const optionalArg = (args: Record<string, string | boolean>, flag: string) =>
   args[flag] === undefined ? null : requireString(args[flag], `--${flag}`);
 
+// For build-index, which reads records leniently so one bad file cannot stop the site — but
+// not silently: an unquoted `benchmark: 2026-09-17` loads as a Date, and reading it as null
+// would drop the run out of its benchmark, the one thing the field exists to prevent.
+export const readBenchmark = (value: unknown): { benchmark: string | null; warning: string | null } => {
+  if (value === undefined || value === null) {
+    return { benchmark: null, warning: null };
+  }
+
+  if (typeof value === "string") {
+    return { benchmark: value, warning: null };
+  }
+
+  return { benchmark: null, warning: `benchmark is not a string (${JSON.stringify(value)}); quote it in result.yaml` };
+};
+
 export const requireNumber = (value: unknown, name: string) => {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     throw new Error(`missing required numeric field: ${name}`);

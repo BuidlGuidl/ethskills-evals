@@ -8,8 +8,9 @@ import { guardJudgeBlindness } from "../lib/blindness.js";
 import { resolveEffort, resolveModel } from "../lib/effort.js";
 import { buildEvidence, snapshotOutput, writeDiff } from "../lib/evidence.js";
 import { detectBrokenShell } from "../lib/executor-health.js";
+import { gradedRecord } from "../lib/grade.js";
 import { judgeExpectations } from "../lib/judge.js";
-import { expectSha, inputSha, isRecord, loadTaskSpec, loadYamlFile, nullableString, optionalArg, parseArgs, parseBenchmark, requireString } from "../lib/task.js";
+import { expectSha, inputSha, isRecord, loadTaskSpec, loadYamlFile, nullableString, optionalArg, parseArgs, requireString } from "../lib/task.js";
 import { parseUsageRecord } from "../lib/usage.js";
 import { EXECUTORS, JUDGE_AGENTS, type Executor, type ExecutorRecord, type ExpectStatus, type JudgeAgent, type JudgeSpec, type RecordedJudge, type ResultRecord, type Variant } from "../lib/types.js";
 import { pruneEmptyParent, readWorkspacePath } from "../lib/workspace.js";
@@ -17,7 +18,7 @@ import { pruneEmptyParent, readWorkspacePath } from "../lib/workspace.js";
 const ROOT = process.cwd();
 const VARIANTS = new Set<Variant>(["no_skill", "with_skill"]);
 const VERIFY_ARGS = new Set([
-  "run", "judge-agent", "judge-model", "judge-effort", "grade-failed-run", "keep-workspace", "regrade", "reason", "benchmark", "allow-skill-mention",
+  "run", "judge-agent", "judge-model", "judge-effort", "grade-failed-run", "keep-workspace", "regrade", "reason", "allow-skill-mention",
 ]);
 // The judge is a fresh, blind process, never the orchestrator's own contaminated
 // context. --judge-agent is required rather than defaulting to the run's executor:
@@ -298,16 +299,7 @@ const main = async () => {
       ? (typeof args.reason === "string" ? args.reason : requireString(args.regrade, "--reason (or --regrade \"<why>\")"))
       : null;
 
-    // A rubric fix starts a new benchmark, and the regrades are how its runs get re-read
-    // under it, so a regrade may name the id its record carries. A first grading may not:
-    // setup named the run's benchmark, and a second answer here would only contradict it.
-    if (args.benchmark !== undefined && !regrade) {
-      throw new Error("--benchmark is set at setup; verify takes it only with --regrade, to file the re-reading under a new benchmark");
-    }
-
     const result = loadResultRecord(resultPath);
-    const benchmarkArg = optionalArg(args, "benchmark");
-    const benchmark = benchmarkArg === null ? result.benchmark : parseBenchmark(benchmarkArg);
     // Only on a regrade: a first grading has no judge to hold to, and the flags are the whole
     // statement of who is grading.
     const judgeSpec = resolveJudge(args, regrade ? result.judge : undefined);
@@ -422,45 +414,16 @@ const main = async () => {
       throw new Error(`judge failed: ${verdict.error}`);
     }
 
-    const pass = Object.values(verdict.expects).every(status => status === "pass");
-    const sha = expectSha(taskSpec.expect);
     // A regrade is append-only like every other record: it lands in its own dir beside the
     // source, so the original grading stays readable as what the task said at the time.
     const targetDir = regrade ? nextRegradeDir(runDir) : runDir;
-    // Rebuilt field by field rather than spread: loadResultRecord leaves `expects` and
-    // `pass` as undefined keys, so spreading would strand `judge` below them in the yaml.
-    const gradedResult: ResultRecord = {
-      task: result.task,
-      run: regrade ? path.basename(targetDir) : result.run,
-      executor: result.executor,
-      variant: result.variant,
-      skill_version: result.skill_version,
-      ...(result.input_sha === undefined ? {} : { input_sha: result.input_sha }),
-      skill_content: result.skill_content,
-      ...(benchmark === undefined ? {} : { benchmark }),
-      created: result.created,
-      ...(regrade ? { regrade_of: result.run, regrade_reason: regradeReason as string, regraded_at: new Date().toISOString() } : {}),
-      executor_model: executorRecord === null ? result.executor_model ?? null : executorRecord.model,
-      executor_reasoning_effort:
-        executorRecord === null ? result.executor_reasoning_effort ?? null : executorRecord.reasoning_effort ?? null,
-      executor_exit: executorRecord === null ? result.executor_exit : executorRecord.exit ?? undefined,
-      // Carried like `retracted` below: a run that was graded over a dead shell stays a run
-      // that was graded over a dead shell, and a regrade has no capture left to re-detect it
-      // from — executor.err is gitignored, so re-deriving it would silently drop the flag.
-      harness_failure: harnessFailure ?? result.harness_failure,
-      // Copied from executor.yaml rather than re-derived: run-executor measured it, and
-      // the raw capture it measured from is gitignored, so result.yaml is where a reader
-      // of the eval PR can still see what the run cost.
-      usage: executorRecord === null ? result.usage : executorRecord.usage,
-      judge: { ...judgeSpec, self_judged: judgeSpec.agent === result.executor },
-      expect_sha: sha,
-      expects: verdict.expects,
-      pass,
-      // A retraction is a fact about the run — its deliverable never reached the evidence —
-      // so it survives a re-reading of that evidence. Dropping it here would launder an
-      // excluded run back into a table by way of a rubric edit.
-      ...(result.retracted === undefined ? {} : { retracted: result.retracted }),
-    };
+    const gradedResult = gradedRecord(
+      result,
+      { expects: verdict.expects, expectSha: expectSha(taskSpec.expect), judge: judgeSpec, harnessFailure },
+      executorRecord,
+      regrade ? { run: path.basename(targetDir), reason: regradeReason as string, at: new Date().toISOString() } : null,
+    );
+    const pass = gradedResult.pass === true;
 
     if (regrade) {
       await mkdir(targetDir, { recursive: true });
@@ -475,7 +438,7 @@ const main = async () => {
 
       console.log(
         `${path.basename(targetDir)}: ${before} -> ${pass ? "pass" : "fail"}, `
-          + `expect_sha ${result.expect_sha ?? "unrecorded"} -> ${sha}`,
+          + `expect_sha ${result.expect_sha ?? "unrecorded"} -> ${gradedResult.expect_sha}`,
       );
     }
 
