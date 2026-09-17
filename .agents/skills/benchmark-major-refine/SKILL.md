@@ -51,9 +51,10 @@ Ask at most one question: the stack, if the human did not name one. Recommend th
    ```bash
    git merge-base --is-ancestor <benchmark commit> HEAD
    git diff --quiet <benchmark commit> -- tasks templates lib scripts package.json yarn.lock
+   git ls-files --others --exclude-standard -- tasks templates lib scripts
    ```
 
-   A non-zero exit on the second means the rubric or the harness moved since the benchmark started. That is a team decision (a new benchmark id), not something to fix on a branch.
+   A non-zero exit on the second means the rubric or the harness moved since the benchmark started. That is a team decision (a new benchmark id), not something to fix on a branch. The third has to print nothing: `git diff` does not see untracked files, and an untracked `tasks/*.yaml` would join the task set below.
 3. **The branch.** Work on `eval/major-refine-<skill>-<slug>`, cut from `main`.
 4. **`EVAL_WORKSPACE_ROOT` is unset**, or points outside this repo. A workspace inside the repo is a walk up from `tasks/` and from this file, which names the arm the run is in.
 

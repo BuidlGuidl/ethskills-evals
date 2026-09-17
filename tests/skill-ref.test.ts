@@ -97,7 +97,8 @@ test("an old and a new arm of the same run number differ in their run id beyond 
     assert.deepEqual(outputs, ["", ""]);
 
     const arms = readdirSync(path.join(ROOT, "artifacts", TASK_ID)).map(id => id.replace(/^\d{4}-\d{2}-\d{2}T\d{6}Z-/, ""));
-    const head = execFileSync("git", ["-C", ROOT, "rev-parse", "--short=8", "HEAD"], { encoding: "utf8" }).trim();
+    // Sliced, not --short=8: that is only a minimum, and setup records exactly 8.
+    const head = execFileSync("git", ["-C", ROOT, "rev-parse", "HEAD"], { encoding: "utf8" }).trim().slice(0, 8);
 
     assert.equal(new Set(arms).size, 2, arms.join(", "));
     assert.deepEqual([FIRST_VERSION, head].map(sha => arms.filter(arm => arm.includes(`-${sha}-`)).length), [1, 1], arms.join(", "));
