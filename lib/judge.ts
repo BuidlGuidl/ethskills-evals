@@ -2,8 +2,9 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { codexEnv, codexReasoningArgs, operatorCodexReasoningEffort } from "./codex-home.js";
-import type { Executor, ExpectStatus, JudgeSpec } from "./types.js";
+import { codexEnv, codexReasoningArgs } from "./codex-home.js";
+import { CLAUDE_LAUNCH } from "./effort.js";
+import type { ExpectStatus, JudgeAgent, JudgeSpec } from "./types.js";
 
 export type JudgeResult =
   | { ok: true; expects: Record<string, ExpectStatus> }
@@ -70,14 +71,13 @@ type Spawned = { ok: true; output: string } | { ok: false; error: string };
 // stray key can't silently swap the account the judge grades under. The prompt goes in
 // on stdin, not argv: repo-shaped runs assemble evidence far larger than the OS argv
 // limit (E2BIG), and `-p` with no positional prompt reads it from stdin.
-const runClaudeJudge = (prompt: string, model: string | null): Spawned => {
-  const args = ["-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN", "claude", "-p"];
-
-  if (model) {
-    args.push("--model", model);
-  }
-
-  args.push("--setting-sources", "project", "--strict-mcp-config");
+const runClaudeJudge = (prompt: string, judge: JudgeSpec): Spawned => {
+  const args = [
+    ...CLAUDE_LAUNCH,
+    "--model", judge.model,
+    "--effort", judge.reasoning_effort,
+    "--setting-sources", "project", "--strict-mcp-config",
+  ];
 
   const result = spawnSync("env", args, {
     input: prompt,
@@ -108,27 +108,23 @@ const runClaudeJudge = (prompt: string, model: string | null): Spawned => {
 // grader either — which is also why the model arrives resolved (verify does it, so
 // result.yaml names the model that graded). No network flag here on purpose: the judge
 // grades from the evidence in its prompt, so read-only's default deny is correct.
-const runCodexJudge = (prompt: string, model: string | null): Spawned => {
+const runCodexJudge = (prompt: string, judge: JudgeSpec): Spawned => {
   const dir = mkdtempSync(path.join(tmpdir(), "skill-eval-judge-"));
   const messagePath = path.join(dir, "last-message.txt");
-  // The operator's model_reasoning_effort rides along for the same reason the model does:
-  // the redirect means codex reads none of their config.toml, and a judge whose effort
-  // silently changed mid-benchmark grades the back half differently from the front half.
+  // The effort verify resolved rides along for the same reason the model does: the redirect
+  // means codex reads none of the operator's config.toml, and a judge whose effort silently
+  // changed mid-benchmark grades the back half differently from the front half.
   const args = [
     "exec",
     "--disable", "shell_snapshot",
     "-s", "read-only",
     "--skip-git-repo-check",
     "--ephemeral",
-    ...codexReasoningArgs(operatorCodexReasoningEffort()),
+    ...codexReasoningArgs(judge.reasoning_effort),
     "-o", messagePath,
+    "-m", judge.model,
+    "-",
   ];
-
-  if (model) {
-    args.push("-m", model);
-  }
-
-  args.push("-");
 
   try {
     const result = spawnSync("codex", args, {
@@ -155,7 +151,7 @@ const runCodexJudge = (prompt: string, model: string | null): Spawned => {
   }
 };
 
-const JUDGE_RUNNERS: Record<Executor, (prompt: string, model: string | null) => Spawned> = {
+const JUDGE_RUNNERS: Record<JudgeAgent, (prompt: string, judge: JudgeSpec) => Spawned> = {
   claude: runClaudeJudge,
   codex: runCodexJudge,
 };
@@ -181,7 +177,7 @@ export const judgeExpectations = (
     ...expectations.map((condition, index) => `${index + 1}. ${condition}`),
   ].join("\n");
 
-  const spawned = JUDGE_RUNNERS[judge.agent](prompt, judge.model);
+  const spawned = JUDGE_RUNNERS[judge.agent](prompt, judge);
 
   if (!spawned.ok) {
     return { ok: false, expects: failExpectations(expectations), error: spawned.error };

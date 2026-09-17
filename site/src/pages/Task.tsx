@@ -1,5 +1,6 @@
 import { Link, useParams } from "react-router-dom";
 import Marker from "../components/Marker.js";
+import { modelOf } from "../lib/compare.js";
 import { useIndex } from "../lib/data.js";
 import { OLD_PROMPT, OLD_RUBRIC, RETRACTED } from "../lib/notes.js";
 
@@ -93,9 +94,14 @@ const Task = () => {
               <td>{run.variant}</td>
               <td className="mono small">{run.skill_content ? run.skill_content.slice(0, 8) : "—"}</td>
               <td className="small">
-                {run.executor_model ?? run.executor}
+                {modelOf(run)}
                 {run.judge?.self_judged === true && (
-                  <span className="tag idle" title="the judge was the same agent as the executor">
+                  <span
+                    className="tag idle"
+                    title={`the judge was the same agent as the executor (${run.judge.model ?? run.judge.agent ?? "model unrecorded"} · ${
+                      run.judge.reasoning_effort ?? "effort unrecorded"
+                    })`}
+                  >
                     self-judged
                   </span>
                 )}

@@ -480,6 +480,24 @@ const main = async () => {
     return null;
   };
 
+  // A record is yaml a human can hand-edit, and the site renders these straight into labels
+  // and titles: anything that is not a non-empty string is "not recorded", never `1` or `true`
+  // rendered into a stack label. Empty strings normalise to null because the site tests one
+  // field for null and the other for truthiness.
+  const recorded = (value: unknown) => (typeof value === "string" && value.length > 0 ? value : null);
+
+  type IndexJudge = { agent: string | null; model: string | null; reasoning_effort: string | null; self_judged: boolean };
+
+  const parseJudge = (value: unknown): IndexJudge | null =>
+    typeof value === "object" && value !== null && !Array.isArray(value)
+      ? {
+        agent: recorded((value as Record<string, unknown>).agent),
+        model: recorded((value as Record<string, unknown>).model),
+        reasoning_effort: recorded((value as Record<string, unknown>).reasoning_effort),
+        self_judged: (value as Record<string, unknown>).self_judged === true,
+      }
+      : null;
+
   type IndexRun = {
     task: string;
     skill: string | null;
@@ -487,10 +505,11 @@ const main = async () => {
     variant: unknown;
     executor: unknown;
     executor_model: unknown;
+    executor_reasoning_effort: unknown;
     created: string | null;
     pass: boolean | null;
     expects: unknown;
-    judge: unknown;
+    judge: IndexJudge | null;
     skill_version: string | null;
     skill_content: string | null;
     /** the benchmark this run was made for, as named at setup; null on runs that predate the field */
@@ -587,11 +606,12 @@ const main = async () => {
         run: runId,
         variant: loaded.variant ?? null,
         executor: loaded.executor ?? null,
-        executor_model: loaded.executor_model ?? null,
+        executor_model: recorded(loaded.executor_model),
+        executor_reasoning_effort: recorded(loaded.executor_reasoning_effort),
         created: typeof loaded.created === "string" ? loaded.created : null,
         pass: loaded.pass === undefined ? null : Boolean(loaded.pass),
         expects: loaded.expects ?? null,
-        judge: loaded.judge ?? null,
+        judge: parseJudge(loaded.judge),
         skill_version: skillVersion,
         skill_content: skillContent,
         benchmark: typeof loaded.benchmark === "string" ? loaded.benchmark : null,

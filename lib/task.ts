@@ -39,6 +39,19 @@ export const parseBenchmark = (value: string) => {
   return value;
 };
 
+// A field that a record may carry, may set to null, or may not have at all: absent and null
+// both read as null, anything else still has to be a string. The alternative is the same
+// `undefined || null ? null : requireString` ternary copied at every optional field, which is
+// where the operand order drifts.
+export const nullableString = (value: unknown, name: string) =>
+  value === undefined || value === null ? null : requireString(value, name);
+
+// A flag that may be absent. parseArgs stores a valueless flag as `true`, so requireString
+// is what turns `--model --effort low` into an argument error rather than a model named
+// "true"; absent stays null for the caller to resolve or refuse.
+export const optionalArg = (args: Record<string, string | boolean>, flag: string) =>
+  args[flag] === undefined ? null : requireString(args[flag], `--${flag}`);
+
 export const requireNumber = (value: unknown, name: string) => {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     throw new Error(`missing required numeric field: ${name}`);
