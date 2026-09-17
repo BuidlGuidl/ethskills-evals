@@ -1,6 +1,6 @@
 ---
 name: frontend-ux
-description: Use when building, reviewing, fixing, or shipping a frontend for an Ethereum dApp. The product-completeness steps agents skip unprompted — product identity metadata, name-resolving address inputs, fiat context, target chain.
+description: Use when building, fixing, or reviewing the behaviour of an Ethereum dApp frontend (wagmi, viem, React) — product identity metadata, name-resolving address inputs, amount decimals, approve-then-act flows, fiat context, target chain — the product-completeness steps agents skip unprompted. Not for the Scaffold-ETH 2 pre-ship checklist — DaisyUI theme, RainbowKit wallet list, scaffold.config RPC, mobile WalletConnect (`qa`).
 ---
 
 # Frontend UX

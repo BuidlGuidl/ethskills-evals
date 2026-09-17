@@ -1,6 +1,6 @@
 ---
 name: tools
-description: Use when picking or installing packages, versions, or a scaffold for an Ethereum project (create-eth), wiring an AI agent to read transactions, balances, or contract data (Blockscout MCP, explorer API), or importing x402 payment packages in TypeScript or Go. Not for choosing which standard to build on (`standards`) or looking up contract addresses (`addresses`).
+description: Use when picking or installing packages, versions, or a scaffold for an Ethereum project (create-eth), asking whether a toolchain migration is needed for a capability (Hardhat vs Foundry for Solidity fuzz tests), wiring an AI agent to read transactions, balances, or contract data (Blockscout MCP, explorer API), or asking what to install for pay-per-call HTTP payments (x402). Not for choosing which standard to build on (`standards`) or looking up contract addresses (`addresses`).
 ---
 
 # Ethereum Development Tools
@@ -15,6 +15,11 @@ For a new Scaffold-ETH 2 app, the live scaffold package is `create-eth`:
 the version `latest` currently resolves to is fine once you have verified it —
 what is not fine is `create-eth-app` or `create-scaffold-eth`, which are dead
 package names rather than older spellings of this one.
+
+The same rule covers what a toolchain can do. Hardhat 3 runs tests written in
+Solidity, fuzz tests included, so a Hardhat repo does not need a Foundry
+migration to get them; check the installed major before scoping any migration a
+teammate says is required.
 
 ## Give agents structured onchain data
 

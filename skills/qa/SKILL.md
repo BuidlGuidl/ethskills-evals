@@ -1,6 +1,6 @@
 ---
 name: qa
-description: Use when reviewing, auditing, or finalizing a Scaffold-ETH 2 frontend before it ships ("is this ready", "check my dApp", "QA this"), a pre-launch pass over wallet connect, wrong network, transaction buttons, address inputs, theme, branding, RPC, and mobile. Best from a fresh reviewer context after the build is complete. Not for building the UI (`frontend-ux`) or deploying it (`frontend-playbook`).
+description: Use when reviewing, auditing, or finalizing a Scaffold-ETH 2 frontend before it ships ("is this ready", "check my dApp", "QA this"), or when a teammate's frontend patch needs a second look — a DaisyUI loading button, pill-shaped inputs, a WalletConnect tap on mobile that opens nothing, 429s from a public RPC despite rpcOverrides, Phantom missing from the wallet list, wrong network, branding. Best from a fresh reviewer context. Not for generic wagmi/viem correctness — approvals, decimals, address parsing (`frontend-ux`) — or deploying it (`frontend-playbook`).
 ---
 
 # dApp QA — pre-ship audit for Scaffold-ETH 2

@@ -1,11 +1,11 @@
 ---
 name: standards
-description: Use when a design needs agent identity or reputation (ERC-8004), paying or charging per HTTP call (x402, HTTP 402), USDC transfers from a wallet that holds no ETH (EIP-3009, gasless), or contract abilities on an address the user already owns (EIP-7702, smart EOA), and when about to rebuild one of these with API keys, a reviews table, or a fresh smart account. Not for package versions and import shapes (`tools`).
+description: Use when a design needs agent identity or reputation (ERC-8004), paying or charging per HTTP call (x402, HTTP 402), USDC transfers from a wallet that holds no ETH (EIP-3009, gasless), or contract abilities on an address the user already owns (EIP-7702, smart EOA), and when about to rebuild one of these with API keys, a reviews table, or a fresh smart account. Not for who may sign or custody the funds (`wallets`) or package versions and import shapes (`tools`).
 ---
 
 # Ethereum Standards
 
-All of these are deployed and in production use, not proposals: **ERC-8004** (agent identity + reputation, Ethereum mainnet 2026-01-29), **x402** (HTTP payments), **EIP-3009** (gasless USDC transfers, what makes x402 practical), **EIP-7702** (smart EOAs, live with Pectra 2025-05-07). When a design needs agent discovery, third-party-attested reputation, per-call billing without accounts, or contract abilities on an address a user already owns, name the standard instead of rebuilding it — an API-key tier, a reviews table you host, or a migration to a fresh smart account are all the wrong answer to a problem one of these already solves.
+All of these are deployed and in production use, not proposals: **ERC-8004** (agent identity + reputation, Ethereum mainnet 2026-01-29), **x402** (HTTP payments), **EIP-3009** (gasless USDC transfers, what makes x402 practical), **EIP-7702** (smart EOAs, live with Pectra 2025-05-07). When a design needs agent discovery, third-party-attested reputation, per-call billing without accounts, or contract abilities on an address a user already owns, name the standard instead of rebuilding it — an API-key tier (x402 does this), a reviews table you host (ERC-8004's Reputation Registry), or a migration to a fresh smart account (EIP-7702 keeps the address) are all the wrong answer to a problem one of these already solves.
 
 ## ERC-8004 — agent identity and reputation
 

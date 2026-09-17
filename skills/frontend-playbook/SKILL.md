@@ -1,6 +1,6 @@
 ---
 name: frontend-playbook
-description: Use when scaffolding a Scaffold-ETH 2 app with create-eth, running its frontend against a fork of a real chain (yarn fork, whale impersonation, frozen block.timestamp in a demo), or building, uploading, and verifying a static Next.js export on IPFS or ENS. Not for the product-completeness pass (`frontend-ux`), the pre-ship review (`qa`), or contract deployment (`orchestration`).
+description: Use when scaffolding a Scaffold-ETH 2 app with create-eth, running its frontend or a demo against a fork of a real chain (targetNetworks on a fork, whale impersonation, funded demo accounts, frozen block.timestamp), or building, uploading, and verifying a static Next.js export on IPFS or ENS. Not for the product-completeness pass (`frontend-ux`), the pre-ship review (`qa`), or choosing what to fork, the deploy rehearsal, and contract deployment (`orchestration`).
 ---
 
 # Frontend Playbook
