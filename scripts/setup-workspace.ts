@@ -79,13 +79,15 @@ const getSkillVersion = (sourceDir: string) => {
 // which is how a benchmark measures an old text beside the new one on the same task set and
 // harness. Only what git holds for the skill dir is installed, so an uncommitted edit to it
 // cannot ride into an arm that claims to be a commit. skill_version is that commit, which is
-// what build-index already reads the text back from. The length is fixed, not git's `--short`:
-// that grows with the clone's object count, so one commit would record as two versions across
-// operators and a `run-stats --skill-version` filter would silently drop the longer one.
+// what build-index already reads the text back from. The recorded length is fixed by slicing the
+// full sha, not left to git: `--short`, `--short=<n>` included, only sets a minimum and lengthens
+// the abbreviation as the clone's object count needs, so one commit would record as two versions
+// across operators and a `run-stats --skill-version` filter would silently drop the longer one.
+// git itself is always handed the full sha, which a short one could be ambiguous against.
 const SKILL_REF_LENGTH = 8;
 
 const resolveSkillRef = (ref: string, skillPath: string) => {
-  const resolved = spawnSync("git", ["-C", ROOT, "rev-parse", "--verify", "--quiet", `--short=${SKILL_REF_LENGTH}`, `${ref}^{commit}`], {
+  const resolved = spawnSync("git", ["-C", ROOT, "rev-parse", "--verify", "--quiet", `${ref}^{commit}`], {
     encoding: "utf8",
     stdio: "pipe",
   });
@@ -94,14 +96,15 @@ const resolveSkillRef = (ref: string, skillPath: string) => {
     throw new Error(`--skill-ref ${ref} is not a commit in this repo`);
   }
 
-  const sha = resolved.stdout.trim();
-  const present = spawnSync("git", ["-C", ROOT, "cat-file", "-e", `${sha}:${skillPath}/SKILL.md`], { stdio: "pipe" });
+  const full = resolved.stdout.trim();
+  const short = full.slice(0, SKILL_REF_LENGTH);
+  const present = spawnSync("git", ["-C", ROOT, "cat-file", "-e", `${full}:${skillPath}/SKILL.md`], { stdio: "pipe" });
 
   if (present.status !== 0) {
-    throw new Error(`--skill-ref ${ref}: ${skillPath}/SKILL.md does not exist at ${sha}`);
+    throw new Error(`--skill-ref ${ref}: ${skillPath}/SKILL.md does not exist at ${short}`);
   }
 
-  return sha;
+  return { full, short };
 };
 
 const extractSkillAt = async (sha: string, skillPath: string) => {
@@ -212,7 +215,7 @@ const main = async () => {
     // A --skill-ref arm carries its ref: an old and a new arm are the same variant, and without it
     // run 1 of each, set up in the same second, would share a run dir and a workspace — and two
     // tasks' runs sharing a parent (below) could put one skill text next door to the other.
-    const arm = skillSha === null ? variant.replaceAll("_", "-") : `${variant.replaceAll("_", "-")}-${skillSha}`;
+    const arm = skillSha === null ? variant.replaceAll("_", "-") : `${variant.replaceAll("_", "-")}-${skillSha.short}`;
     const runId = `${timestamp}-${executor}-${arm}-${run}`;
     const runDir = path.join(ROOT, "artifacts", spec.id, runId);
     // Run id above task id, not below: workspaces now outlive setup, and grouping them by task
@@ -248,11 +251,11 @@ const main = async () => {
       let skillVersion: string | null = null;
 
       if (variant === "with_skill" && skillSha !== null) {
-        const at = await extractSkillAt(skillSha, skillPath);
+        const at = await extractSkillAt(skillSha.full, skillPath);
 
         extracted = at.dir;
         skillSource = at.skillDir;
-        skillVersion = skillSha;
+        skillVersion = skillSha.short;
       } else if (variant === "with_skill") {
         skillSource = resolveRootPath(spec.skill);
         skillVersion = getSkillVersion(skillSource);
