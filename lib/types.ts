@@ -33,15 +33,23 @@ export type JudgeRecord = JudgeSpec & {
 
 // What a run cost, so a benchmark can report more than pass counts. duration_s is the
 // harness's own wall clock and means the same thing on both stacks; everything else is
-// what the executor chose to report, hence the nulls — claude gives turns, dollars and
-// a four-way token split, codex gives a token total and nothing else. On claude the two
-// cache fields carry almost the whole run: input_tokens alone is the uncached remainder,
-// a double-digit number, and total_tokens is the sum of all four. The totals mean
-// different things on the two stacks and are only comparable variant-to-variant within one.
+// what the executor reported, hence the nulls. Both stacks give the same four-way token split
+// (codex through `exec --json`): input_tokens is the uncached remainder, the two cache fields
+// carry almost the whole run, and total_tokens is the sum of all four. claude also gives turns
+// and its own dollar cost; codex gives neither, so its cost_usd is derived from the split and a
+// list price (lib/prices.ts) and cost_source says which of the two a figure is.
+//
+// Codex runs made before `--json` (before 2026-09-15) carry only total_tokens, taken from the
+// `tokens used` line — uncached input plus output, several times smaller than the same run's
+// total here. Those totals are a different unit from every other total in this type.
+export type CostSource = "executor" | "list_price";
+
 export type RunUsage = {
   duration_s: number | null;
   turns: number | null;
   cost_usd: number | null;
+  // absent on records made before the field existed; every one of those is claude-reported
+  cost_source: CostSource | null;
   input_tokens: number | null;
   cache_creation_input_tokens: number | null;
   cache_read_input_tokens: number | null;
