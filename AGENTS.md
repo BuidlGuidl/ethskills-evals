@@ -100,7 +100,7 @@ It writes `<run-dir>/transcript.md` beside the raw capture, and `<run-dir>/execu
 
 `transcript.md` means the same thing on every stack, which takes assembling: claude streams the whole session as stream-json on stdout, codex (with `--json`) and opencode (with `--format json`) stream their own event shapes there, and each is rendered to the same sections. Mine transcripts from `transcript.md` alone; the raw streams beside it are gitignored.
 
-**Judge**: a fresh, blind agent that grades `expect:` lines from the evidence `verify` assembles (diff + output files). It never sees the variant, the skill, or the transcript, and `verify` starts it in an empty temp dir rather than in this repo, whose root holds `skills/`, this file and the benchmark skills under `.agents/skills/` — all of which a CLI discovers from its cwd. Claude and codex both work; opencode does not judge yet, though it orchestrates fine.
+**Judge**: a fresh, blind agent that grades `expect:` lines from the evidence `verify` assembles (diff + output files). It never sees the variant, the skill, or the transcript, and `verify` starts it in a temp dir of its own rather than in this repo, whose root holds `skills/`, this file and the benchmark skills under `.agents/skills/` — all of which a CLI discovers from its cwd. That dir is one per machine, not one per grade: claude keys its project state on the cwd, and a fresh dir each time would leave a `~/.claude/projects` entry per run. Claude and codex both work; opencode does not judge yet, though it orchestrates fine.
 
 Never grade from your own context. You have read the skill and the expect lines, so you cannot grade blind. `verify` spawns the judge for you; pass the agent and model **you** are running as, so the grading happens on the orchestrator's model:
 
@@ -196,7 +196,7 @@ task: gas-cost-estimate-001
 run: 2026-07-06T093000Z-claude-with-skill-1
 executor: claude
 variant: with_skill
-skill_version: 191dcc1a               # first 8 chars of the skill source's commit; null for no_skill; older runs carry --short, 7+
+skill_version: 2f0adb01               # first 8 chars of the skill source's commit; null for no_skill; older runs carry --short, 7+
 input_sha: 4f2b9c1de803               # sha256 of the input this run was given; absent on pre-2026-08-28 runs
 created: 2026-07-06T09:30:00Z
 executor_model: claude-opus-5         # what actually ran; null only on runs made before it was required

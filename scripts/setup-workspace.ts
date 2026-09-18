@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { constants, existsSync, readFileSync, realpathSync } from "node:fs";
+import { constants, existsSync, readFileSync, rmSync } from "node:fs";
 import { access, cp, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -92,16 +92,22 @@ const locateSkill = (skillSource: string) => {
     existing = path.dirname(existing);
   }
 
-  const gitRoot = findGitRoot(existing);
+  // Both values from one call, so the path inside the repo is git's own answer rather than a
+  // relative() over two realpaths: --show-prefix is where `existing` sits in the repo, already
+  // resolved for symlinks the way --show-toplevel is.
+  const located = spawnSync("git", ["-C", existing, "rev-parse", "--show-toplevel", "--show-prefix"], {
+    encoding: "utf8",
+    stdio: "pipe",
+  });
 
-  if (!gitRoot) {
+  if (located.status !== 0) {
     throw new Error(`--skill-ref needs the skill in a git repo, and ${skillSource} is in none`);
   }
 
-  // Both sides through realpath: --show-toplevel is one, and a symlinked path would not sit under it.
-  const resolved = path.join(realpathSync(existing), path.relative(existing, skillSource));
+  const [gitRoot, prefix] = located.stdout.split("\n");
+  const missing = path.relative(existing, skillSource).split(path.sep).join("/");
 
-  return { gitRoot, skillPath: path.relative(realpathSync(gitRoot), resolved).split(path.sep).join("/") };
+  return { gitRoot, skillPath: `${prefix}${missing}`.replace(/\/$/, "") };
 };
 
 const resolveSkillRef = (ref: string, skillSource: string) => {
@@ -113,7 +119,15 @@ const resolveSkillRef = (ref: string, skillSource: string) => {
     stdio: "pipe",
   });
 
+  // Before stderr is read: a git that never spawned (ENOENT, EACCES) has none, and the null
+  // deref would replace the real reason with a TypeError.
+  if (resolved.error) {
+    throw resolved.error;
+  }
+
   if (resolved.status !== 0) {
+    // stderr is git's candidate list on an ambiguous ref, and the only thing that tells it from
+    // a ref that matches nothing.
     throw new Error(`--skill-ref ${ref} does not name one commit in ${gitRoot}\n${resolved.stderr.trim()}`);
   }
 
@@ -131,17 +145,34 @@ const resolveSkillRef = (ref: string, skillSource: string) => {
 
 type SkillRef = ReturnType<typeof resolveSkillRef>;
 
+// `git show <sha>:<file>` per file, not `git archive`: archive applies the `export-ignore` and
+// `export-subst` attributes of the ref, while build-index recovers a run's text with `git show`
+// and the restamp rule in AGENTS.md compares blobs. Either attribute on a skill file would
+// install text whose hash no reader of the record can reproduce, and the site would key two
+// versions for one commit. These are the bytes the record means.
 const extractSkillAt = async ({ full, gitRoot, skillPath }: SkillRef) => {
+  const listed = execFileSync("git", ["-C", gitRoot, "ls-tree", "-r", "-z", full, "--", skillPath], { encoding: "utf8" });
   const dir = await mkdtemp(path.join(tmpdir(), "skill-eval-ref-"));
 
   try {
-    const archive = execFileSync("git", ["-C", gitRoot, "archive", "--format=tar", full, skillPath], { maxBuffer: 64 * 1024 * 1024 });
+    for (const entry of listed.split("\0").filter(line => line !== "")) {
+      // `<mode> <type> <sha>\t<path>`, the path NUL-terminated by -z so a space in it is safe.
+      const [meta, file] = entry.split("\t");
+      const [mode] = meta.split(" ");
 
-    // `-f -` spelled out: with no -f, tar reads its build's default device ($TAPE, /dev/st0,
-    // bsdtar's /dev/sa0), which is stdin only where the distro made it so.
-    execFileSync("tar", ["-x", "-f", "-", "-C", dir], { input: archive });
+      // A symlink (120000) or a submodule (160000) in a skill dir is not something the install
+      // can reproduce as a file, and silently dropping it would install a different skill.
+      if (mode !== "100644" && mode !== "100755") {
+        throw new Error(`--skill-ref: ${file} at ${full} is mode ${mode}, which a skill install cannot carry`);
+      }
+
+      const target = path.join(dir, file);
+
+      await mkdir(path.dirname(target), { recursive: true });
+      // Buffer, never a string: an encoding would rewrite the bytes the content id is taken over.
+      await writeFile(target, execFileSync("git", ["-C", gitRoot, "show", `${full}:${file}`, "--"], { maxBuffer: 64 * 1024 * 1024 }), { mode: mode === "100755" ? 0o755 : 0o644 });
+    }
   } catch (error) {
-    // The caller only learns the dir once this returns, so a failed extraction cleans up here.
     await rm(dir, { recursive: true, force: true });
     throw error;
   }
@@ -226,8 +257,15 @@ const main = async () => {
       await fail("--skill-ref only applies to --variant with_skill");
     }
 
-    // Before anything is written, so a mistyped ref costs no run dir.
+    // Both before anything is written, so a mistyped ref or an unreadable tree costs no run dir.
     const skillSha = skillRef === null ? null : resolveSkillRef(skillRef, resolveRootPath(spec.skill));
+    const extracted = skillSha === null ? null : await extractSkillAt(skillSha);
+
+    // fail() and a thrown error both end in process.exit, which no finally survives, and the copy
+    // is wanted until the install two dozen lines below. One hook covers every way out.
+    if (extracted !== null) {
+      process.on("exit", () => rmSync(extracted.dir, { recursive: true, force: true }));
+    }
 
     // A retired spec's notes say why it was retired, and its stored grades were produced under
     // wording it no longer carries. Building a workspace for one would draw a fresh sample that
@@ -262,8 +300,6 @@ const main = async () => {
 
     await mkdir(runDir, { recursive: true });
 
-    let extracted: string | null = null;
-
     try {
       if (spec.template !== undefined) {
         await copyTree(resolveRootPath(spec.template), workspacePath);
@@ -277,11 +313,8 @@ const main = async () => {
       let skillVersion: string | null = null;
 
       // A ref implies with_skill: it was refused on any other variant above.
-      if (skillSha !== null) {
-        const at = await extractSkillAt(skillSha);
-
-        extracted = at.dir;
-        skillSource = at.skillDir;
+      if (skillSha !== null && extracted !== null) {
+        skillSource = extracted.skillDir;
         skillVersion = skillSha.short;
       } else if (variant === "with_skill") {
         skillSource = resolveRootPath(spec.skill);
@@ -294,11 +327,6 @@ const main = async () => {
 
       if (skillSource) {
         await installSkill(skillSource, path.basename(skillSource), executor, workspacePath);
-      }
-
-      if (extracted !== null) {
-        await rm(extracted, { recursive: true, force: true });
-        extracted = null;
       }
 
       if (!existsSync(path.join(workspacePath, "package.json"))) {
@@ -331,11 +359,6 @@ const main = async () => {
       console.log(workspacePath);
       console.log(`Run the executor with: yarn run-executor --run artifacts/${spec.id}/${runId} --model <model> --effort <effort>`);
     } catch (error) {
-      // fail exits, so the extracted copy goes first rather than in a finally that never runs.
-      if (extracted !== null) {
-        await rm(extracted, { recursive: true, force: true });
-      }
-
       await fail(error instanceof Error ? error.message : String(error), runDir, workspacePath);
     }
   } catch (error) {
