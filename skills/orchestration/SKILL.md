@@ -1,6 +1,6 @@
 ---
 name: orchestration
-description: Use when a Scaffold-ETH 2 build leaves localhost — planning a launch or the order things go out in, deploying or verifying contracts on a live network, choosing which chain to fork and standing that fork up (yarn fork --network) to rehearse a deploy, or fixing a contract bug that is already onchain. Not for frontend implementation (`frontend-ux`), the pre-launch UI audit (`qa`), or the local chain-vs-fork choice, the frontend and demo side of a fork, and the static export to IPFS or ENS (`frontend-playbook`).
+description: "Use when a Scaffold-ETH 2 build leaves localhost: planning the launch order, deploying and verifying contracts on a live network, standing up a fork of a real chain to rehearse a deploy, or fixing a contract bug that is already onchain. Not for running the app or a demo against that fork (`/frontend-playbook`)."
 ---
 
 # Shipping a dApp

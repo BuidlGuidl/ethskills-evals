@@ -1,6 +1,6 @@
 ---
 name: ship
-description: "Scope a dApp or MVP and make it ready to build and release: decide the onchain boundary, minimal contract surface, state-transition callers and incentives, one launch chain, and the deployment runbook. Use before implementation or when a build lacks these decisions. Route detailed implementation, deployment, and audit work to their focused skills. Not for whether a live system keeps running with nobody operating it — the caller incentives of an unattended contract, censorship resistance, what it exposes onchain (`concepts`)."
+description: "Use before implementation, or when a build lacks these decisions: what goes onchain, the minimal contract surface, who triggers each state transition and why, which chain to launch on, and the deployment runbook. Not for how an already-designed system keeps running with nobody operating it (`/concepts`)."
 ---
 
 # Ship a dApp

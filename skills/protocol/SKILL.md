@@ -1,6 +1,6 @@
 ---
 name: protocol
-description: Use when asked whether an EIP or Ethereum feature is live on mainnet, scheduled for a named fork, only considered, or just a proposal, when it will ship, or when a plan or dependency rests on a future protocol change. Not for comparing L2s (`l2s`) or standards already deployed (`standards`).
+description: "Use when asked whether an Ethereum feature or EIP is live, scheduled for a fork, or still a proposal, when it will ship, or when a plan depends on a future protocol change. Not for standards that are already deployed and in use (`/standards`)."
 ---
 
 # Ethereum Protocol Status

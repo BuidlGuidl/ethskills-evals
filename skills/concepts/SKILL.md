@@ -1,6 +1,6 @@
 ---
 name: concepts
-description: Use when designing or explaining anything onchain that has to keep working with nobody running it — who calls each function and why they would (a scheduled or "automatic" action, owner-only maintenance, a permissionless harvest or keeper call), a raffle that needs randomness, censorship resistance, and what it exposes onchain (Pausable, onlyOwner, blacklist, upgradeable proxy, privacy); when writing the NOTES, README, or handoff a build ends with; and when explaining to your human how something onchain actually works. Not for scoping which parts of a dApp go onchain and the launch runbook (`ship`) or the safety of the contract code itself (`security`).
+description: "Use when designing or explaining anything onchain that has to keep working with nobody running it: who calls each function and why they would, where randomness comes from, whether it can be censored or paused, and what it exposes to everyone onchain. Also use when writing the notes or handoff a build ends with, or when explaining to your human how something onchain actually works. Not for scoping which parts go onchain and the launch plan (`/ship`) or the safety of the contract code itself (`/security`)."
 ---
 
 # Ethereum Concepts

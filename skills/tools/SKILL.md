@@ -1,6 +1,6 @@
 ---
 name: tools
-description: Use when picking or installing packages, versions, or a scaffold for an Ethereum project (create-eth), wiring an AI agent to read transactions, balances, or contract data (Blockscout MCP, explorer API), or asking what to install for pay-per-call HTTP payments (x402). Not for choosing which standard to build on (`standards`), looking up contract addresses (`addresses`), or the local chain-vs-fork setup, fork demos, and the static export of an app that already exists (`frontend-playbook`).
+description: "Use when picking or installing packages, versions, or a scaffold for an Ethereum project, when wiring an agent to read onchain data, or when asking what to install for pay-per-call HTTP payments. Checks what is current before recommending it. Not for choosing which standard to build on (`/standards`)."
 ---
 
 # Ethereum Development Tools

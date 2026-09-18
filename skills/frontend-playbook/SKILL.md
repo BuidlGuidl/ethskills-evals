@@ -1,6 +1,6 @@
 ---
 name: frontend-playbook
-description: Use when working in a Scaffold-ETH 2 app scaffolded with create-eth — choosing between yarn chain and a fork of a real chain for local development (integration calls reverting on an empty local node), running the frontend or a demo against that fork (targetNetworks on a fork, whale impersonation, funded demo accounts, frozen block.timestamp), or building, uploading, and verifying a static Next.js export on IPFS or ENS. Not for which scaffold package to install or whether create-eth is current (`tools`), the product-completeness pass (`frontend-ux`), the pre-ship review (`qa`), or rehearsing and running a live contract deployment (`orchestration`).
+description: "Use when working inside a Scaffold-ETH 2 app: running it against a local chain or a fork of a real chain, demoing on that fork, or shipping it as a static export to IPFS or ENS. Not for rehearsing or running a live contract deployment (`/orchestration`)."
 ---
 
 # Frontend Playbook

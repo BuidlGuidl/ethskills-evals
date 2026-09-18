@@ -1,6 +1,6 @@
 ---
 name: standards
-description: Use when a design needs agent identity or reputation (ERC-8004), paying or charging per HTTP call (x402, HTTP 402), USDC transfers from a wallet that holds no ETH (EIP-3009, gasless), or contract abilities on an address the user already owns (EIP-7702, smart EOA), and when about to rebuild one of these with API keys, a reviews table, or a fresh smart account. Not for who may sign or custody the funds (`wallets`), or package versions and import shapes (`tools`).
+description: "Use when a design needs agent identity or reputation, pay-per-call HTTP payments, USDC transfers from a wallet that holds no ETH, or contract abilities on an address the user already owns, and when someone is about to rebuild one of these by hand. Names the deployed standard for each (ERC-8004, x402, EIP-3009, EIP-7702). Not for who may sign or custody the funds (`/wallets`) or what to install (`/tools`)."
 ---
 
 # Ethereum Standards

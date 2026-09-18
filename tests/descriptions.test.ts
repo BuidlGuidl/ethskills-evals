@@ -36,13 +36,14 @@ const frontmatter = (name: string) => {
 // before any of them runs.
 const loadDescriptions = () => new Map(skillNames.map((name) => [name, frontmatter(name)]));
 
-// A cede is a parenthesised list of backticked names at or after the first "Not for".
+// A cede is a parenthesised list of backticked names at or after the first "Not for",
+// written the way a skill is invoked: (`/qa`). The bare name is accepted too.
 // Before that, a parenthetical is a mention.
-const CEDE = /\(\s*(`[a-z0-9-]+`(?:\s*(?:,|or|,\s*or)\s*`[a-z0-9-]+`)*)\s*\)/g;
+const CEDE = /\(\s*(`\/?[a-z0-9-]+`(?:\s*(?:,|or|,\s*or)\s*`\/?[a-z0-9-]+`)*)\s*\)/g;
 
 export const cedes = (description: string) => {
   const start = description.search(/\bnot for\b/i);
-  return start < 0 ? [] : [...description.slice(start).matchAll(CEDE)].flatMap((m) => [...m[1].matchAll(/`([a-z0-9-]+)`/g)].map((n) => n[1]));
+  return start < 0 ? [] : [...description.slice(start).matchAll(CEDE)].flatMap((m) => [...m[1].matchAll(/`\/?([a-z0-9-]+)`/g)].map((n) => n[1]));
 };
 
 test("cedes(): the parenthetical is the cede, whatever the sentence around it does", () => {
@@ -74,7 +75,7 @@ test("every cede names a skill that exists, and a Not-for cedes to somebody", ()
     const targets = cedes(description);
 
     if (/\bnot for\b/i.test(description)) {
-      assert.ok(targets.length > 0, `${name}: has a "Not for" but cedes to nobody — name the skill as (\`skill\`)`);
+      assert.ok(targets.length > 0, `${name}: has a "Not for" but cedes to nobody — name the skill as (\`/skill\`)`);
     }
 
     for (const target of targets) {
