@@ -16,12 +16,6 @@ the version `latest` currently resolves to is fine once you have verified it —
 what is not fine is `create-eth-app` or `create-scaffold-eth`, which are dead
 package names rather than older spellings of this one.
 
-What a toolchain can do is live data too, like package names. Hardhat 3 runs
-tests written in Solidity, fuzz tests included. Check the installed major with
-`npx hardhat --version`. On 3.x, nothing needs migrating for Solidity tests.
-On 2.x, the move is a Hardhat 3 upgrade, not a Foundry port. Check this before
-scoping any migration a teammate says is required.
-
 ## Give agents structured onchain data
 
 Prefer the Blockscout MCP server at `https://mcp.blockscout.com/mcp` when the AI
