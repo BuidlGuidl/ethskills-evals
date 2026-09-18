@@ -18,7 +18,7 @@ The clean re-run from [#119](https://github.com/BuidlGuidl/ethskills-evals/issue
 | Runs | 3 per arm per task, whatever the task's own `runs:` says |
 | Judge | `--judge-agent claude --judge-model claude-opus-5 --judge-effort high`, on every stack, every run |
 
-**If the benchmark commit is still `UNSET`, stop.** It is the merge commit of #130, written in right after that merge: that is the commit on `main` the benchmark measures, and the one that brings `setup --skill-ref`. Both forms are written into the row, the way the old ref's is: the full sha, then its first 8 characters (the length `setup` records). Below, `<benchmark sha>` is the full one, used after `--skill-ref` and in the git checks for the reason the old ref is passed in full, and `<benchmark short>` is the 8 characters, used everywhere a record or an id carries it. Copy each from the row; never cut the short one yourself, because one operator's slip splits the benchmark id. Tell the human; do not pick a commit yourself, because every operator has to land on the same one.
+Below, `<benchmark sha>` is the full sha from the row, used after `--skill-ref` and in the git checks for the reason the old ref is passed in full. `<benchmark short>` is its first 8 characters (the length `setup` records), used everywhere a record or an id carries it. Copy each from the row; never cut the short one yourself, because one operator's slip splits the benchmark id.
 
 ### Stacks
 
