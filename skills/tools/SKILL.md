@@ -1,6 +1,6 @@
 ---
 name: tools
-description: Choose and verify current Ethereum development tools, especially agent-readable onchain data and x402 HTTP payments. Use when selecting packages or a scaffold for an Ethereum project, or wiring the tools that let an AI agent read onchain data and pay for HTTP calls.
+description: "Use when picking or installing packages, versions, or a scaffold for an Ethereum project, when wiring an agent to read onchain data, or when asking what to install for pay-per-call HTTP payments. Checks what is current before recommending it. Not for choosing which standard to build on (`/standards`)."
 ---
 
 # Ethereum Development Tools

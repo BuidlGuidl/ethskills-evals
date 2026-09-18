@@ -1,6 +1,6 @@
 ---
 name: security
-description: Use when designing, implementing, or reviewing Solidity contracts that custody assets, account for shares or debt, consume price oracles, verify signatures, integrate ERC-20s, or use upgradeable proxies; also use for a pre-deployment security review. Not for test-suite design (`testing`) or a full multi-domain audit (`audit`).
+description: "Use when designing, implementing, or reviewing Solidity contracts that hold assets, account for shares or debt, read price oracles, verify signatures, integrate ERC-20s, or sit behind upgradeable proxies, and for a pre-deployment security review. Not for test-suite design (`/testing`) or a full audit report (`/audit`)."
 ---
 
 # Smart Contract Security

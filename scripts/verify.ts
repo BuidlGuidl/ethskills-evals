@@ -11,6 +11,7 @@ import { detectBrokenShell } from "../lib/executor-health.js";
 import { gradedRecord } from "../lib/grade.js";
 import { judgeExpectations } from "../lib/judge.js";
 import { expectSha, inputSha, isRecord, loadTaskSpec, loadYamlFile, nullableString, optionalArg, parseArgs, requireString } from "../lib/task.js";
+import { pinnedInput } from "../lib/task-history.js";
 import { parseUsageRecord } from "../lib/usage.js";
 import { EXECUTORS, JUDGE_AGENTS, type Executor, type ExecutorRecord, type ExpectStatus, type JudgeAgent, type JudgeSpec, type RecordedJudge, type ResultRecord, type Variant } from "../lib/types.js";
 import { pruneEmptyParent, readWorkspacePath } from "../lib/workspace.js";
@@ -385,21 +386,38 @@ const main = async () => {
     // task input as it stands now, so an input that has been reworded since the run shows the
     // judge a question the executor was never asked — grading old evidence against a new
     // prompt. That is not a second reading of the run, it is a mismatch, and it is silent.
+    //
+    // A run that predates input_sha is checked the way build-index pins it: against the task
+    // file as of the commit that added its record. That is an inference, not a record — it is
+    // wrong for a run whose input was edited between the run and the commit — so the refusal
+    // names the commit, and only a run git cannot place at all gets the warning (#131).
     if (regrade) {
       const currentSha = inputSha(taskSpec.input);
-
-      if (result.input_sha === undefined) {
-        console.warn(
-          `verify: ${result.run} predates input_sha, so the input it was given cannot be checked against `
-            + `tasks/${result.task}.yaml as it stands now. If the input has been reworded since, this regrade `
-            + "is grading old evidence against a new question — read the task notes before trusting it.",
-        );
-      } else if (result.input_sha !== currentSha) {
+      const refuse = (recorded: string, basis: string, inferred = false) => {
         throw new Error(
-          `task input changed since ${result.run} ran (${result.input_sha} -> ${currentSha}). A regrade re-reads `
+          `task input changed since ${result.run} ran (${recorded} -> ${currentSha}, ${basis}). A regrade re-reads `
             + "stored evidence against the current spec, so it would show the judge a prompt this run never saw. "
-            + "Re-run the task on the new input instead, or restore the input the run was given.",
+            + "Re-run the task on the new input instead, or restore the input the run was given."
+            + (inferred ? " If this run is known to have seen the current input, stamp input_sha on its record (see AGENTS.md)." : ""),
         );
+      };
+
+      if (result.input_sha !== undefined) {
+        if (result.input_sha !== currentSha) {
+          refuse(result.input_sha, "recorded by setup");
+        }
+      } else {
+        const pinned = pinnedInput(ROOT, path.relative(ROOT, resultPath), result.task);
+
+        if (pinned === null) {
+          console.warn(
+            `verify: ${result.run} predates input_sha and git cannot say which commit added it, so the input it was `
+              + `given cannot be checked against tasks/${result.task}.yaml as it stands now. If the input has been `
+              + "reworded since, this regrade is grading old evidence against a new question — read the task notes before trusting it.",
+          );
+        } else if (pinned.sha !== currentSha) {
+          refuse(pinned.sha, `read from tasks/${result.task}.yaml at ${pinned.commit.slice(0, 8)}, which added this record`, true);
+        }
       }
     }
 
