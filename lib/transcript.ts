@@ -22,14 +22,15 @@ type TranscriptHeader = {
 // Executor output carries whatever the tools it ran printed. One NUL from a `tsc` banner made
 // git call a transcript binary (#133), so every piece of text is cleaned where it enters a
 // renderer, before `truncate` and `fence` measure it: CRLF becomes LF and a line keeps only
-// its last carriage-return frame, as a terminal would show it; then CSI, single-line OSC and
-// other ESC sequences go; then every C0 control and DEL except newline and tab.
+// its last carriage-return frame, as a terminal would show it (a `\r` with nothing after it
+// moves the cursor and erases nothing); then CSI, single-line OSC and other ESC sequences go;
+// then every C0 control and DEL except newline and tab.
 const ESCAPE_SEQUENCE = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b\n]*(?:\x07|\x1b\\)|\x1b[ -/]*[0-~]/g;
 const CONTROL_BYTE = /[\x00-\x08\x0b-\x1f\x7f]/g;
 
 export const stripControlBytes = (value: string) => value
   .replace(/\r\n/g, "\n")
-  .split("\n").map(line => line.slice(line.lastIndexOf("\r") + 1)).join("\n")
+  .split("\n").map(line => line.replace(/\r+$/, "")).map(line => line.slice(line.lastIndexOf("\r") + 1)).join("\n")
   .replace(ESCAPE_SEQUENCE, "").replace(CONTROL_BYTE, "");
 
 const truncate = (value: string, limit: number) => {

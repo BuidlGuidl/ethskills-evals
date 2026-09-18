@@ -66,6 +66,11 @@ test("carriage returns keep the last progress frame of each line", () => {
   );
 });
 
+test("a carriage return with nothing after it keeps the frame before it", () => {
+  assert.equal(stripControlBytes("10%\r50%\r100%\r"), "100%");
+  assert.equal(stripControlBytes("10%\r50%\r100%\r\r\n"), "100%\n");
+});
+
 test("an OSC at the truncation boundary cannot consume later sections", () => {
   const stdout = [
     { type: "item.completed", item: { type: "command_execution", command: "first", exit_code: 0, aggregated_output: "\x1b]0;" + "x".repeat(396) + "\x07" } },
