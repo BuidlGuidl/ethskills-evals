@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -73,7 +73,25 @@ test("a run recorded before the rewording is pinned to the old prompt", () => {
   const { root, runCommit } = repo();
 
   assert.deepEqual(pinnedInput(root, RECORD, TASK), { commit: runCommit, sha: inputSha(OLD_INPUT) });
-  assert.notEqual(pinnedInput(root, RECORD, TASK)?.sha, inputSha(NEW_INPUT));
+});
+
+test("verify refuses a legacy run on a reworded prompt without writing a regrade", () => {
+  const root = path.resolve(import.meta.dirname, "..");
+  const runDir = `artifacts/${TASK}/${RUN}`;
+
+  assert.throws(() => execFileSync("yarn", [
+    "verify", "--run", runDir, "--regrade", "--reason", "refusal test", "--judge-effort", "medium",
+  ], { cwd: root, encoding: "utf8", stdio: "pipe" }), (error: unknown) => {
+    const { status, stderr } = error as { status: number; stderr: string };
+
+    assert.equal(typeof status, "number");
+    assert.notEqual(status, 0);
+    assert.match(stderr, /5d91d1221c11 -> 98f2b05df610/);
+    assert.match(stderr, /at 3b10b174/);
+
+    return true;
+  });
+  assert.equal(existsSync(path.join(root, `${runDir}-regrade-1`)), false);
 });
 
 test("a record from a merged branch is pinned to the branch commit that added it, which held the old prompt", () => {

@@ -393,11 +393,12 @@ const main = async () => {
     // names the commit, and only a run git cannot place at all gets the warning (#131).
     if (regrade) {
       const currentSha = inputSha(taskSpec.input);
-      const refuse = (recorded: string, basis: string) => {
+      const refuse = (recorded: string, basis: string, inferred = false) => {
         throw new Error(
           `task input changed since ${result.run} ran (${recorded} -> ${currentSha}, ${basis}). A regrade re-reads `
             + "stored evidence against the current spec, so it would show the judge a prompt this run never saw. "
-            + "Re-run the task on the new input instead, or restore the input the run was given.",
+            + "Re-run the task on the new input instead, or restore the input the run was given."
+            + (inferred ? " If this run is known to have seen the current input, stamp input_sha on its record (see AGENTS.md)." : ""),
         );
       };
 
@@ -415,7 +416,7 @@ const main = async () => {
               + "reworded since, this regrade is grading old evidence against a new question — read the task notes before trusting it.",
           );
         } else if (pinned.sha !== currentSha) {
-          refuse(pinned.sha, `read from tasks/${result.task}.yaml at ${pinned.commit.slice(0, 8)}, which added this record`);
+          refuse(pinned.sha, `read from tasks/${result.task}.yaml at ${pinned.commit.slice(0, 8)}, which added this record`, true);
         }
       }
     }

@@ -530,12 +530,10 @@ const main = async () => {
 
   const runs: IndexRun[] = [];
   const seen = new Map<string, { skill: string; id: string; sha: string; first: string; runs: number }>();
-  // The prompt each record was pinned to, so a regrade can inherit its source's. A regrade
-  // re-reads its source's evidence, so it was made on its source's prompt whatever the task
-  // file said at the commit that added it; matched by expect_sha alone, a regrade of a run
-  // that predates input_sha landed on the current prompt and read as comparable to runs
-  // made after the rewording (#131). Sources come before their regrades because listDirs
-  // sorts and a regrade dir extends its source's name.
+  // Regrades inherit their source's prompt, including those arriving from a branch before
+  // verify on main saw them, as #128's six did. Matching by expect_sha alone can select
+  // a later prompt. Sources come before their regrades because listDirs sorts and a
+  // regrade dir extends its source's name.
   const pinnedPrompts = new Map<string, string | null>();
 
   for (const taskId of listDirs(path.join(ROOT, "artifacts"))) {
@@ -553,12 +551,15 @@ const main = async () => {
       const regradeOf = typeof loaded.regrade_of === "string" ? loaded.regrade_of : null;
       const recordedInput = typeof loaded.input_sha === "string" ? loaded.input_sha : null;
       const inheritedInput = regradeOf === null ? null : pinnedPrompts.get(`${taskId}/${regradeOf}`) ?? null;
+      if (regradeOf !== null && !pinnedPrompts.has(`${taskId}/${regradeOf}`)) {
+        warnings.push(`${runDir}: regrade of ${regradeOf}, whose prompt pin is unknown; matched by expect_sha alone`);
+      }
       const { rubric, pinned } = rubricFor(taskId, runId, {
         expect: typeof loaded.expect_sha === "string" ? loaded.expect_sha : null,
         input: recordedInput ?? inheritedInput,
       });
 
-      pinnedPrompts.set(`${taskId}/${runId}`, recordedInput ?? rubric?.input_sha ?? null);
+      pinnedPrompts.set(`${taskId}/${runId}`, recordedInput ?? inheritedInput ?? rubric?.input_sha ?? null);
 
       if (rubric === null) {
         warnings.push(`${runDir}: no readable task rubric; comparisons disabled for this run`);

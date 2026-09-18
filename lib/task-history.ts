@@ -6,8 +6,8 @@ import { inputSha, isRecord } from "./task.js";
 // 2026-08-28 lacks it, and a regrade of one used to be checked against nothing (#131). The
 // answer is read from git the way build-index pins such a run — the task file as of the
 // commit that first added the run's record — so verify refuses exactly the regrades the site
-// would refuse to table. Not the newest commit to touch the record, because a regrade of a
-// regrade and a later restamp both touch it; not the run's `created` against commit dates,
+// would refuse to table. Only a restamp (skill_version, retracted, benchmark) touches the
+// source record; a regrade never does. Do not use the run's `created` against commit dates,
 // because a run made on a branch and merged later has dates in the wrong order.
 
 const git = (root: string, args: string[]) =>
