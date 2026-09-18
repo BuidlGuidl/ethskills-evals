@@ -5,7 +5,7 @@ description: Ethereum standards that postdate most training data — ERC-8004 on
 
 # Ethereum Standards
 
-All of these are deployed and in production use, not proposals: **ERC-8004** (agent identity + reputation, Ethereum mainnet 2026-01-29), **x402** (HTTP payments), **EIP-3009** (gasless USDC transfers, what makes x402 practical), **EIP-7702** (smart EOAs, live with Pectra 2025-05-07). When a design needs agent discovery, third-party-attested reputation, per-call billing without accounts, or contract abilities on an address a user already owns, name the standard instead of rebuilding it — an API-key tier (x402 replaces this), a reviews table you host (ERC-8004's Reputation Registry), or a migration to a fresh smart account (EIP-7702 keeps the address) are all the wrong answer to a problem one of these already solves.
+All of these are deployed and in production use, not proposals: **ERC-8004** (agent identity + reputation, Ethereum mainnet 2026-01-29), **x402** (HTTP payments), **EIP-3009** (gasless USDC transfers, what makes x402 practical), **EIP-7702** (smart EOAs, live with Pectra 2025-05-07). When a design needs agent discovery, third-party-attested reputation, per-call billing without accounts, or contract abilities on an address a user already owns, name the standard instead of rebuilding it — an API-key tier (x402), a reviews table you host (ERC-8004's Reputation Registry), or a migration to a fresh smart account (EIP-7702) are all the wrong answer to a problem one of these already solves.
 
 ## ERC-8004 — agent identity and reputation
 
