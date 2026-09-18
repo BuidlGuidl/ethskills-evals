@@ -19,21 +19,21 @@ type TranscriptHeader = {
   usage: RunUsage | null;
 };
 
-// Everything below the heading is executor output, and executor output carries whatever the
-// tools it ran printed. A `tsc` banner left raw ANSI colour codes and a run of NUL bytes in
-// one transcript (#133); one NUL is enough for git to treat the file as binary, so `git diff`
-// showed nothing and plain `grep` skipped it. The transcript is the record every report is
-// re-derived from, so it has to be text: escape sequences go, then every control byte except
-// newline and tab. `\r` goes with them — a progress bar's carriage returns would otherwise
-// leave a line that renders as its last frame in one viewer and all of them in another.
-// CSI (colours, cursor moves), OSC (titles, hyperlinks), then every other escape: ESC, any
-// intermediates, one final byte — which is what `ESC(B` (charset reset) and `ESC=` are.
-const ESCAPE_SEQUENCE = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[ -/]*[0-~]/g;
+// Executor output carries whatever the tools it ran printed. One NUL from a `tsc` banner made
+// git call a transcript binary (#133), so every piece of text is cleaned where it enters a
+// renderer, before `truncate` and `fence` measure it: CRLF becomes LF and a line keeps only
+// its last carriage-return frame, as a terminal would show it; then CSI, single-line OSC and
+// other ESC sequences go; then every C0 control and DEL except newline and tab.
+const ESCAPE_SEQUENCE = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b\n]*(?:\x07|\x1b\\)|\x1b[ -/]*[0-~]/g;
 const CONTROL_BYTE = /[\x00-\x08\x0b-\x1f\x7f]/g;
 
-export const stripControlBytes = (value: string) => value.replace(ESCAPE_SEQUENCE, "").replace(CONTROL_BYTE, "");
+export const stripControlBytes = (value: string) => value
+  .replace(/\r\n/g, "\n")
+  .split("\n").map(line => line.slice(line.lastIndexOf("\r") + 1)).join("\n")
+  .replace(ESCAPE_SEQUENCE, "").replace(CONTROL_BYTE, "");
 
 const truncate = (value: string, limit: number) => {
+  value = stripControlBytes(value);
   const collapsed = value.trimEnd();
 
   return collapsed.length > limit ? `${collapsed.slice(0, limit)} … [${collapsed.length - limit} more chars]` : collapsed;
@@ -44,6 +44,7 @@ const quoteBlock = (value: string) => value.split("\n").map(line => `  > ${line}
 // A session log carries code blocks of its own, so a three-backtick fence would end early
 // and the rest of the run would render as prose.
 const fence = (value: string) => {
+  value = stripControlBytes(value);
   const longest = (value.match(/`+/g) ?? []).reduce((max, run) => Math.max(max, run.length), 0);
   const ticks = "`".repeat(Math.max(3, longest + 1));
 
@@ -135,7 +136,7 @@ const renderClaude = (raw: string, stderr: string) => {
 
       for (const block of blocks as Record<string, unknown>[]) {
         if (block.type === "text" && typeof block.text === "string" && block.text.trim().length > 0) {
-          rendered.push(block.text.trim());
+          rendered.push(stripControlBytes(block.text).trim());
         }
 
         if (block.type === "tool_use") {
@@ -198,7 +199,7 @@ const renderCodexItem = (item: Record<string, unknown>): string | null => {
   const status = typeof item.status === "string" && item.status !== "completed" ? ` → ${item.status}` : "";
 
   if (item.type === "agent_message") {
-    return typeof item.text === "string" && item.text.trim().length > 0 ? `## assistant\n${item.text.trim()}` : null;
+    return typeof item.text === "string" && item.text.trim().length > 0 ? `## assistant\n${stripControlBytes(item.text).trim()}` : null;
   }
 
   if (item.type === "command_execution") {
@@ -350,7 +351,7 @@ const renderOpencode = (raw: string, stderr: string, header: TranscriptHeader) =
     const part = event.part && typeof event.part === "object" ? (event.part as Record<string, unknown>) : null;
 
     if (event.type === "text" && part !== null && typeof part.text === "string" && part.text.trim().length > 0) {
-      sections.push(`## assistant\n${part.text.trim()}`);
+      sections.push(`## assistant\n${stripControlBytes(part.text).trim()}`);
     }
 
     if (event.type === "tool_use" && part !== null) {

@@ -18,12 +18,9 @@ const banner = "\x1b[41m\x1b[37m  This is not the tsc command you are looking fo
   + "To get the compiler, \x1b[34mtsc\x1b[0m, run:\n\t- npm install typescript\n"
   + "\x00\x00\x00\x00\x00\x00\x00\x00";
 
-const CONTROL = /[\x00-\x08\x0b-\x1f\x7f]/;
-
 test("escape sequences and control bytes go, newline and tab stay", () => {
   const cleaned = stripControlBytes(banner);
 
-  assert.doesNotMatch(cleaned, CONTROL);
   assert.equal(cleaned, "  This is not the tsc command you are looking for  \nTo get the compiler, tsc, run:\n\t- npm install typescript\n");
 });
 
@@ -40,9 +37,7 @@ test("a claude transcript with a tool result full of control bytes is written as
   ].join("\n");
   const transcript = buildTranscript(header, stdout, "\x1b[33mwarning:\x1b[0m slow\x00");
 
-  assert.doesNotMatch(transcript, CONTROL);
-  assert.match(transcript, /This is not the tsc command you are looking for/);
-  assert.match(transcript, /npm install typescript/);
+  assert.match(transcript, /  >   This is not the tsc command you are looking for  \n  > To get the compiler, tsc, run:\n  > \t- npm install typescript\n/);
   assert.match(transcript, /## stderr\n\n```text\nwarning: slow\n```/);
 });
 
@@ -53,7 +48,34 @@ test("a codex transcript gets the same treatment", () => {
   })}\n`;
   const transcript = buildTranscript({ ...header, executor: "codex" }, stdout, "");
 
-  assert.doesNotMatch(transcript, CONTROL);
+  assert.match(transcript, /  >   This is not the tsc command you are looking for  \n  > To get the compiler, tsc, run:\n  > \t- npm install typescript\n/);
   assert.match(transcript, /- \*\*exec\*\* `npx tsc` → exit 1/);
-  assert.match(transcript, /This is not the tsc command you are looking for/);
+});
+
+test("tabs, Unicode and Markdown survive unchanged", () => {
+  assert.equal(
+    stripControlBytes("\té 中 😀 é `span`\n| a | b |\n```js\nconst x = 1;\n```\n"),
+    "\té 中 😀 é `span`\n| a | b |\n```js\nconst x = 1;\n```\n",
+  );
+});
+
+test("carriage returns keep the last progress frame of each line", () => {
+  assert.equal(
+    stripControlBytes("Resolving deltas:   0% (0/2)\rResolving deltas:  50% (1/2)\rResolving deltas: 100% (2/2)\ndone\r\n"),
+    "Resolving deltas: 100% (2/2)\ndone\n",
+  );
+});
+
+test("an OSC at the truncation boundary cannot consume later sections", () => {
+  const stdout = [
+    { type: "item.completed", item: { type: "command_execution", command: "first", exit_code: 0, aggregated_output: "\x1b]0;" + "x".repeat(396) + "\x07" } },
+    { type: "item.completed", item: { type: "agent_message", text: "PRESERVE THIS ANSWER" } },
+    { type: "item.completed", item: { type: "command_execution", command: "second", exit_code: 0, aggregated_output: "ding\x07more" } },
+  ].map(event => JSON.stringify(event)).join("\n");
+  const transcript = buildTranscript({ ...header, executor: "codex" }, stdout, "");
+
+  assert.match(transcript, /## assistant\nPRESERVE THIS ANSWER\n/);
+  assert.match(transcript, /- \*\*exec\*\* `first` → exit 0\n/);
+  assert.match(transcript, /- \*\*exec\*\* `second` → exit 0\n\n  > dingmore\n/);
+  assert.doesNotMatch(transcript, /\x1b|\x07/);
 });
