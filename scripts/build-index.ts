@@ -628,7 +628,7 @@ const main = async () => {
         skill_version: skillVersion,
         skill_content: skillContent,
         benchmark,
-        regrade_of: typeof loaded.regrade_of === "string" ? loaded.regrade_of : null,
+        regrade_of: regradeOf,
         regraded_at: typeof loaded.regraded_at === "string" ? loaded.regraded_at : null,
         superseded_by: null,
         // A grade that measured the harness rather than the model — a killed CLI, a

@@ -388,9 +388,10 @@ const main = async () => {
     // prompt. That is not a second reading of the run, it is a mismatch, and it is silent.
     //
     // A run that predates input_sha is checked the way build-index pins it: against the task
-    // file as of the commit that added its record. That is an inference, not a record — it is
-    // wrong for a run whose input was edited between the run and the commit — so the refusal
-    // names the commit, and only a run git cannot place at all gets the warning (#131).
+    // file as of the commit that added its record — for a regrade, the record of the run it
+    // re-reads. That is an inference, not a record — it is wrong for a run whose input was
+    // edited between the run and the commit — so the refusal names the commit, and only a run
+    // git cannot place at all gets the warning (#131).
     if (regrade) {
       const currentSha = inputSha(taskSpec.input);
       const refuse = (recorded: string, basis: string, inferred = false) => {
@@ -408,15 +409,32 @@ const main = async () => {
         }
       } else {
         const pinned = pinnedInput(ROOT, path.relative(ROOT, resultPath), result.task);
+        const record = pinned.record === path.relative(ROOT, resultPath)
+          ? "this record"
+          : `${path.basename(path.dirname(pinned.record))}, the run this regrade re-reads`;
+        const taskFile = `tasks/${result.task}.yaml`;
 
-        if (pinned === null) {
+        if (pinned.commit === null) {
           console.warn(
-            `verify: ${result.run} predates input_sha and git cannot say which commit added it, so the input it was `
-              + `given cannot be checked against tasks/${result.task}.yaml as it stands now. If the input has been `
+            `verify: ${result.run} predates input_sha and git cannot say which commit added ${record}, so the input it was `
+              + `given cannot be checked against ${taskFile} as it stands now. If the input has been `
               + "reworded since, this regrade is grading old evidence against a new question — read the task notes before trusting it.",
           );
+        } else if (pinned.sha === null) {
+          console.warn(
+            `verify: ${result.run} predates input_sha, and ${taskFile} at ${pinned.commit.slice(0, 8)}, which added ${record}, `
+              + "holds no readable input, so the input this run was given cannot be checked. If the input has been reworded "
+              + "since, this regrade is grading old evidence against a new question — read the task notes before trusting it.",
+          );
         } else if (pinned.sha !== currentSha) {
-          refuse(pinned.sha, `read from tasks/${result.task}.yaml at ${pinned.commit.slice(0, 8)}, which added this record`, true);
+          refuse(pinned.sha, `read from ${taskFile} at ${pinned.commit.slice(0, 8)}, which added ${record}`, true);
+        } else {
+          // Said even when it passes: the pin is an inference, and a squash or rebase merge
+          // can give the adding commit a tree that already holds a rewording (AGENTS.md).
+          console.warn(
+            `verify: ${result.run} predates input_sha; its input was checked against ${taskFile} at ${pinned.commit.slice(0, 8)}, `
+              + `which added ${record}, and matches the input as it stands now.`,
+          );
         }
       }
     }

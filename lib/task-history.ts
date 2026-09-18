@@ -1,9 +1,12 @@
 import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
 import yaml from "js-yaml";
 import { inputSha, isRecord } from "./task.js";
 
-// The input a run was given, for a record that predates `input_sha`: every run before
-// 2026-08-28 lacks it, and a regrade of one used to be checked against nothing (#131). The
+// The input a run was given, for a record without `input_sha`: setup has stamped it since
+// 2026-08-28, but runs made on older checkouts lack it into September, and a regrade of one
+// used to be checked against nothing (#131). The
 // answer is read from git the way build-index pins such a run — the task file as of the
 // commit that first added the run's record — so verify refuses exactly the regrades the site
 // would refuse to table. Only a restamp (skill_version, retracted, benchmark) touches the
@@ -57,16 +60,56 @@ export const inputShaAt = (root: string, commit: string, taskId: string) => {
   return isRecord(loaded) && typeof loaded.input === "string" ? inputSha(loaded.input) : null;
 };
 
-// What a run without `input_sha` was given, with the commit the answer came from so a refusal
-// can say where to look. null when git cannot say.
-export const pinnedInput = (root: string, recordPath: string, taskId: string) => {
-  const commit = addingCommit(root, recordPath);
+// The record whose evidence a regrade re-reads: `regrade_of` followed to the run that was
+// actually executed. A regrade of a pre-field run is written without `input_sha` (grade.ts
+// copies the field only when the source has one), so pinning it by its own adding commit
+// would read the prompt as of the regrade, not the run. Stops at a missing record or a
+// cycle and pins whatever it reached.
+const sourceRecord = (root: string, recordPath: string) => {
+  const visited = new Set<string>();
+  let current = recordPath;
 
-  if (commit === null) {
-    return null;
+  while (!visited.has(current)) {
+    visited.add(current);
+
+    let loaded: unknown;
+
+    try {
+      loaded = yaml.load(readFileSync(path.join(root, current), "utf8"));
+    } catch {
+      break;
+    }
+
+    if (!isRecord(loaded) || typeof loaded.regrade_of !== "string") {
+      break;
+    }
+
+    const next = path.join(path.dirname(path.dirname(current)), loaded.regrade_of, "result.yaml");
+
+    if (!existsSync(path.join(root, next))) {
+      break;
+    }
+
+    current = next;
   }
 
-  const sha = inputShaAt(root, commit, taskId);
+  return current;
+};
 
-  return sha === null ? null : { commit, sha };
+export type PinnedInput = {
+  // The record the answer was read for: the run itself, or the source a regrade re-reads.
+  record: string;
+  // null when git cannot say which commit added the record.
+  commit: string | null;
+  // null when the commit is unknown, or the task file at that commit holds no readable input.
+  sha: string | null;
+};
+
+// What a run without `input_sha` was given, with the commit the answer came from so a refusal
+// can say where to look, and the record it was read for.
+export const pinnedInput = (root: string, recordPath: string, taskId: string): PinnedInput => {
+  const record = sourceRecord(root, recordPath);
+  const commit = addingCommit(root, record);
+
+  return { record, commit, sha: commit === null ? null : inputShaAt(root, commit, taskId) };
 };
