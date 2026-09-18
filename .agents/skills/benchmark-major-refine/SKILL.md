@@ -18,7 +18,7 @@ The clean re-run from [#119](https://github.com/BuidlGuidl/ethskills-evals/issue
 | Runs | 3 per arm per task, whatever the task's own `runs:` says |
 | Judge | `--judge-agent claude --judge-model claude-opus-5 --judge-effort high`, on every stack, every run |
 
-**If the benchmark commit is still `UNSET`, stop.** It is set once #128 and #129 are merged, to the commit on `main` the benchmark measures, and that commit has to contain `setup --skill-ref`. Both forms are written into the row, the way the old ref's is: the full sha, then its first 8 characters (the length `setup` records). Below, `<benchmark sha>` is the full one, used after `--skill-ref` and in the git checks for the reason the old ref is passed in full, and `<benchmark short>` is the 8 characters, used everywhere a record or an id carries it. Copy each from the row; never cut the short one yourself, because one operator's slip splits the benchmark id. Tell the human; do not pick a commit yourself, because every operator has to land on the same one.
+**If the benchmark commit is still `UNSET`, stop.** It is the merge commit of #130, written in right after that merge: that is the commit on `main` the benchmark measures, and the one that brings `setup --skill-ref`. Both forms are written into the row, the way the old ref's is: the full sha, then its first 8 characters (the length `setup` records). Below, `<benchmark sha>` is the full one, used after `--skill-ref` and in the git checks for the reason the old ref is passed in full, and `<benchmark short>` is the 8 characters, used everywhere a record or an id carries it. Copy each from the row; never cut the short one yourself, because one operator's slip splits the benchmark id. Tell the human; do not pick a commit yourself, because every operator has to land on the same one.
 
 ### Stacks
 
@@ -50,11 +50,12 @@ Ask at most one question: the stack, if the human did not name one. Recommend th
 
    ```bash
    git merge-base --is-ancestor <benchmark sha> HEAD
-   git diff --quiet <benchmark sha> -- tasks templates lib scripts package.json yarn.lock tsconfig.json AGENTS.md .agents/skills .claude/skills
+   git diff --quiet <benchmark sha> -- tasks templates lib scripts package.json yarn.lock tsconfig.json AGENTS.md
+   git fetch -q origin main && git diff --quiet origin/main -- .agents/skills .claude/skills
    extra=$(git ls-files --others --exclude-standard -- tasks templates lib scripts AGENTS.md .agents/skills .claude/skills && git ls-files --others -- 'tasks/*.yaml') && test -z "$extra"
    ```
 
-   A non-zero exit on the second means the rubric, the harness or the pins above moved since the benchmark started — this file is in the pathspec because a locally edited judge, effort or arm would otherwise pass preflight and land in a column under the shared id. That is a team decision (a new benchmark id), not something to fix on a branch. The third fails on any untracked file there: `git diff` does not see them, and an untracked `tasks/*.yaml` would join the task set below. Its second listing drops `--exclude-standard` for the task specs, because the task set is a glob and a glob picks up a yaml your own gitignore hides; and the `&&` chain is what makes a `git` that failed, and so listed nothing, a failure rather than a pass.
+   A non-zero exit on the second means the rubric or the harness moved since the benchmark started. That is a team decision (a new benchmark id), not something to fix on a branch. The pins in this file are checked against `origin/main` instead, on the third line, because the commit that writes the benchmark commit into the row lands *after* the benchmark commit, so this file differs from it by design; what must not differ is your copy from everyone else's, which is a locally edited judge, effort or arm reaching a column under the shared id. The fourth fails on any untracked file there: `git diff` does not see them, and an untracked `tasks/*.yaml` would join the task set below. Its own second listing drops `--exclude-standard` for the task specs, because the task set is a glob and a glob picks up a yaml your own gitignore hides; and the `&&` chain is what makes a `git` that failed, and so listed nothing, a failure rather than a pass.
 3. **The branch.** Work on `eval/major-refine-<skill>-<slug>`, cut from `main`.
 4. **`EVAL_WORKSPACE_ROOT` is unset**, or points outside this repo. A workspace inside the repo is a walk up from `tasks/` and from this file, which names the arm the run is in.
 
