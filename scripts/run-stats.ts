@@ -83,8 +83,9 @@ const median = (values: number[]) => {
 };
 
 // Two with_skill arms of one task differ only by which revision of the skill they read, and
-// the run directory name does not say. skill_version does, so an arm is a filter rather than a
-// date range a reader has to know the boundaries of.
+// the run directory name says which only for a run set up with --skill-ref. skill_version says
+// it for every run, so an arm is a filter rather than a date range a reader has to know the
+// boundaries of.
 const collect = (taskIds: string[], since: string | null, benchmark: string | null, variant: Variant | null, skillVersion: string | null) => {
   const stats: RunStats[] = [];
 

@@ -5,7 +5,7 @@ import path from "node:path";
 import process from "node:process";
 import yaml from "js-yaml";
 import { orderReadings } from "../lib/readings.js";
-import { normalizeSkillText, skillContentId } from "../lib/skill.js";
+import { SKILL_VERSION_LENGTH, normalizeSkillText, skillContentId } from "../lib/skill.js";
 import { expectSha, inputSha, isRecord, loadTaskSpec, loadYamlFile, parseArgs, readBenchmark, requireString } from "../lib/task.js";
 
 // Builds the json the results site reads, regenerated from the repo in a single pass and
@@ -16,7 +16,7 @@ import { expectSha, inputSha, isRecord, loadTaskSpec, loadYamlFile, parseArgs, r
 // Two of the three tables it feeds need facts that are in no record:
 //
 //   - which SKILL.md a run actually saw. result.yaml carries skill_version, but that is
-//     `git rev-parse --short HEAD` at setup time — repo state, not a version of the
+//     HEAD at setup time (or the `--skill-ref` commit) — repo state, not a version of the
 //     skill. Many shas map to one unchanged file, and a reduction shares its sha with
 //     whatever else landed that day. The file itself is `git show <sha>:skills/<n>/SKILL.md`,
 //     so versions here are keyed by the hash of that text.
@@ -701,7 +701,7 @@ const main = async () => {
       versions.push({
         skill: name,
         id: currentId,
-        sha: !dirty && head !== null ? head.slice(0, 7) : "worktree",
+        sha: !dirty && head !== null ? head.slice(0, SKILL_VERSION_LENGTH) : "worktree",
         first: "",
         runs: 0,
         text: currentText,

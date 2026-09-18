@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { codexEnv, codexReasoningArgs } from "./codex-home.js";
@@ -10,7 +10,10 @@ export type JudgeResult =
   | { ok: true; expects: Record<string, ExpectStatus> }
   | { ok: false; expects: Record<string, ExpectStatus>; error: string };
 
-const JUDGE_TIMEOUT_MS = 120_000;
+// A ceiling, not a budget: it only has to catch a hung CLI. At 120s it also caught judges that
+// were still working — a high-effort grade of a repo-shaped snapshot can think past two
+// minutes — and verify refuses a failed judge, so the run went ungraded for the harness's reason.
+const JUDGE_TIMEOUT_MS = 600_000;
 const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 
 const failExpectations = (expectations: string[]) =>
@@ -67,11 +70,41 @@ const parseVerdicts = (output: string, expectations: string[]): JudgeResult => {
 
 type Spawned = { ok: true; output: string } | { ok: false; error: string };
 
+// spawnSync reports its own kill as `spawnSync env ETIMEDOUT`, which names neither the limit nor
+// the stack that hit it.
+const spawnError = (error: Error, judge: JudgeSpec) =>
+  (error as NodeJS.ErrnoException).code === "ETIMEDOUT"
+    ? `${judge.agent} judge (${judge.model}, effort ${judge.reasoning_effort}) timed out after ${JUDGE_TIMEOUT_MS / 1000}s`
+    : error.message;
+
+// Both judges run in an empty dir of their own, never in the repo: a CLI discovers what its cwd
+// holds, and this repo's root holds `.claude/skills` and `.agents/skills` (a benchmark's arms and
+// run-id scheme), AGENTS.md, and every task's skill text under `skills/` — none of which a blind
+// grader may see, and any of which can change mid-benchmark without a record showing it. The
+// evidence is all in the prompt, so there is nothing in the repo the judge needs.
+//
+// One dir for every judge on the machine, not one per call: claude keys its project state on the
+// cwd, so a fresh mkdtemp per grade leaves a ~/.claude/projects entry per run — thousands over a
+// benchmark, and nothing ever removes them. It is not emptied between calls, because grades of
+// different runs overlap; nothing of a grade is written here (see the codex judge's file, which
+// is its own), so it stays as empty as it starts.
+const JUDGE_DIR = path.join(tmpdir(), "skill-eval-judge");
+
+const inJudgeDir = (run: (dir: string) => Spawned): Spawned => {
+  mkdirSync(JUDGE_DIR, { recursive: true });
+
+  try {
+    return run(JUDGE_DIR);
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+};
+
 // `claude -p` prints the final message to stdout. Both auth env vars are unset so a
 // stray key can't silently swap the account the judge grades under. The prompt goes in
 // on stdin, not argv: repo-shaped runs assemble evidence far larger than the OS argv
 // limit (E2BIG), and `-p` with no positional prompt reads it from stdin.
-const runClaudeJudge = (prompt: string, judge: JudgeSpec): Spawned => {
+const runClaudeJudge = (prompt: string, judge: JudgeSpec): Spawned => inJudgeDir(dir => {
   const args = [
     ...CLAUDE_LAUNCH,
     "--model", judge.model,
@@ -80,6 +113,7 @@ const runClaudeJudge = (prompt: string, judge: JudgeSpec): Spawned => {
   ];
 
   const result = spawnSync("env", args, {
+    cwd: dir,
     input: prompt,
     encoding: "utf8",
     timeout: JUDGE_TIMEOUT_MS,
@@ -87,7 +121,7 @@ const runClaudeJudge = (prompt: string, judge: JudgeSpec): Spawned => {
   });
 
   if (result.error) {
-    return { ok: false, error: result.error.message };
+    return { ok: false, error: spawnError(result.error, judge) };
   }
 
   if (result.status !== 0) {
@@ -95,7 +129,7 @@ const runClaudeJudge = (prompt: string, judge: JudgeSpec): Spawned => {
   }
 
   return { ok: true, output: result.stdout };
-};
+});
 
 // `codex exec` interleaves session logging with the answer on stdout, so take the
 // final message from --output-last-message instead. read-only: the judge reads
@@ -108,9 +142,11 @@ const runClaudeJudge = (prompt: string, judge: JudgeSpec): Spawned => {
 // grader either — which is also why the model arrives resolved (verify does it, so
 // result.yaml names the model that graded). No network flag here on purpose: the judge
 // grades from the evidence in its prompt, so read-only's default deny is correct.
-const runCodexJudge = (prompt: string, judge: JudgeSpec): Spawned => {
-  const dir = mkdtempSync(path.join(tmpdir(), "skill-eval-judge-"));
-  const messagePath = path.join(dir, "last-message.txt");
+const runCodexJudge = (prompt: string, judge: JudgeSpec): Spawned => inJudgeDir(dir => {
+  // In a dir of its own under the shared cwd, and removed below: two grades run at once, and
+  // one judge's answer must not be the file another judge reads.
+  const messageDir = mkdtempSync(path.join(dir, "message-"));
+  const messagePath = path.join(messageDir, "last-message.txt");
   // The effort verify resolved rides along for the same reason the model does: the redirect
   // means codex reads none of the operator's config.toml, and a judge whose effort silently
   // changed mid-benchmark grades the back half differently from the front half.
@@ -126,30 +162,29 @@ const runCodexJudge = (prompt: string, judge: JudgeSpec): Spawned => {
     "-",
   ];
 
+  const result = spawnSync("codex", args, {
+    cwd: dir,
+    input: prompt,
+    encoding: "utf8",
+    env: codexEnv(),
+    timeout: JUDGE_TIMEOUT_MS,
+    maxBuffer: MAX_OUTPUT_BYTES,
+  });
+
+  if (result.error) {
+    return { ok: false, error: spawnError(result.error, judge) };
+  }
+
   try {
-    const result = spawnSync("codex", args, {
-      input: prompt,
-      encoding: "utf8",
-      env: codexEnv(),
-      timeout: JUDGE_TIMEOUT_MS,
-      maxBuffer: MAX_OUTPUT_BYTES,
-    });
-
-    if (result.error) {
-      return { ok: false, error: result.error.message };
-    }
-
     if (result.status !== 0) {
       return { ok: false, error: result.stderr.trim() || "judge exited non-zero" };
     }
 
     return { ok: true, output: readFileSync(messagePath, "utf8") };
-  } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : String(error) };
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(messageDir, { recursive: true, force: true });
   }
-};
+});
 
 const JUDGE_RUNNERS: Record<JudgeAgent, (prompt: string, judge: JudgeSpec) => Spawned> = {
   claude: runClaudeJudge,

@@ -52,6 +52,13 @@ id, and the old runs stay in `artifacts/` under theirs. `setup` refuses to run w
 rubric fix is not a restart: its regrades inherit the source run's id, and `expect_sha` is what
 tells the readings apart.
 
+**A benchmark several people run gets a skill**, `.agents/skills/benchmark-<name>/SKILL.md`,
+with `.claude/skills/benchmark-<name>` a symlink to it so claude lists it too. It pins what every
+operator has to agree on — the id, the commit, the arms, the stacks, the judge, the run count —
+so the human names only the skill to run, and nobody's defaults leak into a column. This file
+stays the general loop; the skill says only what is particular to that benchmark. Open one when
+the human asks to run a benchmark that has one (`benchmark-major-refine` is #119).
+
 **Editing an expect line is the one exception**, and it is still not an overwrite — see
 "Revising expect lines" below. A rubric fix is not a new measurement, so re-running the
 executor to answer it pays for the wrong thing, and paying it is what makes editing a
@@ -93,7 +100,7 @@ It writes `<run-dir>/transcript.md` beside the raw capture, and `<run-dir>/execu
 
 `transcript.md` means the same thing on every stack, which takes assembling: claude streams the whole session as stream-json on stdout, codex (with `--json`) and opencode (with `--format json`) stream their own event shapes there, and each is rendered to the same sections. Mine transcripts from `transcript.md` alone; the raw streams beside it are gitignored. It is always text: a carriage return keeps the last frame of its line, and the writer strips escape sequences and control bytes other than newline and tab, because one NUL in a tool's output (a `tsc` banner did it, #133) is enough for git to call the file binary and for `git diff` and `grep` to skip it.
 
-**Judge**: a fresh, blind agent that grades `expect:` lines from the evidence `verify` assembles (diff + output files). It never sees the variant, the skill, or the transcript. Claude and codex both work; opencode does not judge yet, though it orchestrates fine.
+**Judge**: a fresh, blind agent that grades `expect:` lines from the evidence `verify` assembles (diff + output files). It never sees the variant, the skill, or the transcript, and `verify` starts it in a temp dir of its own rather than in this repo, whose root holds `skills/`, this file and the benchmark skills under `.agents/skills/` — all of which a CLI discovers from its cwd. That dir is one per machine, not one per grade: claude keys its project state on the cwd, and a fresh dir each time would leave a `~/.claude/projects` entry per run. Claude and codex both work; opencode does not judge yet, though it orchestrates fine.
 
 Never grade from your own context. You have read the skill and the expect lines, so you cannot grade blind. `verify` spawns the judge for you; pass the agent and model **you** are running as, so the grading happens on the orchestrator's model:
 
@@ -172,6 +179,8 @@ The task input never changes across variants. Only the workspace does.
 | `no_skill` | task input (+ template) only |
 | `with_skill` | the skill at `.agents/skills/<name>/`, agent decides to use it |
 
+`setup --skill-ref <commit>` installs the skill as git holds it at that commit instead of as the checkout has it, and records that commit as `skill_version`. That is how a benchmark measures two texts of one skill on the same tasks and the same harness: an old arm and a new arm are both `with_skill`, told apart by `skill_version` and `skill_content`, and the ref is in the run id too (`…-with-skill-2f0adb01-1`) so the two arms never share a run dir or a workspace parent. The ref is looked up in the repo the skill dir sits in, the same one a plain `with_skill` run reads `HEAD` from, and recorded as the first 8 characters of the full sha however it was spelled; a short ref that matches two commits is refused with git's list of candidates, so pin a full sha where operators have to agree. It is refused on `no_skill`, and on a commit where the skill does not exist.
+
 `.agents/skills/` is the canonical, executor-neutral location; codex discovers it natively. Claude only lists skills from `.claude/skills/`, so claude runs also get a copy there, and opencode runs get one at `.opencode/skills/`, because the harness switches opencode's `.agents/` discovery off to keep the operator's global `~/.agents/skills` out (see "The three roles"). Supporting a new executor means adding a bridge line in `setup` and its dir to `SKILL_INSTALL_DIRS` in `lib/workspace.ts`, or the skill leaks into the judge's evidence.
 
 To force the trigger, prepend one line to the spawn prompt (`Use the <name> skill for this task.`) and say so in the report. Trigger-inclusive and content-only numbers must never blend.
@@ -180,14 +189,14 @@ To force the trigger, prepend one line to the spawn prompt (`Use the <name> skil
 
 `artifacts/<task-id>/<run-id>/result.yaml`, one per run. `setup` writes the top half, `verify` the rest.
 
-`skill_version` is the repo's HEAD at setup time, not a hash of the skill, so it only identifies the text as long as that commit stays reachable. A rebase, an amend or a squash-merge orphans it and the run stops being able to say what it was given. Before a branch merges, check every `skill_version` it adds with `git merge-base --is-ancestor <sha> HEAD`; where one is unreachable, restamp it to a reachable commit whose `skills/<name>/SKILL.md` blob is byte-identical (`git rev-parse <sha>:skills/<name>/SKILL.md`) and say so in the report. Restamping to a commit with different text is falsifying the record.
+`skill_version` is the repo's HEAD at setup time (or the `--skill-ref` commit), always its first 8 characters so every clone writes the same one (records from before `--skill-ref` carry `git rev-parse --short`, 7 and up), not a hash of the skill, so it only identifies the text as long as that commit stays reachable. A rebase, an amend or a squash-merge orphans it and the run stops being able to say what it was given. Before a branch merges, check every `skill_version` it adds with `git merge-base --is-ancestor <sha> HEAD`; where one is unreachable, restamp it to a reachable commit whose `skills/<name>/SKILL.md` blob is byte-identical (`git rev-parse <sha>:skills/<name>/SKILL.md`) and say so in the report. Restamping to a commit with different text is falsifying the record.
 
 ```yaml
 task: gas-cost-estimate-001
 run: 2026-07-06T093000Z-claude-with-skill-1
 executor: claude
 variant: with_skill
-skill_version: 191dcc1                # git short sha of the skill source; null for no_skill
+skill_version: 2f0adb01               # first 8 chars of the skill source's commit; null for no_skill; older runs carry --short, 7+
 input_sha: 4f2b9c1de803               # sha256 of the input this run was given; absent on pre-2026-08-28 runs
 created: 2026-07-06T09:30:00Z
 executor_model: claude-opus-5         # what actually ran; null only on runs made before it was required
@@ -254,8 +263,10 @@ the cost range beside them and the median `total_tokens`, and says `(n with no s
 that carry none of the three — whose cost and duration this repo simply does not have.
 
 `--skill-version` filters on `result.yaml`'s `skill_version`. Two `with_skill` arms of one task
-differ only by which revision of the skill they read, and the run directory name does not say, so
-an arm is one command rather than a date range a reader has to know the boundaries of.
+differ only by which revision of the skill they read. The run directory name says which only for
+runs set up with `--skill-ref`; a plain `with_skill` run's id carries no ref, and every run from
+before the flag is one of those. `skill_version` is in all of them, so an arm is one command
+rather than a date range a reader has to know the boundaries of.
 
 Print the range as well as the median: at `n=3` a goal task's cheapest and dearest run can differ by
 more than the delta the median is being read for, and a median that carries a headline needs its
