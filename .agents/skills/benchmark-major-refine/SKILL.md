@@ -11,8 +11,8 @@ The clean re-run from [#119](https://github.com/BuidlGuidl/ethskills-evals/issue
 
 | What | Value |
 | --- | --- |
-| Benchmark commit | `UNSET`, recorded as `UNSET` |
-| Benchmark id | `major-refine-<benchmark short>` |
+| Benchmark commit | `d99525222883df0b32decbfb81e1a13f9c27cfed`, recorded as `d9952522` |
+| Benchmark id | `major-refine-d9952522` |
 | Old skill ref | `2f0adb01554aa3f4feb52a1b3f5797ab2499e933`, recorded as `2f0adb01` (the first version of every skill in this repo, "vendor all 19 ethskills skills @ 191dcc1"; gas was added earlier but its text there is the same) |
 | New skill ref | the benchmark commit |
 | Runs | 3 per arm per task, whatever the task's own `runs:` says |
