@@ -1,6 +1,6 @@
 ---
 name: standards
-description: Ethereum standards that postdate most training data — ERC-8004 onchain agent identity and reputation, x402 HTTP payments, EIP-3009 gasless USDC transfers, EIP-7702 smart EOAs. Use when choosing the standard for a project, building or paying for a service other agents discover and consume, or giving an existing EOA contract abilities.
+description: "Use when a design needs agent identity or reputation, pay-per-call HTTP payments, USDC transfers from a wallet that holds no ETH, or contract abilities on an address the user already owns, and when someone is about to rebuild one of these by hand. Names the deployed standard for each (ERC-8004, x402, EIP-3009, EIP-7702). Not for who may sign or custody the funds (`/wallets`) or what to install (`/tools`)."
 ---
 
 # Ethereum Standards

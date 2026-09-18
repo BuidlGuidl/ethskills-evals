@@ -1,6 +1,6 @@
 ---
 name: wallets
-description: Use when deciding who or what may sign for funds — an agent, bot, or deploy script that signs unattended; a treasury's custody; a Safe or multisig owner set and threshold; hardware wallet vs multisig; a private key pasted into a prompt, an .env, or a repo; or batching from a user's existing EOA (EIP-7702).
+description: "Use when deciding who or what may sign for funds: an agent or script signing unattended, a treasury's custody, a multisig's owners and threshold, a private key that ended up in a prompt or a repo, or whether a user must accept a new address to act from the one they already have. Not for which standard to build on (`/standards`)."
 ---
 
 # Wallets
