@@ -36,17 +36,18 @@ const frontmatter = (name: string) => {
 // before any of them runs.
 const loadDescriptions = () => new Map(skillNames.map((name) => [name, frontmatter(name)]));
 
-// A cede is a parenthesised list of backticked names: (`qa`), (`security`, `audit`). Matching
-// the parenthetical itself, anywhere in the description, means a period inside the sentence
-// ("e.g.", `scaffold.config`), a code token that is not a skill (`forge`), or a lowercase "not
-// for" after a semicolon cannot hide or invent one. A backticked name outside parentheses is a
-// mention, not a cede — a description may talk about a neighbour without handing it anything.
+// A cede is a parenthesised list of backticked names at or after the first "Not for".
+// Before that, a parenthetical is a mention.
 const CEDE = /\(\s*(`[a-z0-9-]+`(?:\s*(?:,|or|,\s*or)\s*`[a-z0-9-]+`)*)\s*\)/g;
 
-export const cedes = (description: string) =>
-  [...description.matchAll(CEDE)].flatMap((m) => [...m[1].matchAll(/`([a-z0-9-]+)`/g)].map((n) => n[1]));
+export const cedes = (description: string) => {
+  const start = description.search(/\bnot for\b/i);
+  return start < 0 ? [] : [...description.slice(start).matchAll(CEDE)].flatMap((m) => [...m[1].matchAll(/`([a-z0-9-]+)`/g)].map((n) => n[1]));
+};
 
 test("cedes(): the parenthetical is the cede, whatever the sentence around it does", () => {
+  assert.deepEqual(cedes("Use for a scaffold (`create-eth`). Not for the checklist (`qa`)."), ["qa"]);
+  assert.deepEqual(cedes("Use for a scaffold (`create-eth`) and nothing else."), []);
   assert.deepEqual(cedes("Not for the pre-ship checklist, e.g. theme (`retired-skill`)."), ["retired-skill"]);
   assert.deepEqual(cedes("Not for running `forge` tests on their own (`testing`)."), ["testing"]);
   assert.deepEqual(cedes("Use for the frontend; not for the checklist (`qa`)."), ["qa"]);
