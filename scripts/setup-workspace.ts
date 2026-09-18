@@ -100,6 +100,12 @@ const locateSkill = (skillSource: string) => {
     stdio: "pipe",
   });
 
+  // Before the status: a git that never spawned (ENOENT, EACCES) reports status null, and
+  // "is in no git repo" would be the wrong reason.
+  if (located.error) {
+    throw located.error;
+  }
+
   if (located.status !== 0) {
     throw new Error(`--skill-ref needs the skill in a git repo, and ${skillSource} is in none`);
   }
