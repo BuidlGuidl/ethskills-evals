@@ -11,14 +11,14 @@ The clean re-run from [#119](https://github.com/BuidlGuidl/ethskills-evals/issue
 
 | What | Value |
 | --- | --- |
-| Benchmark commit | `UNSET`, recorded as `UNSET` |
-| Benchmark id | `major-refine-<benchmark short>` |
+| Benchmark commit | `d99525222883df0b32decbfb81e1a13f9c27cfed`, recorded as `d9952522` |
+| Benchmark id | `major-refine-d9952522` |
 | Old skill ref | `2f0adb01554aa3f4feb52a1b3f5797ab2499e933`, recorded as `2f0adb01` (the first version of every skill in this repo, "vendor all 19 ethskills skills @ 191dcc1"; gas was added earlier but its text there is the same) |
 | New skill ref | the benchmark commit |
 | Runs | 3 per arm per task, whatever the task's own `runs:` says |
 | Judge | `--judge-agent claude --judge-model claude-opus-5 --judge-effort high`, on every stack, every run |
 
-**If the benchmark commit is still `UNSET`, stop.** It is the merge commit of #130, written in right after that merge: that is the commit on `main` the benchmark measures, and the one that brings `setup --skill-ref`. Both forms are written into the row, the way the old ref's is: the full sha, then its first 8 characters (the length `setup` records). Below, `<benchmark sha>` is the full one, used after `--skill-ref` and in the git checks for the reason the old ref is passed in full, and `<benchmark short>` is the 8 characters, used everywhere a record or an id carries it. Copy each from the row; never cut the short one yourself, because one operator's slip splits the benchmark id. Tell the human; do not pick a commit yourself, because every operator has to land on the same one.
+Below, `<benchmark sha>` is the full sha from the row, used after `--skill-ref` and in the git checks for the reason the old ref is passed in full. `<benchmark short>` is its first 8 characters (the length `setup` records), used everywhere a record or an id carries it. Copy each from the row; never cut the short one yourself, because one operator's slip splits the benchmark id.
 
 ### Stacks
 
