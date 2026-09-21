@@ -1,0 +1,1203 @@
+diff --git a/FINDINGS.md b/FINDINGS.md
+new file mode 100644
+index 0000000..b576305
+--- /dev/null
++++ b/FINDINGS.md
+@@ -0,0 +1,570 @@
++# UsdtYieldVault — pre-deployment review
++
++**Recommendation: do not ship this on Monday.**
++
++Five defects, all reproducible against `src/UsdtYieldVault.sol` exactly as it is
++committed today. Nothing under `src/` was modified. Two of them are fatal on
++their own:
++
++- **F1** — every `deposit()` reverts against the real USDT contract. The vault
++  cannot take a single deposit on mainnet.
++- **F2** — the withdrawal fee is subtracted from the vault's accounting but
++  never withdrawn from Aave and never credited to anyone. It is destroyed. On a
++  200,000 USDT round trip, 600 USDT is permanently unrecoverable.
++- **F3** — Aave interest never reaches depositors. A one-year 100,000 USDT
++  deposit earns 4,256.65 USDT that the depositor cannot claim and nobody can
++  ever retrieve.
++- **F4** — `setDepositFee` has no upper bound. One owner transaction can
++  confiscate 99.99% of a pending deposit, or brick deposits permanently.
++- **F5** — `pause()` freezes withdrawals, so one key can lock every depositor
++  out of their funds with no timelock and no emergency exit.
++
++## Why the existing suite is green
++
++The 39 passing tests and the 100% line/function coverage are both accurate and
++both uninformative here. Coverage records which lines executed; it never records
++whether an assertion could have failed.
++
++Three specific gaps let all five defects through:
++
++1. **Everything is mocked.** `test/mocks/MockUSDT.sol` is an OpenZeppelin ERC20.
++   Real USDT is not. `test/mocks/MockAavePool.sol` mints aTokens 1:1 and never
++   accrues interest. Real Aave does. A mock encodes the assumption; testing
++   against it only re-tests the assumption. F1 and F3 are invisible to any
++   number of mock-based tests.
++2. **No property tied accounting to custody.** Every existing test checks one
++   operation in isolation, and every operation is individually self-consistent.
++   F2 is a per-withdrawal gap between what the vault *says* it holds and what it
++   *actually* holds; it only becomes visible when you state that equality and
++   let a fuzzer drive sequences at it.
++3. **`depositFeeBps` was only ever tested at hand-picked values** — 10, 0, and
++   500. The whole accepted domain is every `uint256`, and the interesting values
++   live at 9,999 and above.
++
++Below, each finding has the command and its verbatim terminal output.
++
++---
++
++## Setup for reproducing
++
++New test files only, all under `test/`:
++
++| File | What it does |
++| --- | --- |
++| `test/VaultMainnetFork.t.sol` | Pinned mainnet fork against real USDT / Aave V3 / aUSDT |
++| `test/VaultInvariant.t.sol` + `test/handlers/VaultHandler.sol` | Handler-driven invariant: accounting == custody |
++| `test/VaultAccountingDrift.t.sol` | Targeted regressions confirming and quantifying F2 |
++| `test/VaultDepositFeeFuzz.t.sol` | Fee-domain fuzz + boundary classification |
++| `test/VaultLiveness.t.sol` | Can a depositor always exit? |
++
++The fork tests default to `https://eth.drpc.org`, which serves archive state at
++block 21,000,000; override with `MAINNET_RPC_URL` if you prefer your own. I
++confirmed the endpoint answers at the pinned block, and confirmed all three
++addresses are what the README claims, before relying on any result from them:
++
++```
++$ cast call 0xdAC17F958D2ee523a2206206994597C13D831ec7 "symbol()(string)" --block 21000000 --rpc-url https://eth.drpc.org
++"USDT"
++
++$ cast call 0x23878914EFE38d27C4D67Ab83ed1b93A74D4086a "symbol()(string)" --block 21000000 --rpc-url https://eth.drpc.org
++"aEthUSDT"
++
++$ cast call 0x23878914EFE38d27C4D67Ab83ed1b93A74D4086a "UNDERLYING_ASSET_ADDRESS()(address)" --block 21000000 --rpc-url https://eth.drpc.org
++0xdAC17F958D2ee523a2206206994597C13D831ec7
++```
++
++The Aave V3 Pool at `0x87870Bca...` returns the same aUSDT address from
++`getReserveData(USDT)`, so the pool, the underlying and the receipt token are a
++consistent set.
++
++---
++
++## F1 — Critical. Every deposit reverts against real USDT
++
++### What is wrong
++
++`UsdtYieldVault.sol:93`:
++
++```solidity
++usdt.approve(address(aavePool), amount);
++```
++
++This goes through `IERC20.approve`, which is declared `returns (bool)`. Mainnet
++USDT's `approve` writes **no return data at all**. Solidity's ABI decoder checks
++`returndatasize()` before decoding the `bool`, finds zero bytes, and reverts.
++
++The contract imports `SafeERC20` and uses it for `safeTransferFrom` one line
++earlier — which is why the transfer works and the approve does not. The approve
++was simply missed.
++
++Consequence: `deposit()` is unreachable on mainnet. The vault takes no money.
++It is not a loss-of-funds bug, it is a total-failure-to-function bug — but it
++would be discovered by the first user on Monday, not by us.
++
++### Evidence
++
++```
++$ forge test --match-path test/VaultMainnetFork.t.sol --match-test test_RealUsdtApproveReturnsNoData -vv
++
++Ran 1 test for test/VaultMainnetFork.t.sol:VaultMainnetForkTest
++[FAIL: USDT.approve returned a decodable bool: 0 != 32] test_RealUsdtApproveReturnsNoData() (gas: 39110)
++Logs:
++  USDT.approve return data length: 0
++```
++
++The raw call succeeds; it just returns zero bytes. And the deposit itself:
++
++```
++$ forge test --match-test test_DepositAgainstRealUsdt -vvvv
++
++  [94187] VaultMainnetForkTest::test_DepositAgainstRealUsdt()
++    ├─ [0] VM::prank(alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6])
++    │   └─ ← [Return]
++    ├─ [84174] UsdtYieldVault::deposit(100000000000 [1e11])
++    │   ├─ [43630] 0xdAC17F958D2ee523a2206206994597C13D831ec7::transferFrom(alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6], UsdtYieldVault: [0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f], 100000000000 [1e11])
++    │   │   ├─ emit Transfer(from: alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6], to: UsdtYieldVault: [0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f], value: 100000000000 [1e11])
++    │   │   └─ ← [Stop]
++    │   ├─ [24953] 0xdAC17F958D2ee523a2206206994597C13D831ec7::approve(0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2, 100000000000 [1e11])
++    │   │   ├─ emit Approval(owner: UsdtYieldVault: [0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f], spender: 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2, value: 100000000000 [1e11])
++    │   │   └─ ← [Stop]
++    │   └─ ← [Revert] EvmError: Revert
++    └─ ← [Revert] EvmError: Revert
++
++Backtrace:
++  at UsdtYieldVault.deposit
++  at VaultMainnetForkTest.test_DepositAgainstRealUsdt
++```
++
++Read the trace: `approve` itself returns `[Stop]` — it executed fine on-chain —
++and `deposit` reverts immediately after, on the decode. The existing
++`test_DepositSuppliesToAave` passes because `MockUSDT` is an OZ ERC20 whose
++`approve` returns a proper `bool`.
++
++### Fix
++
++Use `forceApprove` from the already-imported `SafeERC20`:
++
++```solidity
++usdt.forceApprove(address(aavePool), amount);
++```
++
++`forceApprove` handles both USDT quirks: the missing return value, and the
++`require` that blocks a non-zero→non-zero allowance change. Do not substitute a
++one-time infinite approval in the constructor — that also has to go through
++`forceApprove`, and it widens the blast radius if the pool address is ever
++wrong.
++
++---
++
++## F2 — Critical. The withdrawal fee is destroyed, not distributed
++
++### What is wrong
++
++`UsdtYieldVault.sol:110-117`:
++
++```solidity
++uint256 grossAssets = convertToAssets(shares);
++uint256 fee = (grossAssets * WITHDRAW_FEE_BPS) / BPS_DENOMINATOR;
++netAssets = grossAssets - fee;
++...
++totalAssetsStored -= grossAssets;      // full gross removed from accounting
++aavePool.withdraw(address(usdt), netAssets, msg.sender);   // only net removed from Aave
++```
++
++`totalAssetsStored` drops by `grossAssets`, but only `netAssets` actually leaves
++Aave. The `fee` stays in Aave as aUSDT that the vault's accounting no longer
++knows about.
++
++The NatSpec on line 15 and the README both state that withdrawal fees "stay
++supplied in Aave and accrue to the remaining shareholders". They do not. Because
++both `totalAssetsStored` and `totalShares` are reduced *proportionally*, the
++share price is exactly unchanged — remaining shareholders gain nothing. The fee
++accrues to no one. It is stranded, and there is no sweep, rescue, or
++`skim` function anywhere on the contract, so it is unrecoverable.
++
++At 30 bps this destroys 0.3% of every withdrawal, forever, and it compounds with
++every withdrawal the vault ever processes.
++
++Note that deposit fees *do* behave as documented (`totalAssetsStored += amount`
++on the full amount while shares are minted on the net) — which is likely why
++nobody noticed the withdrawal side does the opposite.
++
++### Evidence — the invariant search that found it
++
++`test/VaultInvariant.t.sol` states the property as an **equality**:
++`totalAssetsStored == aUSDT.balanceOf(vault)`. A one-sided `claims <= holdings`
++bound would have stayed green through this entire finding, because the vault
++ends up with a *surplus* it cannot see, not a shortfall.
++
++The fuzzer is pointed at `test/handlers/VaultHandler.sol`, which owns three
++funded and approved actors and bounds every input, so the sequences reach real
++vault states rather than bouncing off reverts. Revert rate is 0%.
++
++```
++$ rm -rf cache/invariant && FOUNDRY_INVARIANT_RUNS=64 FOUNDRY_INVARIANT_DEPTH=32 FOUNDRY_INVARIANT_FAIL_ON_REVERT=true forge test --match-path test/VaultInvariant.t.sol -vv
++
++Ran 3 tests for test/VaultInvariant.t.sol:UsdtYieldVaultInvariantTest
++[FAIL: totalAssetsStored diverged from aUSDT actually held: 2829923372706 != 2829925345840]
++	[Sequence] (original: 12, shrunk: 2)
++		sender=0xd7926d00B90049faF0f2a122b8C9e77D56066632 addr=[test/handlers/VaultHandler.sol:VaultHandler]0x5991A2dF15A8F6A256D3Ec51E99254Cd3fb576A9 calldata=deposit(uint256,uint256) args=[91581317174418418892695206424920932569022433085115365598474 [9.158e58], 17521207872042 [1.752e13]]
++		sender=0x5914304456f48Dd2112d12dDA42daa3aD86f0a34 addr=[test/handlers/VaultHandler.sol:VaultHandler]0x5991A2dF15A8F6A256D3Ec51E99254Cd3fb576A9 calldata=withdraw(uint256,uint256) args=[18814110536808389718547251985296894392831516 [1.881e43], 2096745100628192599036478014028624177212858484037743146728816970583770 [2.096e69]]
++ invariant_AccountingEqualsCustody() (runs: 0, calls: 0, reverts: 0)
++
++╭--------------+---------------+-------+---------+----------╮
++| Contract     | Selector      | Calls | Reverts | Discards |
+++===========================================================+
++| VaultHandler | deposit       | 4     | 0       | 0        |
++|--------------+---------------+-------+---------+----------|
++| VaultHandler | setDepositFee | 3     | 0       | 0        |
++|--------------+---------------+-------+---------+----------|
++| VaultHandler | withdraw      | 5     | 0       | 0        |
++╰--------------+---------------+-------+---------+----------╯
++
++[PASS] invariant_CallSummary() (runs: 64, calls: 2048, reverts: 0)
++
++╭--------------+---------------+-------+---------+----------╮
++| Contract     | Selector      | Calls | Reverts | Discards |
+++===========================================================+
++| VaultHandler | deposit       | 658   | 0       | 0        |
++|--------------+---------------+-------+---------+----------|
++| VaultHandler | setDepositFee | 688   | 0       | 0        |
++|--------------+---------------+-------+---------+----------|
++| VaultHandler | withdraw      | 702   | 0       | 0        |
++╰--------------+---------------+-------+---------+----------╯
++
++Logs:
++  deposits  8
++  withdraws 11
++  setFee    12
++
++[PASS] invariant_SumOfSharesEqualsTotalShares() (runs: 64, calls: 2048, reverts: 0)
++
++Suite result: FAILED. 2 passed; 1 failed; 0 skipped; finished in 799.81ms (1.39s CPU time)
++```
++
++The counterexample shrinks to two calls — one deposit, one withdrawal.
++`invariant_SumOfSharesEqualsTotalShares` passes, which localises the bug to the
++asset side rather than the share ledger. 2,048 calls at 0 reverts confirms the
++handler actually drove the vault rather than the run proving nothing.
++
++*(The `rm -rf cache/invariant` is only so you get a fresh campaign rather than a
++replay of my cached counterexample; the failure reproduces either way, with a
++different sequence each run.)*
++
++### Evidence — the mechanism, and that it accumulates
++
++```
++$ forge test --match-path test/VaultAccountingDrift.t.sol -vv
++
++Ran 2 tests for test/VaultAccountingDrift.t.sol:VaultAccountingDriftTest
++[FAIL: yet aUSDT is still sitting in Aave: 600000000 != 0] test_StrandedFeesAreUnrecoverableAfterFullExit() (gas: 371482)
++Logs:
++  totalShares        : 0
++  totalAssetsStored  : 0
++  aUSDT held by vault: 600000000
++
++[FAIL: withdraw fee did not accrue to remaining shareholders: 1000000 <= 1000000] test_WithdrawFeeStrandsValueAndAccumulates() (gas: 376999)
++Logs:
++  stranded after 1 withdrawal (USDT base units): 150000000
++  stranded after 2 withdrawals (USDT base units): 300000000
++  share price before: 1000000
++  share price after : 1000000
++
++Suite result: FAILED. 0 passed; 2 failed; 0 skipped; finished in 1.62ms (1.18ms CPU time)
++```
++
++Three things to read off that, all with the deposit fee set to 0 so every number
++is attributable to the withdrawal fee alone:
++
++- **It accumulates.** 150 USDT stranded after one withdrawal, 300 USDT after
++  two. Linear in the number of withdrawals, not a one-off rounding artefact.
++- **The documented behaviour does not happen.** Share price is 1000000 before
++  and 1000000 after. The fee did not accrue to the remaining shareholders.
++- **It is unrecoverable.** After both depositors fully exit: `totalShares` 0,
++  `totalAssetsStored` 0, and 600 USDT of aUSDT still sitting in Aave owned by a
++  vault with no shares outstanding and no function that can move it.
++
++### Fix
++
++Pick whichever matches the intent, but pick one:
++
++- **If the fee should accrue to remaining shareholders** (what the NatSpec
++  says): subtract only what actually leaves.
++  ```solidity
++  totalAssetsStored -= netAssets;
++  ```
++  The `fee` then stays in both custody *and* accounting, spread over the
++  remaining `totalShares`, and the share price rises as documented. Note the
++  last withdrawer's fee has no one to accrue to — decide explicitly whether the
++  final exit waives the fee or sends it somewhere.
++- **If the fee should go to the owner:** keep `totalAssetsStored -= grossAssets`
++  and add a second `aavePool.withdraw(address(usdt), fee, feeRecipient)`, or
++  accrue it to a `pendingFees` counter with an owner-callable claim.
++
++Either way, add the equality invariant from `test/VaultInvariant.t.sol` to CI so
++this class of defect cannot come back.
++
++---
++
++## F3 — Critical. It is a yield vault that pays no yield
++
++### What is wrong
++
++`totalAssets()` returns `totalAssetsStored`, a plain counter moved only by
++`deposit` and `withdraw`. The vault's actual position is aUSDT, which rebases
++upward as Aave pays interest. Nothing in the contract ever reads
++`aUsdt.balanceOf(address(this))` — the `aUsdt` immutable is stored in the
++constructor and then never used again anywhere in the file.
++
++So the entire premise of the product does not hold: depositors get back what
++they put in, minus fees, and all the Aave interest is stranded alongside the F2
++fees with no way to retrieve it.
++
++This is exactly the defect a mock cannot show you. `MockAavePool` mints aTokens
++1:1 and never accrues anything, so against the mock `totalAssetsStored` and the
++aToken balance agree by construction.
++
++### Evidence
++
++Real USDT, real Aave V3 pool, real interest rate model, pinned at block
++21,000,000. The interest number below is what Aave actually paid.
++
++```
++$ forge test --match-path test/VaultMainnetFork.t.sol -vv
++
++Ran 4 tests for test/VaultMainnetFork.t.sol:VaultMainnetForkTest
++[FAIL: totalAssets() ignores the interest: 100000000000 <= 100000000000] test_AaveInterestNeverReachesDepositors() (gas: 357251)
++Logs:
++  aUSDT held, day 0    : 100000000000
++  aUSDT held, day 365  : 104256651917
++  interest earned      : 4256651917
++  alice redeemable d0  : 100000000000
++  alice redeemable d365: 100000000000
++  totalAssets() d365   : 100000000000
++
++[FAIL: EvmError: Revert] test_DepositAgainstRealUsdt() (gas: 94187)
++[FAIL: USDT.approve returned a decodable bool: 0 != 32] test_RealUsdtApproveReturnsNoData() (gas: 39110)
++Logs:
++  USDT.approve return data length: 0
++
++[FAIL: nothing should be left behind: 4556651917 != 0] test_ResidualIsStrandedAfterFullExitOnRealAave() (gas: 410995)
++Logs:
++  totalShares         : 0
++  totalAssetsStored   : 0
++  aUSDT left in Aave  : 4556651917
++  alice USDT balance  : 999700000000
++
++Suite result: FAILED. 0 passed; 4 failed; 0 skipped; finished in 424.91ms (2.79ms CPU time)
++```
++
++Deposit 100,000 USDT, wait a year. Aave paid **4,256.65 USDT** of interest. The
++depositor's redeemable balance is unchanged at exactly 100,000.000000. Then she
++withdraws everything and walks away with 99,700 USDT — she paid 300 USDT in
++withdrawal fees and forfeited 4,256.65 USDT of interest. **4,556.65 USDT** is
++left in Aave against zero outstanding shares.
++
++Because F1 makes `deposit()` revert on this fork, the two accrual tests
++neutralise *only* the `approve` return-decode (a raw pre-approval plus a
++`vm.mockCall` on the `approve` selector) so the next defect becomes observable.
++Token, pool, rates and aToken accounting are all the live mainnet contracts. The
++helper is `_depositBypassingApproveBug` in `test/VaultMainnetFork.t.sol` if you
++want to check that it isn't doing anything else.
++
++### Fix
++
++Make `totalAssets()` report the real position and delete the stored counter:
++
++```solidity
++function totalAssets() public view returns (uint256) {
++    return aUsdt.balanceOf(address(this));
++}
++```
++
++and have `convertToShares` / `convertToAssets` / `sharePrice` read
++`totalAssets()` rather than `totalAssetsStored`. Then interest accrues to the
++share price automatically and every depositor's claim grows.
++
++Two consequences to handle deliberately once you do that:
++
++- **`totalAssets()` becomes donation-manipulable.** Today `totalAssetsStored` is
++  immune to inflation attacks precisely because it ignores the balance. Reading
++  the balance reintroduces the classic first-depositor share-inflation attack.
++  Mitigate with virtual shares/assets (OZ ERC4626's `_decimalsOffset`) or a dead
++  first deposit minted at construction. Do not skip this — swapping F3 for an
++  inflation attack is not an improvement.
++- **Strongly consider inheriting OZ's `ERC4626`** rather than hand-rolling
++  shares. It gets the rounding directions, the virtual-offset defence and the
++  conversion maths right, all of which are currently bespoke here.
++
++---
++
++## F4 — High. `setDepositFee` is unbounded
++
++### What is wrong
++
++`UsdtYieldVault.sol:124-128`:
++
++```solidity
++function setDepositFee(uint256 newFeeBps) external onlyOwner {
++    uint256 previousFeeBps = depositFeeBps;
++    depositFeeBps = newFeeBps;
++    emit DepositFeeUpdated(previousFeeBps, newFeeBps);
++}
++```
++
++No `require`, no cap, no timelock. `depositFeeBps` feeds directly into
++`fee = (amount * depositFeeBps) / BPS_DENOMINATOR` on the deposit path, so the
++owner controls the value math without limit. The existing suite tests three
++hand-picked values (10, 0, 500), all of which walk the same branch.
++
++Two distinct failure modes fall out of the domain:
++
++- **Confiscation.** At 9,999 bps the fee is legal and the deposit succeeds — the
++  depositor just loses 99.99% of it to the existing shareholders. A malicious or
++  compromised owner front-runs a pending deposit, raises the fee, and lowers it
++  again in the same block.
++- **Denial of service.** At 10,000 bps and above, deposits revert. The vault's
++  only entry point is permanently closed until the owner reverses it.
++
++### Evidence
++
++```
++$ forge test --match-path test/VaultDepositFeeFuzz.t.sol -vv
++
++Ran 7 tests for test/VaultDepositFeeFuzz.t.sol:VaultDepositFeeFuzzTest
++[FAIL; counterexample: calldata=0x1b5bc6ff000000000000000000000000000000000000000000000000000031a9dd50a46b args=[54605632283755 [5.46e13]]] testFuzz_DepositSucceedsForAnySettableFee(uint256) (runs: 0, μ: 0, ~: 0)
++Logs:
++  deposit reverted at depositFeeBps = 18649
++  0x4e487b710000000000000000000000000000000000000000000000000000000000000011
++
++[PASS] testFuzz_DepositorRetainsValueNetOfFee(uint256) (runs: 256, μ: 305808, ~: 305969)
++[PASS] test_Boundary_FeeBpsEqualsDenominator() (gas: 30565)
++[PASS] test_Boundary_FeeBpsJustAboveDenominator() (gas: 28658)
++[PASS] test_Boundary_FeeBpsJustBelowDenominator() (gas: 197702)
++Logs:
++  feeBps 9999 -> shares minted: 100000000000000000
++
++[FAIL: existing holder captured the front-run fee: 999899000 >= 1000000] test_OwnerCanFrontRunDepositAndTakeNearlyAllOfIt() (gas: 393038)
++Logs:
++  alice deposited      : 1000000000
++  alice redeemable     : 100999
++  whale gain from fee  : 999899000
++
++[PASS] test_SetDepositFeeAcceptsAbsurdValues() (gas: 20031)
++Suite result: FAILED. 5 passed; 2 failed; 0 skipped; finished in 57.37ms (58.59ms CPU time)
++```
++
++The confiscation number is the one that matters: Alice deposits **1,000.000000
++USDT** and ends up with a claim on **0.100999 USDT**. The whale who was already
++in the vault gains **999.899 USDT**. One `setDepositFee` call, no other
++privilege needed.
++
++The fuzzer found the DoS at `depositFeeBps = 18649`, a value nobody would have
++proposed by hand, reverting with panic `0x11` (arithmetic overflow/underflow).
++
++**Boundary classification.** The three boundary tests pass — they are written to
++assert the behaviour I observed, and they document that the limit fails through
++two different paths, which matters for the fix:
++
++| `depositFeeBps` | Result | Path |
++| --- | --- | --- |
++| 9,999 — nearest usable value | Deposit succeeds, mints 1e17 shares | Normal, but 99.99% confiscated |
++| 10,000 — the exact limit | Revert `NoSharesMinted()` | `netAmount` is 0, so `convertToShares` returns 0 |
++| 10,001 — first value beyond | Revert panic `0x11` | `amount - fee` underflows in `deposit` |
++
++Note that 10,000 is *not* semantically usable even though it satisfies
++`feeBps <= BPS_DENOMINATOR`: a 100% fee reverts. A cap written as
++`<= BPS_DENOMINATOR` would still leave a bricked vault.
++
++### Fix
++
++Cap the setter at a value that is both economically sane and semantically
++usable, and reject at the setter rather than letting it surface as a deposit
++revert:
++
++```solidity
++uint256 public constant MAX_DEPOSIT_FEE_BPS = 500; // 5%
++
++error FeeTooHigh();
++
++function setDepositFee(uint256 newFeeBps) external onlyOwner {
++    if (newFeeBps > MAX_DEPOSIT_FEE_BPS) revert FeeTooHigh();
++    ...
++}
++```
++
++Apply the same check in the constructor — `_depositFeeBps` is currently written
++unvalidated there too, so the vault can be deployed already bricked. Given the
++front-running vector, also put `setDepositFee` behind a timelock or make fee
++changes take effect only after a delay.
++
++---
++
++## F5 — Medium. Pausing freezes user exits
++
++### What is wrong
++
++`withdraw()` carries `whenNotPaused` (`UsdtYieldVault.sol:107`). A single owner
++key can stop every depositor from retrieving their funds, indefinitely, with no
++timelock, no guardian split, and no emergency redemption path. The existing
++suite has `test_PauseBlocksDeposit` and never asks the converse question.
++
++Pausing *deposits* in an incident is correct. Pausing *withdrawals* turns an
++operational safety feature into a custody risk, and if the owner key is lost
++while paused the funds are gone.
++
++### Evidence
++
++```
++$ forge test --match-path test/VaultLiveness.t.sol -vv
++
++Ran 1 test for test/VaultLiveness.t.sol:VaultLivenessTest
++[FAIL: EnforcedPause()] test_DepositorCanAlwaysExit() (gas: 238216)
++Suite result: FAILED. 0 passed; 1 failed; 0 skipped; finished in 755.43µs (119.07µs CPU time)
++```
++
++### Fix
++
++Drop `whenNotPaused` from `withdraw`. If you genuinely need to halt withdrawals
++for an Aave incident, make it a separate, explicitly-named switch with a hard
++expiry, rather than folding it into the same pause that guards deposits. Move
++ownership to a multisig before mainnet either way — every finding here that
++begins "the owner can" is currently one key.
++
++---
++
++## Residual concerns — flagged, not demonstrated
++
++I did not build failing tests for these. Treat them as review items, not
++findings:
++
++- **`aavePool.withdraw` return value is ignored.** Aave returns the amount
++  actually withdrawn, which can be less than requested (e.g. when reserve
++  liquidity is short). The vault discards it and emits `netAssets` in the event
++  regardless. Worth checking the return equals the request and reverting
++  otherwise.
++- **`Withdrawn` event semantics.** `deposit` emits the *gross* amount as
++  `assets` while `withdraw` emits the *net*. Inconsistent, and will confuse
++  off-chain accounting.
++- **`convertToAssets` divides by `SHARE_SCALE` when `totalShares == 0`**, which
++  is dead in practice but is the inverse of the mint branch and worth a second
++  look once the F3 fix changes the conversion maths.
++- **`slither .` was not run.** It is installed on this machine but its Python
++  package is broken (`ModuleNotFoundError: No module named 'slither'`), so I
++  have no output to show you and will not claim a clean result. This should be
++  run before sign-off.
++
++---
++
++## What I would want before signing off
++
++1. F1–F5 fixed, with the fix for F3 including an explicit inflation-attack
++   defence.
++2. `test/VaultInvariant.t.sol`'s accounting-equals-custody equality in CI,
++   running at higher depth than the 64×32 I used here.
++3. The fork suite in CI against a pinned block, so the next USDT-shaped
++   assumption fails in the pipeline rather than on mainnet.
++4. `slither .` clean, or every high/medium explicitly accepted in writing.
++5. Ownership on a multisig, and `setDepositFee` timelocked.
++6. An audit. This review found five defects in an afternoon by asking three
++   questions the suite had never asked; I would not assume it found the last one.
+diff --git a/test/VaultAccountingDrift.t.sol b/test/VaultAccountingDrift.t.sol
+new file mode 100644
+index 0000000..f51d82e
+--- /dev/null
++++ b/test/VaultAccountingDrift.t.sol
+@@ -0,0 +1,98 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.28;
++
++import {Test, console2} from "forge-std/Test.sol";
++
++import {UsdtYieldVault} from "../src/UsdtYieldVault.sol";
++import {MockUSDT} from "./mocks/MockUSDT.sol";
++import {MockAavePool, MockAToken} from "./mocks/MockAavePool.sol";
++
++/// @notice Targeted regressions for the withdrawal-fee accounting gap that the
++///         handler invariant surfaced. These confirm the mechanism and show it
++///         accumulating; they do not replace the invariant search.
++contract VaultAccountingDriftTest is Test {
++    UsdtYieldVault internal vault;
++    MockUSDT internal usdt;
++    MockAavePool internal pool;
++    MockAToken internal aUsdt;
++
++    address internal owner = makeAddr("owner");
++    address internal alice = makeAddr("alice");
++    address internal bob = makeAddr("bob");
++
++    function setUp() public {
++        usdt = new MockUSDT();
++        pool = new MockAavePool(address(usdt));
++        aUsdt = pool.aToken();
++        // Deposit fee 0 so every number below is attributable to the
++        // withdrawal fee alone.
++        vault = new UsdtYieldVault(address(usdt), address(aUsdt), address(pool), 0, owner);
++
++        for (uint256 i = 0; i < 2; i++) {
++            address a = i == 0 ? alice : bob;
++            usdt.mint(a, 1_000_000e6);
++            vm.prank(a);
++            usdt.approve(address(vault), type(uint256).max);
++        }
++    }
++
++    function _drift() internal view returns (uint256) {
++        return aUsdt.balanceOf(address(vault)) - vault.totalAssetsStored();
++    }
++
++    /// @notice The withdrawal fee is deducted from `totalAssetsStored` but is
++    ///         never withdrawn from Aave and is never credited to anyone, so
++    ///         the gap between custody and accounting grows once per withdrawal.
++    function test_WithdrawFeeStrandsValueAndAccumulates() public {
++        vm.prank(alice);
++        uint256 aliceShares = vault.deposit(100_000e6);
++        vm.prank(bob);
++        uint256 bobShares = vault.deposit(100_000e6);
++
++        assertEq(_drift(), 0, "no drift before any withdrawal");
++
++        uint256 priceBefore = vault.sharePrice();
++
++        vm.prank(alice);
++        vault.withdraw(aliceShares / 2);
++        uint256 driftAfterFirst = _drift();
++
++        vm.prank(bob);
++        vault.withdraw(bobShares / 2);
++        uint256 driftAfterSecond = _drift();
++
++        console2.log("stranded after 1 withdrawal (USDT base units):", driftAfterFirst);
++        console2.log("stranded after 2 withdrawals (USDT base units):", driftAfterSecond);
++        console2.log("share price before:", priceBefore);
++        console2.log("share price after :", vault.sharePrice());
++
++        assertGt(driftAfterFirst, 0, "first withdrawal should strand the fee");
++        assertGt(driftAfterSecond, driftAfterFirst, "drift accumulates across withdrawals");
++
++        // The NatSpec claims withdrawal fees "accrue to the remaining
++        // shareholders". If that were true the share price would rise.
++        assertGt(vault.sharePrice(), priceBefore, "withdraw fee did not accrue to remaining shareholders");
++    }
++
++    /// @notice Once the last share is burned the stranded fees remain in Aave
++    ///         with no shares against them and no rescue path on the vault.
++    function test_StrandedFeesAreUnrecoverableAfterFullExit() public {
++        vm.prank(alice);
++        uint256 aliceShares = vault.deposit(100_000e6);
++        vm.prank(bob);
++        uint256 bobShares = vault.deposit(100_000e6);
++
++        vm.prank(alice);
++        vault.withdraw(aliceShares);
++        vm.prank(bob);
++        vault.withdraw(bobShares);
++
++        console2.log("totalShares        :", vault.totalShares());
++        console2.log("totalAssetsStored  :", vault.totalAssetsStored());
++        console2.log("aUSDT held by vault:", aUsdt.balanceOf(address(vault)));
++
++        assertEq(vault.totalShares(), 0, "all shares burned");
++        assertEq(vault.totalAssetsStored(), 0, "vault claims to hold nothing");
++        assertEq(aUsdt.balanceOf(address(vault)), 0, "yet aUSDT is still sitting in Aave");
++    }
++}
+diff --git a/test/VaultDepositFeeFuzz.t.sol b/test/VaultDepositFeeFuzz.t.sol
+new file mode 100644
+index 0000000..a2b8dc3
+--- /dev/null
++++ b/test/VaultDepositFeeFuzz.t.sol
+@@ -0,0 +1,154 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.28;
++
++import {Test, console2, stdError} from "forge-std/Test.sol";
++
++import {UsdtYieldVault} from "../src/UsdtYieldVault.sol";
++import {MockUSDT} from "./mocks/MockUSDT.sol";
++import {MockAavePool, MockAToken} from "./mocks/MockAavePool.sol";
++
++/// @notice Searches the whole accepted domain of `depositFeeBps`, the one
++///         owner-settable number that feeds the vault's value math.
++///         `setDepositFee` applies no upper bound, so the domain under test is
++///         every uint256, not 0..BPS_DENOMINATOR.
++contract VaultDepositFeeFuzzTest is Test {
++    UsdtYieldVault internal vault;
++    MockUSDT internal usdt;
++    MockAavePool internal pool;
++    MockAToken internal aUsdt;
++
++    address internal owner = makeAddr("owner");
++    address internal alice = makeAddr("alice");
++
++    uint256 internal constant DEPOSIT = 1_000e6;
++
++    function setUp() public {
++        usdt = new MockUSDT();
++        pool = new MockAavePool(address(usdt));
++        aUsdt = pool.aToken();
++        vault = new UsdtYieldVault(address(usdt), address(aUsdt), address(pool), 10, owner);
++
++        usdt.mint(alice, 10_000_000e6);
++        vm.prank(alice);
++        usdt.approve(address(vault), type(uint256).max);
++    }
++
++    function _setFee(uint256 bps) internal {
++        vm.prank(owner);
++        vault.setDepositFee(bps);
++    }
++
++    /*//////////////////////////////////////////////////////////////
++                        DOMAIN SEARCH (FUZZ)
++    //////////////////////////////////////////////////////////////*/
++
++    /// @notice For any fee the owner is allowed to set, a deposit at or above
++    ///         MIN_DEPOSIT must remain possible. Deposits are the vault's only
++    ///         entry point; a fee value that makes them impossible is a
++    ///         permanent denial of service reachable by one owner call.
++    function testFuzz_DepositSucceedsForAnySettableFee(uint256 feeBps) public {
++        feeBps = bound(feeBps, 0, 2 * vault.BPS_DENOMINATOR());
++        _setFee(feeBps);
++
++        vm.prank(alice);
++        try vault.deposit(DEPOSIT) returns (uint256 shares) {
++            assertGt(shares, 0, "deposit minted no shares");
++        } catch (bytes memory reason) {
++            console2.log("deposit reverted at depositFeeBps =", feeBps);
++            console2.logBytes(reason);
++            fail();
++        }
++    }
++
++    /// @notice A depositor must never be able to lose more than the advertised
++    ///         fee. With no cap on `depositFeeBps` the owner can front-run a
++    ///         deposit and take essentially all of it.
++    function testFuzz_DepositorRetainsValueNetOfFee(uint256 feeBps) public {
++        feeBps = bound(feeBps, 0, vault.BPS_DENOMINATOR() - 1);
++
++        // An existing shareholder, so the fee has somewhere to be diverted to.
++        address whale = makeAddr("whale");
++        usdt.mint(whale, 1_000_000e6);
++        vm.startPrank(whale);
++        usdt.approve(address(vault), type(uint256).max);
++        vault.deposit(100_000e6);
++        vm.stopPrank();
++
++        _setFee(feeBps);
++
++        vm.prank(alice);
++        vault.deposit(DEPOSIT);
++
++        uint256 value = vault.balanceOfUnderlying(alice);
++        uint256 expectedFee = (DEPOSIT * feeBps) / vault.BPS_DENOMINATOR();
++
++        // Allow 1 base unit of rounding.
++        assertGe(value + expectedFee + 1, DEPOSIT, "depositor lost more than the fee");
++        assertLe(value, DEPOSIT, "depositor gained value");
++    }
++
++    /*//////////////////////////////////////////////////////////////
++              BOUNDARY: nearest valid / exact limit / beyond
++    //////////////////////////////////////////////////////////////*/
++
++    /// @notice Nearest semantically usable value below the denominator.
++    function test_Boundary_FeeBpsJustBelowDenominator() public {
++        _setFee(9_999);
++        vm.prank(alice);
++        uint256 shares = vault.deposit(DEPOSIT);
++        console2.log("feeBps 9999 -> shares minted:", shares);
++        assertGt(shares, 0);
++    }
++
++    /// @notice Exact limit: a 100% fee. Reverts through the NoSharesMinted path.
++    function test_Boundary_FeeBpsEqualsDenominator() public {
++        _setFee(10_000);
++        vm.prank(alice);
++        vm.expectRevert(UsdtYieldVault.NoSharesMinted.selector);
++        vault.deposit(DEPOSIT);
++    }
++
++    /// @notice First value beyond the limit. Reverts through a *different*
++    ///         path: arithmetic underflow in `amount - fee`, panic 0x11.
++    function test_Boundary_FeeBpsJustAboveDenominator() public {
++        _setFee(10_001);
++        vm.prank(alice);
++        vm.expectRevert(stdError.arithmeticError);
++        vault.deposit(DEPOSIT);
++    }
++
++    /// @notice The owner can set a fee far outside the basis-point domain and
++    ///         the setter accepts it without complaint.
++    function test_SetDepositFeeAcceptsAbsurdValues() public {
++        _setFee(type(uint256).max);
++        assertEq(vault.depositFeeBps(), type(uint256).max, "setter accepted uint256 max as a bps value");
++    }
++
++    /// @notice The owner can confiscate a pending deposit by raising the fee
++    ///         immediately before it lands. No timelock, no cap.
++    function test_OwnerCanFrontRunDepositAndTakeNearlyAllOfIt() public {
++        address whale = makeAddr("whale");
++        usdt.mint(whale, 1_000_000e6);
++        vm.startPrank(whale);
++        usdt.approve(address(vault), type(uint256).max);
++        uint256 whaleShares = vault.deposit(100_000e6);
++        vm.stopPrank();
++
++        uint256 whaleBefore = vault.convertToAssets(whaleShares);
++
++        // Owner front-runs alice's 1,000 USDT deposit.
++        _setFee(9_999);
++        vm.prank(alice);
++        vault.deposit(DEPOSIT);
++
++        uint256 aliceValue = vault.balanceOfUnderlying(alice);
++        uint256 whaleAfter = vault.convertToAssets(whaleShares);
++
++        console2.log("alice deposited      :", DEPOSIT);
++        console2.log("alice redeemable     :", aliceValue);
++        console2.log("whale gain from fee  :", whaleAfter - whaleBefore);
++
++        assertGe(aliceValue, DEPOSIT - (DEPOSIT * 9_999) / 10_000, "sanity");
++        assertLt(whaleAfter - whaleBefore, 1e6, "existing holder captured the front-run fee");
++    }
++}
+diff --git a/test/VaultInvariant.t.sol b/test/VaultInvariant.t.sol
+new file mode 100644
+index 0000000..4934793
+--- /dev/null
++++ b/test/VaultInvariant.t.sol
+@@ -0,0 +1,55 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.28;
++
++import {Test, console2} from "forge-std/Test.sol";
++
++import {UsdtYieldVault} from "../src/UsdtYieldVault.sol";
++import {MockUSDT} from "./mocks/MockUSDT.sol";
++import {MockAavePool, MockAToken} from "./mocks/MockAavePool.sol";
++import {VaultHandler} from "./handlers/VaultHandler.sol";
++
++/// @notice Handler-driven invariants tying the vault's internal accounting to
++///         the assets it actually custodies in Aave.
++contract UsdtYieldVaultInvariantTest is Test {
++    UsdtYieldVault internal vault;
++    MockUSDT internal usdt;
++    MockAavePool internal pool;
++    MockAToken internal aUsdt;
++    VaultHandler internal handler;
++
++    address internal owner = makeAddr("owner");
++
++    function setUp() public {
++        usdt = new MockUSDT();
++        pool = new MockAavePool(address(usdt));
++        aUsdt = pool.aToken();
++        vault = new UsdtYieldVault(address(usdt), address(aUsdt), address(pool), 10, owner);
++
++        handler = new VaultHandler(vault, usdt);
++        targetContract(address(handler));
++    }
++
++    /// @notice Custody must equal accounting: every USDT the vault claims to
++    ///         hold is represented by an aUSDT it actually holds, and every
++    ///         aUSDT it holds is claimable by some shareholder.
++    ///         Stated as an equality on purpose — a one-sided `claims <=
++    ///         holdings` bound stays green while value is stranded.
++    function invariant_AccountingEqualsCustody() public view {
++        assertEq(
++            vault.totalAssetsStored(),
++            aUsdt.balanceOf(address(vault)),
++            "totalAssetsStored diverged from aUSDT actually held"
++        );
++    }
++
++    /// @notice Share ledger must be internally consistent.
++    function invariant_SumOfSharesEqualsTotalShares() public view {
++        assertEq(handler.sumOfShareBalances(), vault.totalShares(), "share ledger does not sum to totalShares");
++    }
++
++    function invariant_CallSummary() public view {
++        console2.log("deposits ", handler.depositCalls());
++        console2.log("withdraws", handler.withdrawCalls());
++        console2.log("setFee   ", handler.feeCalls());
++    }
++}
+diff --git a/test/VaultLiveness.t.sol b/test/VaultLiveness.t.sol
+new file mode 100644
+index 0000000..1036162
+--- /dev/null
++++ b/test/VaultLiveness.t.sol
+@@ -0,0 +1,47 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.28;
++
++import {Test} from "forge-std/Test.sol";
++import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
++
++import {UsdtYieldVault} from "../src/UsdtYieldVault.sol";
++import {MockUSDT} from "./mocks/MockUSDT.sol";
++import {MockAavePool, MockAToken} from "./mocks/MockAavePool.sol";
++
++/// @notice The existing suite asserts that `pause()` blocks deposits. It never
++///         asks what `pause()` does to someone trying to get their money out.
++contract VaultLivenessTest is Test {
++    UsdtYieldVault internal vault;
++    MockUSDT internal usdt;
++    MockAavePool internal pool;
++    MockAToken internal aUsdt;
++
++    address internal owner = makeAddr("owner");
++    address internal alice = makeAddr("alice");
++
++    function setUp() public {
++        usdt = new MockUSDT();
++        pool = new MockAavePool(address(usdt));
++        aUsdt = pool.aToken();
++        vault = new UsdtYieldVault(address(usdt), address(aUsdt), address(pool), 10, owner);
++
++        usdt.mint(alice, 1_000_000e6);
++        vm.prank(alice);
++        usdt.approve(address(vault), type(uint256).max);
++    }
++
++    /// @notice A depositor must always retain a path to exit. `whenNotPaused`
++    ///         on `withdraw` means a single owner key can freeze every
++    ///         depositor's funds indefinitely, with no timelock and no
++    ///         emergency redemption route.
++    function test_DepositorCanAlwaysExit() public {
++        vm.prank(alice);
++        uint256 shares = vault.deposit(100_000e6);
++
++        vm.prank(owner);
++        vault.pause();
++
++        vm.prank(alice);
++        vault.withdraw(shares);
++    }
++}
+diff --git a/test/VaultMainnetFork.t.sol b/test/VaultMainnetFork.t.sol
+new file mode 100644
+index 0000000..1636267
+--- /dev/null
++++ b/test/VaultMainnetFork.t.sol
+@@ -0,0 +1,148 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.28;
++
++import {Test, console2} from "forge-std/Test.sol";
++import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
++
++import {UsdtYieldVault} from "../src/UsdtYieldVault.sol";
++
++/// @notice Exercises the vault against the real USDT token and the real Aave V3
++///         pool it will be pointed at on Monday, on a pinned mainnet fork.
++///         The mock suite cannot see any of this: the mocks are OpenZeppelin
++///         ERC20s that answer in the standard shape, and a mock Aave pool that
++///         never accrues interest.
++///
++/// Block 21_000_000 pinned. Endpoint must serve archive state at that block;
++/// verified with:
++///   cast call 0xdAC17F958D2ee523a2206206994597C13D831ec7 "totalSupply()(uint256)" \
++///     --block 21000000 --rpc-url https://eth.drpc.org
++contract VaultMainnetForkTest is Test {
++    address internal constant USDT = 0xdAC17F958D2ee523a2206206994597C13D831ec7;
++    address internal constant AAVE_POOL = 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2;
++    address internal constant AUSDT = 0x23878914EFE38d27C4D67Ab83ed1b93A74D4086a;
++
++    uint256 internal constant FORK_BLOCK = 21_000_000;
++
++    UsdtYieldVault internal vault;
++    address internal owner = makeAddr("owner");
++    address internal alice = makeAddr("alice");
++
++    uint256 internal constant DEPOSIT = 100_000e6;
++
++    function setUp() public {
++        vm.createSelectFork(vm.envOr("MAINNET_RPC_URL", string("https://eth.drpc.org")), FORK_BLOCK);
++
++        // Confirm we are actually pointed at the real deployments before any
++        // conclusion is drawn from a call to them.
++        assertEq(IERC20Metadata(USDT).symbol(), "USDT", "USDT address");
++        assertEq(IERC20Metadata(AUSDT).symbol(), "aEthUSDT", "aUSDT address");
++        assertEq(IAToken(AUSDT).UNDERLYING_ASSET_ADDRESS(), USDT, "aUSDT underlying");
++
++        vault = new UsdtYieldVault(USDT, AUSDT, AAVE_POOL, 10, owner);
++
++        deal(USDT, alice, 1_000_000e6);
++        vm.prank(alice);
++        // Raw call: USDT.approve returns no data, so it cannot be made through
++        // the IERC20 interface at all. See test_RealUsdtApproveReturnsNoData.
++        (bool ok,) = USDT.call(abi.encodeWithSignature("approve(address,uint256)", address(vault), type(uint256).max));
++        require(ok, "alice approve failed");
++    }
++
++    /*//////////////////////////////////////////////////////////////
++                    FINDING: deposit() cannot work on mainnet
++    //////////////////////////////////////////////////////////////*/
++
++    /// @notice The root cause, stated directly: mainnet USDT's `approve` writes
++    ///         no return data, so any call made through a `returns (bool)`
++    ///         interface reverts when the compiler decodes the result.
++    function test_RealUsdtApproveReturnsNoData() public {
++        vm.prank(alice);
++        (bool ok, bytes memory ret) = USDT.call(abi.encodeWithSignature("approve(address,uint256)", AAVE_POOL, 1e6));
++        assertTrue(ok, "raw approve itself succeeds");
++        console2.log("USDT.approve return data length:", ret.length);
++        assertEq(ret.length, 32, "USDT.approve returned a decodable bool");
++    }
++
++    /// @notice The vault calls `usdt.approve(...)` through `IERC20`, not through
++    ///         SafeERC20. Against the real token every deposit reverts.
++    function test_DepositAgainstRealUsdt() public {
++        vm.prank(alice);
++        uint256 shares = vault.deposit(DEPOSIT);
++        assertGt(shares, 0, "deposit should mint shares");
++    }
++
++    /*//////////////////////////////////////////////////////////////
++       FINDING: Aave interest never reaches depositors (real pool)
++    //////////////////////////////////////////////////////////////*/
++
++    /// @dev Neutralises the `approve` revert above so the *next* defect is
++    ///      observable. Everything else — token, pool, interest model — is the
++    ///      real mainnet deployment.
++    function _depositBypassingApproveBug(uint256 amount) internal returns (uint256 shares) {
++        vm.prank(address(vault));
++        (bool ok,) = USDT.call(abi.encodeWithSignature("approve(address,uint256)", AAVE_POOL, type(uint256).max));
++        require(ok, "vault->pool approve failed");
++        vm.mockCall(USDT, abi.encodeWithSelector(IERC20.approve.selector), abi.encode(true));
++
++        vm.prank(alice);
++        shares = vault.deposit(amount);
++    }
++
++    /// @notice `totalAssets()` returns a stored number that is only ever moved
++    ///         by deposits and withdrawals. The aUSDT balance rebases upward as
++    ///         Aave pays interest, and the vault never looks at it — so a
++    ///         "yield vault" pays its depositors no yield.
++    function test_AaveInterestNeverReachesDepositors() public {
++        _depositBypassingApproveBug(DEPOSIT);
++
++        uint256 aBefore = IERC20(AUSDT).balanceOf(address(vault));
++        uint256 valueBefore = vault.balanceOfUnderlying(alice);
++        uint256 priceBefore = vault.sharePrice();
++
++        vm.warp(block.timestamp + 365 days);
++
++        uint256 aAfter = IERC20(AUSDT).balanceOf(address(vault));
++        uint256 valueAfter = vault.balanceOfUnderlying(alice);
++
++        console2.log("aUSDT held, day 0    :", aBefore);
++        console2.log("aUSDT held, day 365  :", aAfter);
++        console2.log("interest earned      :", aAfter - aBefore);
++        console2.log("alice redeemable d0  :", valueBefore);
++        console2.log("alice redeemable d365:", valueAfter);
++        console2.log("totalAssets() d365   :", vault.totalAssets());
++
++        assertGt(aAfter, aBefore, "Aave did pay interest");
++        assertGt(vault.totalAssets(), aBefore, "totalAssets() ignores the interest");
++        assertGt(valueAfter, valueBefore, "depositor's claim should grow with the interest");
++        assertGt(vault.sharePrice(), priceBefore, "share price should grow with the interest");
++    }
++
++    /// @notice After the only depositor exits, the interest plus the withdrawal
++    ///         fee stay behind as aUSDT owned by a vault with zero shares and no
++    ///         rescue function.
++    function test_ResidualIsStrandedAfterFullExitOnRealAave() public {
++        uint256 shares = _depositBypassingApproveBug(DEPOSIT);
++
++        vm.warp(block.timestamp + 365 days);
++
++        vm.prank(alice);
++        vault.withdraw(shares);
++
++        uint256 residual = IERC20(AUSDT).balanceOf(address(vault));
++        console2.log("totalShares         :", vault.totalShares());
++        console2.log("totalAssetsStored   :", vault.totalAssetsStored());
++        console2.log("aUSDT left in Aave  :", residual);
++        console2.log("alice USDT balance  :", IERC20(USDT).balanceOf(alice));
++
++        assertEq(vault.totalShares(), 0, "all shares burned");
++        assertEq(residual, 0, "nothing should be left behind");
++    }
++}
++
++interface IERC20Metadata {
++    function symbol() external view returns (string memory);
++}
++
++interface IAToken {
++    function UNDERLYING_ASSET_ADDRESS() external view returns (address);
++}
+diff --git a/test/handlers/VaultHandler.sol b/test/handlers/VaultHandler.sol
+new file mode 100644
+index 0000000..4242e6c
+--- /dev/null
++++ b/test/handlers/VaultHandler.sol
+@@ -0,0 +1,80 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.28;
++
++import {Test} from "forge-std/Test.sol";
++import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
++
++import {UsdtYieldVault} from "../../src/UsdtYieldVault.sol";
++import {MockUSDT} from "../mocks/MockUSDT.sol";
++
++/// @notice Handler driving {UsdtYieldVault} with funded, approved actors and
++///         bounded inputs, so the invariant fuzzer reaches real vault states
++///         instead of bouncing off reverts.
++contract VaultHandler is Test {
++    UsdtYieldVault public immutable vault;
++    MockUSDT public immutable usdt;
++
++    address[] public actors;
++    address internal currentActor;
++
++    uint256 public depositCalls;
++    uint256 public withdrawCalls;
++    uint256 public feeCalls;
++
++    modifier useActor(uint256 actorSeed) {
++        currentActor = actors[bound(actorSeed, 0, actors.length - 1)];
++        vm.startPrank(currentActor);
++        _;
++        vm.stopPrank();
++    }
++
++    constructor(UsdtYieldVault _vault, MockUSDT _usdt) {
++        vault = _vault;
++        usdt = _usdt;
++
++        for (uint256 i = 0; i < 3; i++) {
++            address actor = makeAddr(string.concat("actor", vm.toString(i)));
++            actors.push(actor);
++            usdt.mint(actor, 10_000_000e6);
++            vm.prank(actor);
++            usdt.approve(address(vault), type(uint256).max);
++        }
++    }
++
++    function deposit(uint256 actorSeed, uint256 amount) external useActor(actorSeed) {
++        amount = bound(amount, vault.MIN_DEPOSIT(), 1_000_000e6);
++        // Keep the bounded input inside the range the vault accepts: a net
++        // amount that rounds to zero shares is a separate, documented revert.
++        uint256 fee = (amount * vault.depositFeeBps()) / vault.BPS_DENOMINATOR();
++        if (vault.convertToShares(amount - fee) == 0) return;
++        depositCalls++;
++        vault.deposit(amount);
++    }
++
++    function withdraw(uint256 actorSeed, uint256 shares) external useActor(actorSeed) {
++        uint256 balance = vault.shareBalance(currentActor);
++        if (balance == 0) return;
++        shares = bound(shares, 1, balance);
++        withdrawCalls++;
++        vault.withdraw(shares);
++    }
++
++    function setDepositFee(uint256 newFeeBps) external {
++        // Bounded well inside the sane range; the unbounded domain is searched
++        // separately by the fee fuzz tests.
++        newFeeBps = bound(newFeeBps, 0, 1_000);
++        feeCalls++;
++        vm.prank(vault.owner());
++        vault.setDepositFee(newFeeBps);
++    }
++
++    function actorCount() external view returns (uint256) {
++        return actors.length;
++    }
++
++    function sumOfShareBalances() external view returns (uint256 total) {
++        for (uint256 i = 0; i < actors.length; i++) {
++            total += vault.shareBalance(actors[i]);
++        }
++    }
++}
+
+# Untracked files and status
+ A FINDINGS.md
+ A test/VaultAccountingDrift.t.sol
+ A test/VaultDepositFeeFuzz.t.sol
+ A test/VaultInvariant.t.sol
+ A test/VaultLiveness.t.sol
+ A test/VaultMainnetFork.t.sol
+ A test/handlers/VaultHandler.sol
