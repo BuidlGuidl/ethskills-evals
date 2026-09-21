@@ -1,0 +1,1752 @@
+diff --git a/packages/hardhat/contracts/Staker.sol b/packages/hardhat/contracts/Staker.sol
+new file mode 100644
+index 0000000..6544824
+--- /dev/null
++++ b/packages/hardhat/contracts/Staker.sol
+@@ -0,0 +1,50 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.20;
++
++import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
++import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
++import { ReentrancyGuard } from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
++
++/// @notice Minimal staking vault: deposit a token, withdraw the full position at any time. No rewards.
++/// @dev Assumes a standard token without transfer fees or rebasing (e.g. USDC).
++contract Staker is ReentrancyGuard {
++    using SafeERC20 for IERC20;
++
++    IERC20 public immutable token;
++
++    mapping(address user => uint256 amount) public stakedBalance;
++    uint256 public totalStaked;
++
++    event Staked(address indexed user, uint256 amount);
++    event Withdrawn(address indexed user, uint256 amount);
++
++    error ZeroAddress();
++    error ZeroAmount();
++    error NothingStaked();
++
++    constructor(IERC20 token_) {
++        if (address(token_) == address(0)) revert ZeroAddress();
++        token = token_;
++    }
++
++    function stake(uint256 amount) external nonReentrant {
++        if (amount == 0) revert ZeroAmount();
++
++        stakedBalance[msg.sender] += amount;
++        totalStaked += amount;
++        token.safeTransferFrom(msg.sender, address(this), amount);
++
++        emit Staked(msg.sender, amount);
++    }
++
++    function withdraw() external nonReentrant {
++        uint256 amount = stakedBalance[msg.sender];
++        if (amount == 0) revert NothingStaked();
++
++        stakedBalance[msg.sender] = 0;
++        totalStaked -= amount;
++        token.safeTransfer(msg.sender, amount);
++
++        emit Withdrawn(msg.sender, amount);
++    }
++}
+diff --git a/packages/hardhat/contracts/YourContract.sol b/packages/hardhat/contracts/YourContract.sol
+deleted file mode 100644
+index 053581d..0000000
+--- a/packages/hardhat/contracts/YourContract.sol
++++ /dev/null
+@@ -1,78 +0,0 @@
+-//SPDX-License-Identifier: MIT
+-pragma solidity >=0.8.0 <0.9.0;
+-
+-// Useful for debugging. Remove when deploying to a live network.
+-import "hardhat/console.sol";
+-
+-// Use openzeppelin to inherit battle-tested implementations (ERC20, ERC721, etc)
+-// import "@openzeppelin/contracts/access/Ownable.sol";
+-
+-/**
+- * A smart contract that allows changing a state variable of the contract and tracking the changes
+- * It also allows the owner to withdraw the Ether in the contract
+- * @author BuidlGuidl
+- */
+-contract YourContract {
+-    // State Variables
+-    address public immutable owner;
+-    string public greeting = "Building Unstoppable Apps!!!";
+-    bool public premium = false;
+-    uint256 public totalCounter = 0;
+-    mapping(address => uint) public userGreetingCounter;
+-
+-    // Events: a way to emit log statements from smart contract that can be listened to by external parties
+-    event GreetingChange(address indexed greetingSetter, string newGreeting, bool premium, uint256 value);
+-
+-    // Constructor: Called once on contract deployment
+-    // Check packages/hardhat/deploy/00_deploy_your_contract.ts
+-    constructor(address _owner) {
+-        owner = _owner;
+-    }
+-
+-    // Modifier: used to define a set of rules that must be met before or after a function is executed
+-    // Check the withdraw() function
+-    modifier isOwner() {
+-        // msg.sender: predefined variable that represents address of the account that called the current function
+-        require(msg.sender == owner, "Not the Owner");
+-        _;
+-    }
+-
+-    /**
+-     * Function that allows anyone to change the state variable "greeting" of the contract and increase the counters
+-     *
+-     * @param _newGreeting (string memory) - new greeting to save on the contract
+-     */
+-    function setGreeting(string memory _newGreeting) public payable {
+-        // Print data to the hardhat chain console. Remove when deploying to a live network.
+-        console.log("Setting new greeting '%s' from %s", _newGreeting, msg.sender);
+-
+-        // Change state variables
+-        greeting = _newGreeting;
+-        totalCounter += 1;
+-        userGreetingCounter[msg.sender] += 1;
+-
+-        // msg.value: built-in global variable that represents the amount of ether sent with the transaction
+-        if (msg.value > 0) {
+-            premium = true;
+-        } else {
+-            premium = false;
+-        }
+-
+-        // emit: keyword used to trigger an event
+-        emit GreetingChange(msg.sender, _newGreeting, msg.value > 0, msg.value);
+-    }
+-
+-    /**
+-     * Function that allows the owner to withdraw all the Ether in the contract
+-     * The function can only be called by the owner of the contract as defined by the isOwner modifier
+-     */
+-    function withdraw() public isOwner {
+-        (bool success, ) = owner.call{ value: address(this).balance }("");
+-        require(success, "Failed to send Ether");
+-    }
+-
+-    /**
+-     * Function that allows the contract to receive ETH
+-     */
+-    receive() external payable {}
+-}
+diff --git a/packages/hardhat/contracts/mocks/MockUSDC.sol b/packages/hardhat/contracts/mocks/MockUSDC.sol
+new file mode 100644
+index 0000000..5efa256
+--- /dev/null
++++ b/packages/hardhat/contracts/mocks/MockUSDC.sol
+@@ -0,0 +1,18 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.20;
++
++import { ERC20 } from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
++
++/// @notice Local-only stand-in for USDC: same name, symbol and 6 decimals as the real token.
++/// @dev Open mint so local accounts can be funded. Never deploy to a live network.
++contract MockUSDC is ERC20 {
++    constructor() ERC20("USD Coin", "USDC") {}
++
++    function decimals() public pure override returns (uint8) {
++        return 6;
++    }
++
++    function mint(address to, uint256 amount) external {
++        _mint(to, amount);
++    }
++}
+diff --git a/packages/hardhat/deploy/00_deploy_staker.ts b/packages/hardhat/deploy/00_deploy_staker.ts
+new file mode 100644
+index 0000000..f8ea0ee
+--- /dev/null
++++ b/packages/hardhat/deploy/00_deploy_staker.ts
+@@ -0,0 +1,40 @@
++import { deployScript, artifacts } from "../rocketh/deploy.js";
++
++// Canonical (Circle-issued) USDC per chain. Chains not listed here refuse to deploy.
++const USDC_BY_CHAIN_ID: Record<number, `0x${string}`> = {
++  8453: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", // Base
++};
++const LOCAL_CHAIN_ID = 31337;
++
++/**
++ * Deploys Staker against real USDC on live networks, or against a freshly deployed MockUSDC locally.
++ */
++export default deployScript(
++  async env => {
++    const { deployer } = env.namedAccounts;
++    const chainId = env.network.chain.id;
++
++    let usdc = USDC_BY_CHAIN_ID[chainId];
++    if (!usdc) {
++      if (chainId !== LOCAL_CHAIN_ID) {
++        throw new Error(`No USDC address configured for chain ${chainId}. Add it to USDC_BY_CHAIN_ID.`);
++      }
++      const mockUsdc = await env.deploy("MockUSDC", {
++        account: deployer,
++        artifact: artifacts.MockUSDC,
++        args: [],
++      });
++      usdc = mockUsdc.address;
++    }
++
++    const staker = await env.deploy("Staker", {
++      account: deployer,
++      artifact: artifacts.Staker,
++      args: [usdc],
++    });
++    console.log(`🔒 Staker deployed at ${staker.address} for USDC ${usdc}`);
++  },
++  {
++    tags: ["Staker"],
++  },
++);
+diff --git a/packages/hardhat/deploy/00_deploy_your_contract.ts b/packages/hardhat/deploy/00_deploy_your_contract.ts
+deleted file mode 100644
+index 6c8f758..0000000
+--- a/packages/hardhat/deploy/00_deploy_your_contract.ts
++++ /dev/null
+@@ -1,39 +0,0 @@
+-import { deployScript, artifacts } from "../rocketh/deploy.js";
+-
+-/**
+- * Deploys a contract named "YourContract" using the deployer account and
+- * constructor arguments set to the deployer address
+- *
+- * @param env Rocketh environment object.
+- */
+-export default deployScript(
+-  async env => {
+-    /*
+-      On localhost, the deployer account is the one that comes with Hardhat, which is already funded.
+-
+-      When deploying to live networks (e.g `yarn deploy --network sepolia`), the deployer account
+-      should have sufficient balance to pay for the gas fees for contract creation.
+-
+-      You can generate a random account with `yarn generate` or `yarn account:import` to import your
+-      existing PK which will fill DEPLOYER_PRIVATE_KEY_ENCRYPTED in the .env file (then used on hardhat.config.ts)
+-      You can run the `yarn account` command to check your balance in every network.
+-    */
+-    const { deployer } = env.namedAccounts;
+-
+-    const yourContract = await env.deploy("YourContract", {
+-      account: deployer,
+-      artifact: artifacts.YourContract,
+-      // Contract constructor arguments
+-      args: [deployer],
+-    });
+-
+-    // Read back from the deployed contract
+-    const greeting = await env.read(yourContract, { functionName: "greeting" });
+-    console.log("👋 Initial greeting:", greeting);
+-  },
+-  {
+-    // Tags are useful if you have multiple deploy files and only want to run some of them.
+-    // e.g. yarn deploy --tags YourContract
+-    tags: ["YourContract"],
+-  },
+-);
+diff --git a/packages/hardhat/hardhat.config.ts b/packages/hardhat/hardhat.config.ts
+index a108193..1242e6d 100644
+--- a/packages/hardhat/hardhat.config.ts
++++ b/packages/hardhat/hardhat.config.ts
+@@ -4,7 +4,6 @@ import hardhatToolbox from "@nomicfoundation/hardhat-toolbox-mocha-ethers";
+ import HardhatDeploy from "hardhat-deploy";
+ import generateTsAbis from "./scripts/generateTsAbis.js";
+ 
+-
+ // If not set, it uses the hardhat account 0 private key.
+ // You can generate a random account with `yarn generate` or `yarn account:import` to import your existing PK
+ const deployerPrivateKey =
+@@ -32,171 +31,135 @@ export default defineConfig({
+   solidity: {
+     compilers: [
+       {
+-        version: '0.8.30',
++        version: "0.8.30",
+         settings: {
+           optimizer: {
+             enabled: true,
+             // https://docs.soliditylang.org/en/latest/using-the-compiler.html#optimizer-options
+-            runs: 200
+-          }
+-        }
+-      }
+-    ]
++            runs: 200,
++          },
++        },
++      },
++    ],
+   },
+   generateTypedArtifacts: {
+     destinations: [
+       {
+-        folder: './generated',
+-        mode: 'typescript'
+-      }
+-    ]
++        folder: "./generated",
++        mode: "typescript",
++      },
++    ],
+   },
+   // Configuration for hardhat-verify and rocketh-verify
+   verify: {
+     etherscan: {
+-      apiKey: etherscanApiKey
+-    }
++      apiKey: etherscanApiKey,
++    },
+   },
+   networks: {
+     // View the networks that are pre-configured.
+     // If the network you are looking for is not here you can add new network settings
+     default: {
+-      type: 'http',
+-      url: 'http://127.0.0.1:8545'
++      type: "http",
++      url: "http://127.0.0.1:8545",
+     },
+     hardhat: {
+-      type: 'edr-simulated',
++      type: "edr-simulated",
+       forking: {
+         url: `https://eth-mainnet.alchemyapi.io/v2/${providerApiKey}`,
+-        enabled: process.env.MAINNET_FORKING_ENABLED === "true"
+-      }
++        enabled: process.env.MAINNET_FORKING_ENABLED === "true",
++      },
+     },
+     mainnet: {
+-      type: 'http',
+-      url: 'https://mainnet.rpc.buidlguidl.com',
+-      accounts: [
+-        deployerPrivateKey
+-      ]
++      type: "http",
++      url: "https://mainnet.rpc.buidlguidl.com",
++      accounts: [deployerPrivateKey],
+     },
+     sepolia: {
+-      type: 'http',
++      type: "http",
+       url: `https://eth-sepolia.g.alchemy.com/v2/${providerApiKey}`,
+-      accounts: [
+-        deployerPrivateKey
+-      ]
++      accounts: [deployerPrivateKey],
+     },
+     optimism: {
+-      type: 'http',
++      type: "http",
+       url: `https://opt-mainnet.g.alchemy.com/v2/${providerApiKey}`,
+-      accounts: [
+-        deployerPrivateKey
+-      ]
++      accounts: [deployerPrivateKey],
+     },
+     optimismSepolia: {
+-      type: 'http',
++      type: "http",
+       url: `https://opt-sepolia.g.alchemy.com/v2/${providerApiKey}`,
+-      accounts: [
+-        deployerPrivateKey
+-      ]
++      accounts: [deployerPrivateKey],
+     },
+     base: {
+-      type: 'http',
+-      url: 'https://mainnet.base.org',
+-      accounts: [
+-        deployerPrivateKey
+-      ]
++      type: "http",
++      url: `https://base-mainnet.g.alchemy.com/v2/${providerApiKey}`,
++      accounts: [deployerPrivateKey],
+     },
+     baseSepolia: {
+-      type: 'http',
+-      url: 'https://sepolia.base.org',
+-      accounts: [
+-        deployerPrivateKey
+-      ]
++      type: "http",
++      url: "https://sepolia.base.org",
++      accounts: [deployerPrivateKey],
+     },
+     arbitrum: {
+-      type: 'http',
++      type: "http",
+       url: `https://arb-mainnet.g.alchemy.com/v2/${providerApiKey}`,
+-      accounts: [
+-        deployerPrivateKey
+-      ]
++      accounts: [deployerPrivateKey],
+     },
+     arbitrumSepolia: {
+-      type: 'http',
++      type: "http",
+       url: `https://arb-sepolia.g.alchemy.com/v2/${providerApiKey}`,
+-      accounts: [
+-        deployerPrivateKey
+-      ]
++      accounts: [deployerPrivateKey],
+     },
+     scrollSepolia: {
+-      type: 'http',
+-      url: 'https://sepolia-rpc.scroll.io',
+-      accounts: [
+-        deployerPrivateKey
+-      ]
++      type: "http",
++      url: "https://sepolia-rpc.scroll.io",
++      accounts: [deployerPrivateKey],
+     },
+     scroll: {
+-      type: 'http',
+-      url: 'https://rpc.scroll.io',
+-      accounts: [
+-        deployerPrivateKey
+-      ]
++      type: "http",
++      url: "https://rpc.scroll.io",
++      accounts: [deployerPrivateKey],
+     },
+     celo: {
+-      type: 'http',
+-      url: 'https://forno.celo.org',
+-      accounts: [
+-        deployerPrivateKey
+-      ]
++      type: "http",
++      url: "https://forno.celo.org",
++      accounts: [deployerPrivateKey],
+     },
+     celoSepolia: {
+-      type: 'http',
+-      url: 'https://forno.celo-sepolia.celo-testnet.org/',
+-      accounts: [
+-        deployerPrivateKey
+-      ]
++      type: "http",
++      url: "https://forno.celo-sepolia.celo-testnet.org/",
++      accounts: [deployerPrivateKey],
+     },
+     polygon: {
+-      type: 'http',
++      type: "http",
+       url: `https://polygon-mainnet.g.alchemy.com/v2/${providerApiKey}`,
+-      accounts: [
+-        deployerPrivateKey
+-      ]
++      accounts: [deployerPrivateKey],
+     },
+     polygonAmoy: {
+-      type: 'http',
++      type: "http",
+       url: `https://polygon-amoy.g.alchemy.com/v2/${providerApiKey}`,
+-      accounts: [
+-        deployerPrivateKey
+-      ]
++      accounts: [deployerPrivateKey],
+     },
+     gnosis: {
+-      type: 'http',
+-      url: 'https://rpc.gnosischain.com',
+-      accounts: [
+-        deployerPrivateKey
+-      ]
++      type: "http",
++      url: "https://rpc.gnosischain.com",
++      accounts: [deployerPrivateKey],
+     },
+     chiado: {
+-      type: 'http',
+-      url: 'https://rpc.chiadochain.net',
+-      accounts: [
+-        deployerPrivateKey
+-      ]
++      type: "http",
++      url: "https://rpc.chiadochain.net",
++      accounts: [deployerPrivateKey],
+     },
+     polygonZkEvm: {
+-      type: 'http',
++      type: "http",
+       url: `https://polygonzkevm-mainnet.g.alchemy.com/v2/${providerApiKey}`,
+-      accounts: [
+-        deployerPrivateKey
+-      ]
++      accounts: [deployerPrivateKey],
+     },
+     polygonZkEvmCardona: {
+-      type: 'http',
++      type: "http",
+       url: `https://polygonzkevm-cardona.g.alchemy.com/v2/${providerApiKey}`,
+-      accounts: [
+-        deployerPrivateKey
+-      ]
+-    }
++      accounts: [deployerPrivateKey],
++    },
+   },
+-  tasks: deployTasks
+-});
+\ No newline at end of file
++  tasks: deployTasks,
++});
+diff --git a/packages/hardhat/test/Staker.ts b/packages/hardhat/test/Staker.ts
+new file mode 100644
+index 0000000..c7067e2
+--- /dev/null
++++ b/packages/hardhat/test/Staker.ts
+@@ -0,0 +1,70 @@
++import { expect } from "chai";
++import { network } from "hardhat";
++import { loadAndExecuteDeploymentsFromFiles } from "../rocketh/environment.js";
++
++const { provider, networkHelpers, ethers } = await network.create();
++
++const ONE_HUNDRED_USDC = 100_000_000n; // 6 decimals
++
++async function deployFixture() {
++  const env = await loadAndExecuteDeploymentsFromFiles({ provider });
++  const usdc = await ethers.getContractAt("MockUSDC", env.get("MockUSDC").address);
++  const staker = await ethers.getContractAt("Staker", env.get("Staker").address);
++  const [, alice, bob] = await ethers.getSigners();
++
++  for (const user of [alice, bob]) {
++    await usdc.mint(user.address, ONE_HUNDRED_USDC);
++    await usdc.connect(user).approve(await staker.getAddress(), ONE_HUNDRED_USDC);
++  }
++  return { usdc, staker, alice, bob };
++}
++
++describe("Staker", function () {
++  it("uses a 6-decimal USDC mock", async function () {
++    const { usdc, staker } = await networkHelpers.loadFixture(deployFixture);
++    expect(await usdc.decimals()).to.equal(6n);
++    expect(await usdc.symbol()).to.equal("USDC");
++    expect(await staker.token()).to.equal(ethers.getAddress(await usdc.getAddress()));
++  });
++
++  it("stakes and tracks positions per user", async function () {
++    const { usdc, staker, alice, bob } = await networkHelpers.loadFixture(deployFixture);
++
++    await expect(staker.connect(alice).stake(40_000_000n))
++      .to.emit(staker, "Staked")
++      .withArgs(alice.address, 40_000_000n);
++    await staker.connect(alice).stake(10_000_000n);
++    await staker.connect(bob).stake(5_000_000n);
++
++    expect(await staker.stakedBalance(alice.address)).to.equal(50_000_000n);
++    expect(await staker.stakedBalance(bob.address)).to.equal(5_000_000n);
++    expect(await staker.totalStaked()).to.equal(55_000_000n);
++    expect(await usdc.balanceOf(await staker.getAddress())).to.equal(55_000_000n);
++  });
++
++  it("withdraws the full position", async function () {
++    const { usdc, staker, alice, bob } = await networkHelpers.loadFixture(deployFixture);
++    await staker.connect(alice).stake(30_000_000n);
++    await staker.connect(bob).stake(20_000_000n);
++
++    await expect(staker.connect(alice).withdraw()).to.emit(staker, "Withdrawn").withArgs(alice.address, 30_000_000n);
++
++    expect(await staker.stakedBalance(alice.address)).to.equal(0n);
++    expect(await staker.totalStaked()).to.equal(20_000_000n);
++    expect(await usdc.balanceOf(alice.address)).to.equal(ONE_HUNDRED_USDC);
++  });
++
++  it("rejects zero stakes and empty withdrawals", async function () {
++    const { staker, alice } = await networkHelpers.loadFixture(deployFixture);
++    await expect(staker.connect(alice).stake(0n)).to.be.revertedWithCustomError(staker, "ZeroAmount");
++    await expect(staker.connect(alice).withdraw()).to.be.revertedWithCustomError(staker, "NothingStaked");
++  });
++
++  it("reverts when allowance is insufficient", async function () {
++    const { usdc, staker, alice } = await networkHelpers.loadFixture(deployFixture);
++    await expect(staker.connect(alice).stake(ONE_HUNDRED_USDC + 1n)).to.be.revertedWithCustomError(
++      usdc,
++      "ERC20InsufficientAllowance",
++    );
++  });
++});
+diff --git a/packages/hardhat/test/YourContract.ts b/packages/hardhat/test/YourContract.ts
+deleted file mode 100644
+index 5a9ffbe..0000000
+--- a/packages/hardhat/test/YourContract.ts
++++ /dev/null
+@@ -1,31 +0,0 @@
+-import { expect } from "chai";
+-import { network } from "hardhat";
+-import type { Abi_YourContract } from "../generated/abis/YourContract.js";
+-import { loadAndExecuteDeploymentsFromFiles } from "../rocketh/environment.js";
+-
+-const { provider, networkHelpers, ethers } = await network.create();
+-
+-// We define a fixture to reuse the same setup in every test.
+-async function deployFixture() {
+-  const env = await loadAndExecuteDeploymentsFromFiles({ provider });
+-  const { address, abi } = env.get<Abi_YourContract>("YourContract");
+-  const yourContract = await ethers.getContractAt(abi, address);
+-  return { env, yourContract };
+-}
+-
+-describe("YourContract", function () {
+-  describe("Deployment", function () {
+-    it("Should have the right message on deploy", async function () {
+-      const { yourContract } = await networkHelpers.loadFixture(deployFixture);
+-      expect(await yourContract.greeting()).to.equal("Building Unstoppable Apps!!!");
+-    });
+-
+-    it("Should allow setting a new message", async function () {
+-      const { yourContract } = await networkHelpers.loadFixture(deployFixture);
+-      const newGreeting = "Learn Scaffold-ETH 2! :)";
+-
+-      await yourContract.setGreeting(newGreeting);
+-      expect(await yourContract.greeting()).to.equal(newGreeting);
+-    });
+-  });
+-});
+diff --git a/packages/nextjs/.env.example b/packages/nextjs/.env.example
+index b57486d..b0f36ed 100644
+--- a/packages/nextjs/.env.example
++++ b/packages/nextjs/.env.example
+@@ -12,3 +12,5 @@
+ NEXT_PUBLIC_ALCHEMY_API_KEY=
+ NEXT_PUBLIC_WALLET_CONNECT_PROJECT_ID=
+ 
++# Dedicated Base RPC (Alchemy, QuickNode, ...). Strongly recommended for production.
++NEXT_PUBLIC_BASE_RPC_URL=
+diff --git a/packages/nextjs/app/blockexplorer/layout.tsx b/packages/nextjs/app/blockexplorer/layout.tsx
+index 1abc7ec..e86e899 100644
+--- a/packages/nextjs/app/blockexplorer/layout.tsx
++++ b/packages/nextjs/app/blockexplorer/layout.tsx
+@@ -2,7 +2,7 @@ import { getMetadata } from "~~/utils/scaffold-eth/getMetadata";
+ 
+ export const metadata = getMetadata({
+   title: "Block Explorer",
+-  description: "Block Explorer created with 🏗 Scaffold-ETH 2",
++  description: "Local block explorer for development.",
+ });
+ 
+ const BlockExplorerLayout = ({ children }: { children: React.ReactNode }) => {
+diff --git a/packages/nextjs/app/layout.tsx b/packages/nextjs/app/layout.tsx
+index 4532506..7849e32 100644
+--- a/packages/nextjs/app/layout.tsx
++++ b/packages/nextjs/app/layout.tsx
+@@ -1,4 +1,3 @@
+-
+ import "@rainbow-me/rainbowkit/styles.css";
+ import "@scaffold-ui/components/styles.css";
+ import { ScaffoldEthAppWithProviders } from "~~/components/ScaffoldEthAppWithProviders";
+@@ -6,10 +5,9 @@ import { ThemeProvider } from "~~/components/ThemeProvider";
+ import "~~/styles/globals.css";
+ import { getMetadata } from "~~/utils/scaffold-eth/getMetadata";
+ 
+-
+ export const metadata = getMetadata({
+-  title: 'Scaffold-ETH 2 App',
+-  description: 'Built with 🏗 Scaffold-ETH 2'
++  title: "USDC Staker",
++  description: "Stake USDC on Base and withdraw your full position at any time.",
+ });
+ 
+ const ScaffoldEthApp = ({ children }: { children: React.ReactNode }) => {
+@@ -24,4 +22,4 @@ const ScaffoldEthApp = ({ children }: { children: React.ReactNode }) => {
+   );
+ };
+ 
+-export default ScaffoldEthApp;
+\ No newline at end of file
++export default ScaffoldEthApp;
+diff --git a/packages/nextjs/app/page.tsx b/packages/nextjs/app/page.tsx
+index 05a7d29..7a9f0c4 100644
+--- a/packages/nextjs/app/page.tsx
++++ b/packages/nextjs/app/page.tsx
+@@ -1,78 +1,7 @@
++import { redirect } from "next/navigation";
+ 
+-"use client";
+-
+-import { useAccount } from "wagmi";
+-import { Address } from "@scaffold-ui/components";
+-import type { NextPage } from "next";
+-import Link from "next/link";
+-import { BugAntIcon, MagnifyingGlassIcon } from "@heroicons/react/24/outline";
+-import { useTargetNetwork } from "~~/hooks/scaffold-eth";
+-
+-
+-const Home: NextPage = () => {
+-  const { address: connectedAddress } = useAccount();
+-  const { targetNetwork } = useTargetNetwork();
+-
+-  return (
+-    <>
+-      <div className="flex items-center flex-col grow pt-10">
+-        <div className="px-5">
+-          <h1 className="text-center">
+-            <span className="block text-2xl mb-2">Welcome to</span>
+-            <span className="block text-4xl font-bold">Scaffold-ETH 2</span>
+-            
+-          </h1>
+-          <div className="flex justify-center items-center space-x-2 flex-col">
+-            <p className="my-2 font-medium">Connected Address:</p>
+-            <Address address={connectedAddress} chain={targetNetwork} />
+-          </div>
+-          
+-<p className="text-center text-lg">
+-  Get started by editing{" "}
+-  <code className="italic bg-base-300 text-base font-bold max-w-full break-words break-all inline-block">
+-    packages/nextjs/app/page.tsx
+-  </code>
+-</p>
+-<p className="text-center text-lg">
+-  Edit your smart contract{" "}
+-  <code className="italic bg-base-300 text-base font-bold max-w-full break-words break-all inline-block">
+-    YourContract.sol
+-  </code>{" "}
+-  in{" "}
+-  <code className="italic bg-base-300 text-base font-bold max-w-full break-words break-all inline-block">
+-    packages/hardhat/contracts
+-  </code>
+-</p>
+-
+-        </div>
+-
+-        <div className="grow bg-base-300 w-full mt-16 px-8 py-12">
+-          <div className="flex justify-center items-center gap-12 flex-col md:flex-row">
+-            <div className="flex flex-col bg-base-100 border border-base-300 px-10 py-10 text-center items-center max-w-xs">
+-              <BugAntIcon className="h-8 w-8" />
+-              <p>
+-                Tinker with your smart contract using the{" "}
+-                <Link href="/debug" passHref className="link">
+-                  Debug Contracts
+-                </Link>{" "}
+-                tab.
+-              </p>
+-            </div>
+-            <div className="flex flex-col bg-base-100 border border-base-300 px-10 py-10 text-center items-center max-w-xs">
+-              <MagnifyingGlassIcon className="h-8 w-8" />
+-              <p>
+-                Explore your local transactions with the{" "}
+-                <Link href="/blockexplorer" passHref className="link">
+-                  Block Explorer
+-                </Link>{" "}
+-                tab.
+-              </p>
+-            </div>
+-          </div>
+-        </div>
+-      </div>
+-    </>
+-  );
++const Home = () => {
++  redirect("/stake");
+ };
+ 
+ export default Home;
+diff --git a/packages/nextjs/app/stake/_components/StakeDashboard.tsx b/packages/nextjs/app/stake/_components/StakeDashboard.tsx
+new file mode 100644
+index 0000000..02714a6
+--- /dev/null
++++ b/packages/nextjs/app/stake/_components/StakeDashboard.tsx
+@@ -0,0 +1,117 @@
++"use client";
++
++import { useState } from "react";
++import { StakeWorkspace } from "./StakeWorkspace";
++import { getAddress } from "viem";
++import { useAccount, useSwitchChain } from "wagmi";
++import { RainbowKitCustomConnectButton } from "~~/components/scaffold-eth";
++import { useDeployedContractInfo, useScaffoldReadContract, useTargetNetwork } from "~~/hooks/scaffold-eth";
++import { CANONICAL_USDC } from "~~/utils/stake/constants";
++import { getHumanError } from "~~/utils/stake/format";
++
++const Panel = ({ title, children }: { title: string; children: React.ReactNode }) => (
++  <div className="card bg-base-100 shadow-md">
++    <div className="card-body items-start gap-4">
++      <h2 className="card-title">{title}</h2>
++      {children}
++    </div>
++  </div>
++);
++
++/**
++ * Walks the user through connect → switch network before showing the staking workspace.
++ */
++export const StakeDashboard = () => {
++  const { address, chain, isConnected } = useAccount();
++  const { targetNetwork } = useTargetNetwork();
++  const { switchChainAsync, isPending: isSwitching } = useSwitchChain();
++  const [switchError, setSwitchError] = useState<string>();
++
++  const { data: staker, isLoading: isStakerLoading } = useDeployedContractInfo({ contractName: "Staker" });
++  const {
++    data: tokenAddress,
++    isLoading: isTokenLoading,
++    isError: isTokenError,
++    refetch: refetchToken,
++  } = useScaffoldReadContract({
++    contractName: "Staker",
++    functionName: "token",
++    watch: false,
++  });
++
++  if (!isConnected || !address) {
++    return (
++      <Panel title="Connect your wallet">
++        <p className="m-0">Connect a wallet on {targetNetwork.name} to see your balances and start staking.</p>
++        <RainbowKitCustomConnectButton />
++      </Panel>
++    );
++  }
++
++  if (chain?.id !== targetNetwork.id) {
++    const switchNetwork = async () => {
++      setSwitchError(undefined);
++      try {
++        await switchChainAsync({ chainId: targetNetwork.id });
++      } catch (e) {
++        setSwitchError(getHumanError(e));
++      }
++    };
++
++    return (
++      <Panel title={`Switch to ${targetNetwork.name}`}>
++        <p className="m-0">
++          Your wallet is connected to {chain?.name ?? "an unsupported network"}. USDC staking runs on{" "}
++          {targetNetwork.name}.
++        </p>
++        <button className="btn btn-primary" onClick={switchNetwork} disabled={isSwitching}>
++          {isSwitching && <span className="loading loading-spinner loading-sm" />}
++          Switch to {targetNetwork.name}
++        </button>
++        {switchError && <p className="m-0 text-error text-sm">{switchError}</p>}
++      </Panel>
++    );
++  }
++
++  if (isStakerLoading || (staker && isTokenLoading)) {
++    return (
++      <div className="flex justify-center py-10">
++        <span className="loading loading-spinner loading-lg" />
++      </div>
++    );
++  }
++
++  if (!staker) {
++    return (
++      <div role="alert" className="alert alert-warning">
++        <span>Staking isn&apos;t live on {targetNetwork.name} yet. Please check back soon.</span>
++      </div>
++    );
++  }
++
++  const usdcAddress = tokenAddress as string | undefined;
++  if (isTokenError || !usdcAddress) {
++    return (
++      <div role="alert" className="alert alert-warning">
++        <span>Couldn&apos;t load staking details from {targetNetwork.name}. The network may be busy.</span>
++        <button className="btn btn-sm" onClick={() => refetchToken()}>
++          Retry
++        </button>
++      </div>
++    );
++  }
++
++  const canonicalUsdc = CANONICAL_USDC[targetNetwork.id];
++  if (canonicalUsdc && getAddress(usdcAddress) !== getAddress(canonicalUsdc)) {
++    return (
++      <div role="alert" className="alert alert-error">
++        <span>
++          The staking contract is not connected to the official USDC token on {targetNetwork.name}. Staking is disabled
++          for your safety.
++        </span>
++      </div>
++    );
++  }
++
++  return <StakeWorkspace account={address} stakerAddress={staker.address} usdcAddress={getAddress(usdcAddress)} />;
++};
+diff --git a/packages/nextjs/app/stake/_components/StakeWorkspace.tsx b/packages/nextjs/app/stake/_components/StakeWorkspace.tsx
+new file mode 100644
+index 0000000..12db298
+--- /dev/null
++++ b/packages/nextjs/app/stake/_components/StakeWorkspace.tsx
+@@ -0,0 +1,277 @@
++"use client";
++
++import { useState } from "react";
++import { Address, erc20Abi, formatUnits, parseAbi } from "viem";
++import { hardhat } from "viem/chains";
++import { useBalance, useReadContract, useWriteContract } from "wagmi";
++import {
++  useScaffoldReadContract,
++  useScaffoldWriteContract,
++  useTargetNetwork,
++  useTransactor,
++} from "~~/hooks/scaffold-eth";
++import { useUsdPrices } from "~~/hooks/stake/useUsdPrices";
++import scaffoldConfig from "~~/scaffold.config";
++import { LOW_GAS_BALANCE_WEI, USDC_DECIMALS } from "~~/utils/stake/constants";
++import { formatTokenAmount, formatUsdValue, getHumanError, parseAmountInput } from "~~/utils/stake/format";
++
++type Action = "approve" | "stake" | "withdraw" | "mint";
++
++const mockUsdcAbi = parseAbi(["function mint(address to, uint256 amount)"]);
++const LOCAL_MINT_AMOUNT = 1_000n * 10n ** BigInt(USDC_DECIMALS);
++const ALLOWANCE_POLL_ATTEMPTS = 5;
++
++const formatUsdc = (value: bigint) => formatTokenAmount(value, USDC_DECIMALS);
++const formatEth = (value: bigint) => formatTokenAmount(value, 18, { maxFractionDigits: 6, minFractionDigits: 0 });
++
++type StakeWorkspaceProps = {
++  account: Address;
++  stakerAddress: Address;
++  usdcAddress: Address;
++};
++
++export const StakeWorkspace = ({ account, stakerAddress, usdcAddress }: StakeWorkspaceProps) => {
++  const { targetNetwork } = useTargetNetwork();
++  const chainId = targetNetwork.id;
++  const isLocalNetwork = chainId === hardhat.id;
++  const prices = useUsdPrices();
++
++  // USDC is read by the address the Staker reports, so the UI always shows the token the contract actually holds.
++  const liveQuery = { refetchInterval: scaffoldConfig.pollingInterval };
++  const { data: usdcBalance, refetch: refetchUsdcBalance } = useReadContract({
++    address: usdcAddress,
++    abi: erc20Abi,
++    functionName: "balanceOf",
++    args: [account],
++    chainId,
++    query: liveQuery,
++  });
++  const { data: allowance, refetch: refetchAllowance } = useReadContract({
++    address: usdcAddress,
++    abi: erc20Abi,
++    functionName: "allowance",
++    args: [account, stakerAddress],
++    chainId,
++    query: liveQuery,
++  });
++  const { data: ethBalance, refetch: refetchEthBalance } = useBalance({ address: account, chainId, query: liveQuery });
++  const { data: stakedData, refetch: refetchStaked } = useScaffoldReadContract({
++    contractName: "Staker",
++    functionName: "stakedBalance",
++    args: [account],
++  });
++  const staked = stakedData as bigint | undefined;
++
++  const { writeContractAsync: writeStaker } = useScaffoldWriteContract({ contractName: "Staker" });
++  const { writeContractAsync: writeToken } = useWriteContract();
++  const transactor = useTransactor();
++
++  const [amountInput, setAmountInput] = useState("");
++  const [pendingAction, setPendingAction] = useState<Action>();
++  const [actionError, setActionError] = useState<{ action: Action; message: string }>();
++
++  const parsed = parseAmountInput(amountInput, USDC_DECIMALS);
++  const amount = parsed?.value;
++  const exceedsBalance = amount !== undefined && usdcBalance !== undefined && amount > usdcBalance;
++  const inputError = parsed?.error ?? (exceedsBalance ? "Amount exceeds your wallet USDC balance" : undefined);
++  const canSubmit =
++    amount !== undefined && !inputError && usdcBalance !== undefined && allowance !== undefined && !pendingAction;
++  const needsApproval = amount !== undefined && allowance !== undefined && allowance < amount;
++  const isBusy = pendingAction !== undefined;
++
++  const hasNoGas = ethBalance !== undefined && ethBalance.value === 0n;
++  const hasLowGas = ethBalance !== undefined && ethBalance.value > 0n && ethBalance.value < LOW_GAS_BALANCE_WEI;
++
++  // Holds the pending state from click through receipt and the balance refetch, so buttons never flash stale state.
++  const runAction = async (action: Action, send: () => Promise<unknown>) => {
++    setPendingAction(action);
++    setActionError(undefined);
++    try {
++      const hash = await send();
++      if (hash === undefined) throw new Error("The transaction was not sent. Check your wallet and try again.");
++      if (action === "stake") setAmountInput("");
++    } catch (e) {
++      setActionError({ action, message: getHumanError(e) });
++    } finally {
++      await Promise.all([refetchUsdcBalance(), refetchAllowance(), refetchEthBalance(), refetchStaked()]);
++      setPendingAction(undefined);
++    }
++  };
++
++  const approve = (value: bigint) =>
++    runAction("approve", async () => {
++      const hash = await transactor(() =>
++        writeToken({
++          address: usdcAddress,
++          abi: erc20Abi,
++          functionName: "approve",
++          args: [stakerAddress, value],
++          chainId,
++        }),
++      );
++      // An RPC node a block behind can still report the old allowance; wait until the new one is visible.
++      for (let attempt = 0; hash && attempt < ALLOWANCE_POLL_ATTEMPTS; attempt++) {
++        const { data } = await refetchAllowance();
++        if (data !== undefined && data >= value) break;
++        await new Promise(resolve => setTimeout(resolve, 1_000));
++      }
++      return hash;
++    });
++  const stake = (value: bigint) => runAction("stake", () => writeStaker({ functionName: "stake", args: [value] }));
++  const withdraw = () => runAction("withdraw", () => writeStaker({ functionName: "withdraw" }));
++  const mintTestUsdc = () =>
++    runAction("mint", () =>
++      transactor(() =>
++        writeToken({
++          address: usdcAddress,
++          abi: mockUsdcAbi,
++          functionName: "mint",
++          args: [account, LOCAL_MINT_AMOUNT],
++          chainId,
++        }),
++      ),
++    );
++
++  const errorFor = (...actions: Action[]) =>
++    actionError && actions.includes(actionError.action) ? (
++      <p role="alert" className="m-0 text-error text-sm">
++        {actionError.message}
++      </p>
++    ) : null;
++
++  const spinnerFor = (action: Action) =>
++    pendingAction === action ? <span className="loading loading-spinner loading-sm" /> : null;
++
++  return (
++    <>
++      <div className="stats stats-vertical md:stats-horizontal bg-base-100 shadow-md w-full">
++        <div className="stat">
++          <div className="stat-title">Wallet USDC</div>
++          <div className="stat-value text-2xl">{usdcBalance === undefined ? "…" : formatUsdc(usdcBalance)}</div>
++          <div className="stat-desc">{formatUsdValue(usdcBalance, USDC_DECIMALS, prices.usdc)}</div>
++        </div>
++        <div className="stat">
++          <div className="stat-title">ETH for gas</div>
++          <div className="stat-value text-2xl">{ethBalance === undefined ? "…" : formatEth(ethBalance.value)}</div>
++          <div className="stat-desc">{formatUsdValue(ethBalance?.value, 18, prices.eth)}</div>
++        </div>
++        <div className="stat">
++          <div className="stat-title">Staked USDC</div>
++          <div className="stat-value text-2xl">{staked === undefined ? "…" : formatUsdc(staked)}</div>
++          <div className="stat-desc">{formatUsdValue(staked, USDC_DECIMALS, prices.usdc)}</div>
++        </div>
++      </div>
++
++      {(hasNoGas || hasLowGas) && (
++        <div role="alert" className="alert alert-warning">
++          <span>
++            {hasNoGas
++              ? `You have no ETH on ${targetNetwork.name}. You need a small amount of ETH to pay network fees before you can stake or withdraw.`
++              : `Your ETH balance is low. You may not have enough to pay network fees on ${targetNetwork.name}.`}
++          </span>
++        </div>
++      )}
++
++      <div className="card bg-base-100 shadow-md">
++        <div className="card-body gap-3">
++          <h2 className="card-title">Stake</h2>
++          <label htmlFor="stake-amount" className="text-sm opacity-80">
++            Amount (USDC)
++          </label>
++          <div className="join w-full">
++            <input
++              id="stake-amount"
++              className={`input join-item w-full ${inputError ? "input-error" : ""}`}
++              inputMode="decimal"
++              autoComplete="off"
++              placeholder="0.00"
++              value={amountInput}
++              disabled={isBusy}
++              onChange={e => setAmountInput(e.target.value.replace(",", "."))}
++            />
++            <button
++              className="btn join-item"
++              disabled={isBusy || !usdcBalance}
++              onClick={() => usdcBalance !== undefined && setAmountInput(formatUnits(usdcBalance, USDC_DECIMALS))}
++            >
++              Max
++            </button>
++          </div>
++          <p className={`m-0 text-sm ${inputError ? "text-error" : "opacity-70"}`}>
++            {inputError ?? (amount !== undefined ? formatUsdValue(amount, USDC_DECIMALS, prices.usdc) : " ")}
++          </p>
++
++          {needsApproval && !inputError && (
++            <p className="m-0 text-sm">
++              Step 1 of 2: allow the staking contract to move {formatUsdc(amount)} USDC. You&apos;ll confirm the stake
++              right after.
++            </p>
++          )}
++
++          {needsApproval ? (
++            <button
++              className="btn btn-primary"
++              disabled={!canSubmit}
++              onClick={() => amount !== undefined && approve(amount)}
++            >
++              {spinnerFor("approve")}
++              {pendingAction === "approve"
++                ? "Approving…"
++                : `Approve ${amount !== undefined ? formatUsdc(amount) : ""} USDC`}
++            </button>
++          ) : (
++            <button
++              className="btn btn-primary"
++              disabled={!canSubmit}
++              onClick={() => amount !== undefined && stake(amount)}
++            >
++              {spinnerFor("stake")}
++              {pendingAction === "stake"
++                ? "Staking…"
++                : amount !== undefined
++                  ? `Stake ${formatUsdc(amount)} USDC`
++                  : "Enter an amount to stake"}
++            </button>
++          )}
++          {errorFor("approve", "stake")}
++        </div>
++      </div>
++
++      <div className="card bg-base-100 shadow-md">
++        <div className="card-body gap-3">
++          <h2 className="card-title">Your position</h2>
++          <p className="m-0">
++            {staked === undefined
++              ? "Loading your position…"
++              : staked === 0n
++                ? "You have nothing staked yet."
++                : `${formatUsdc(staked)} USDC staked (${formatUsdValue(staked, USDC_DECIMALS, prices.usdc)}). Withdrawing returns all of it to your wallet.`}
++          </p>
++          <button className="btn btn-outline" disabled={isBusy || !staked} onClick={withdraw}>
++            {spinnerFor("withdraw")}
++            {pendingAction === "withdraw"
++              ? "Withdrawing…"
++              : staked
++                ? `Withdraw all ${formatUsdc(staked)} USDC`
++                : "Nothing to withdraw"}
++          </button>
++          {errorFor("withdraw")}
++        </div>
++      </div>
++
++      {isLocalNetwork && (
++        <div className="card bg-base-100 shadow-md border border-dashed border-base-300">
++          <div className="card-body gap-3">
++            <h2 className="card-title text-base">Local testing</h2>
++            <p className="m-0 text-sm">Mint mock USDC to your wallet. Only available on the local chain.</p>
++            <button className="btn btn-sm" disabled={isBusy} onClick={mintTestUsdc}>
++              {spinnerFor("mint")}
++              Mint {formatUsdc(LOCAL_MINT_AMOUNT)} test USDC
++            </button>
++            {errorFor("mint")}
++          </div>
++        </div>
++      )}
++    </>
++  );
++};
+diff --git a/packages/nextjs/app/stake/page.tsx b/packages/nextjs/app/stake/page.tsx
+new file mode 100644
+index 0000000..f8789ca
+--- /dev/null
++++ b/packages/nextjs/app/stake/page.tsx
+@@ -0,0 +1,27 @@
++import { StakeDashboard } from "./_components/StakeDashboard";
++import type { NextPage } from "next";
++import { getMetadata } from "~~/utils/scaffold-eth/getMetadata";
++
++export const metadata = getMetadata({
++  title: "Stake USDC",
++  description: "Stake USDC on Base and withdraw your full position at any time.",
++});
++
++const Stake: NextPage = () => {
++  return (
++    <div className="flex flex-col items-center grow px-4 py-10">
++      <div className="w-full max-w-2xl flex flex-col gap-6">
++        <div>
++          <h1 className="text-3xl font-bold mb-2">Stake USDC</h1>
++          <p className="m-0 opacity-80">
++            Deposit USDC on Base and withdraw your full position whenever you like. No lockups, no rewards — your USDC
++            stays yours.
++          </p>
++        </div>
++        <StakeDashboard />
++      </div>
++    </div>
++  );
++};
++
++export default Stake;
+diff --git a/packages/nextjs/components/Footer.tsx b/packages/nextjs/components/Footer.tsx
+index 1ef1bd2..92fb032 100644
+--- a/packages/nextjs/components/Footer.tsx
++++ b/packages/nextjs/components/Footer.tsx
+@@ -1,12 +1,11 @@
+ import React from "react";
+ import Link from "next/link";
+-import { useFetchNativeCurrencyPrice } from "@scaffold-ui/hooks";
++import { getBlockExplorerAddressLink } from "@scaffold-ui/hooks";
+ import { hardhat } from "viem/chains";
+-import { CurrencyDollarIcon, MagnifyingGlassIcon } from "@heroicons/react/24/outline";
+-import { HeartIcon } from "@heroicons/react/24/outline";
++import { MagnifyingGlassIcon } from "@heroicons/react/24/outline";
+ import { SwitchTheme } from "~~/components/SwitchTheme";
+-import { BuidlGuidlLogo } from "~~/components/assets/BuidlGuidlLogo";
+ import { Faucet } from "~~/components/scaffold-eth";
++import { useDeployedContractInfo } from "~~/hooks/scaffold-eth";
+ import { useTargetNetwork } from "~~/hooks/scaffold-eth/useTargetNetwork";
+ 
+ /**
+@@ -15,21 +14,13 @@ import { useTargetNetwork } from "~~/hooks/scaffold-eth/useTargetNetwork";
+ export const Footer = () => {
+   const { targetNetwork } = useTargetNetwork();
+   const isLocalNetwork = targetNetwork.id === hardhat.id;
+-  const { price: nativeCurrencyPrice } = useFetchNativeCurrencyPrice();
++  const { data: staker } = useDeployedContractInfo({ contractName: "Staker" });
+ 
+   return (
+     <div className="min-h-0 py-5 px-1 mb-11 lg:mb-0">
+       <div>
+         <div className="fixed flex justify-between items-center w-full z-10 p-4 bottom-0 left-0 pointer-events-none">
+           <div className="flex flex-col md:flex-row gap-2 pointer-events-auto">
+-            {nativeCurrencyPrice > 0 && (
+-              <div>
+-                <div className="btn btn-primary btn-sm font-normal gap-1 cursor-auto">
+-                  <CurrencyDollarIcon className="h-4 w-4" />
+-                  <span>{nativeCurrencyPrice.toFixed(2)}</span>
+-                </div>
+-              </div>
+-            )}
+             {isLocalNetwork && (
+               <>
+                 <Faucet />
+@@ -44,36 +35,22 @@ export const Footer = () => {
+         </div>
+       </div>
+       <div className="w-full">
+-        <ul className="menu menu-horizontal w-full">
+-          <div className="flex justify-center items-center gap-2 text-sm w-full">
+-            <div className="text-center">
+-              <a href="https://github.com/scaffold-eth/se-2" target="_blank" rel="noreferrer" className="link">
+-                Fork me
+-              </a>
+-            </div>
+-            <span>·</span>
+-            <div className="flex justify-center items-center gap-2">
+-              <p className="m-0 text-center">
+-                Built with <HeartIcon className="inline-block h-4 w-4" /> at
+-              </p>
++        <div className="flex flex-wrap justify-center items-center gap-2 text-sm w-full p-2">
++          <span>USDC Staker · Non-custodial, no lockups</span>
++          {staker && (
++            <>
++              <span>·</span>
+               <a
+-                className="flex justify-center items-center gap-1"
+-                href="https://buidlguidl.com/"
++                href={getBlockExplorerAddressLink(targetNetwork, staker.address)}
+                 target="_blank"
+                 rel="noreferrer"
++                className="link"
+               >
+-                <BuidlGuidlLogo className="w-3 h-5 pb-1" />
+-                <span className="link">BuidlGuidl</span>
+-              </a>
+-            </div>
+-            <span>·</span>
+-            <div className="text-center">
+-              <a href="https://t.me/joinchat/KByvmRe5wkR-8F_zz6AjpA" target="_blank" rel="noreferrer" className="link">
+-                Support
++                View contract
+               </a>
+-            </div>
+-          </div>
+-        </ul>
++            </>
++          )}
++        </div>
+       </div>
+     </div>
+   );
+diff --git a/packages/nextjs/components/Header.tsx b/packages/nextjs/components/Header.tsx
+index bc63eb4..da13a41 100644
+--- a/packages/nextjs/components/Header.tsx
++++ b/packages/nextjs/components/Header.tsx
+@@ -9,8 +9,6 @@ import { Bars3Icon, BugAntIcon } from "@heroicons/react/24/outline";
+ import { FaucetButton, RainbowKitCustomConnectButton } from "~~/components/scaffold-eth";
+ import { useOutsideClick, useTargetNetwork } from "~~/hooks/scaffold-eth";
+ 
+-
+-
+ type HeaderMenuLink = {
+   label: string;
+   href: string;
+@@ -19,22 +17,28 @@ type HeaderMenuLink = {
+ 
+ export const menuLinks: HeaderMenuLink[] = [
+   {
+-    label: 'Home',
+-    href: '/'
++    label: "Stake",
++    href: "/stake",
+   },
++];
++
++// Developer tooling, hidden from users on live networks.
++const localMenuLinks: HeaderMenuLink[] = [
+   {
+-    label: 'Debug Contracts',
+-    href: '/debug',
+-    icon: <BugAntIcon className="h-4 w-4" />
+-  }
++    label: "Debug Contracts",
++    href: "/debug",
++    icon: <BugAntIcon className="h-4 w-4" />,
++  },
+ ];
+ 
+ export const HeaderMenuLinks = () => {
+   const pathname = usePathname();
++  const { targetNetwork } = useTargetNetwork();
++  const links = targetNetwork.id === hardhat.id ? [...menuLinks, ...localMenuLinks] : menuLinks;
+ 
+   return (
+     <>
+-      {menuLinks.map(({ label, href, icon }) => {
++      {links.map(({ label, href, icon }) => {
+         const isActive = pathname === href;
+         return (
+           <li key={href} className="h-full">
+@@ -83,13 +87,13 @@ export const Header = () => {
+             <HeaderMenuLinks />
+           </ul>
+         </details>
+-        <Link href="/" passHref className="hidden lg:flex items-center gap-2 ml-4 mr-6 shrink-0">
++        <Link href="/stake" passHref className="hidden lg:flex items-center gap-2 ml-4 mr-6 shrink-0">
+           <div className="flex relative w-10 h-10">
+-            <Image alt="SE2 logo" className="cursor-pointer" fill src="/logo.svg" />
++            <Image alt="USDC Staker logo" className="cursor-pointer" fill src="/logo.svg" />
+           </div>
+           <div className="flex flex-col">
+-            <span className="font-bold leading-tight">Scaffold-ETH</span>
+-            <span className="text-xs">Ethereum dev stack</span>
++            <span className="font-bold leading-tight">USDC Staker</span>
++            <span className="text-xs">on Base</span>
+           </div>
+         </Link>
+         <ul className="hidden lg:flex lg:flex-nowrap h-full m-0 p-0 list-none">
+@@ -102,4 +106,4 @@ export const Header = () => {
+       </div>
+     </div>
+   );
+-};
+\ No newline at end of file
++};
+diff --git a/packages/nextjs/components/assets/BuidlGuidlLogo.tsx b/packages/nextjs/components/assets/BuidlGuidlLogo.tsx
+deleted file mode 100644
+index af46b02..0000000
+--- a/packages/nextjs/components/assets/BuidlGuidlLogo.tsx
++++ /dev/null
+@@ -1,18 +0,0 @@
+-export const BuidlGuidlLogo = ({ className }: { className: string }) => {
+-  return (
+-    <svg
+-      className={className}
+-      width="53"
+-      height="72"
+-      viewBox="0 0 53 72"
+-      fill="currentColor"
+-      xmlns="http://www.w3.org/2000/svg"
+-    >
+-      <path
+-        fillRule="evenodd"
+-        d="M25.9 17.434v15.638h3.927v9.04h9.718v-9.04h6.745v18.08l-10.607 19.88-12.11-.182-12.11.183L.856 51.152v-18.08h6.713v9.04h9.75v-9.04h4.329V2.46a2.126 2.126 0 0 1 4.047-.914c1.074.412 2.157 1.5 3.276 2.626 1.33 1.337 2.711 2.726 4.193 3.095 1.496.373 2.605-.026 3.855-.475 1.31-.47 2.776-.997 5.005-.747 1.67.197 2.557 1.289 3.548 2.509 1.317 1.623 2.82 3.473 6.599 3.752l-.024.017c-2.42 1.709-5.726 4.043-10.86 3.587-1.605-.139-2.736-.656-3.82-1.153-1.546-.707-2.997-1.37-5.59-.832-2.809.563-4.227 1.892-5.306 2.903-.236.221-.456.427-.67.606Z"
+-        clipRule="evenodd"
+-      />
+-    </svg>
+-  );
+-};
+diff --git a/packages/nextjs/hooks/stake/useUsdPrices.ts b/packages/nextjs/hooks/stake/useUsdPrices.ts
+new file mode 100644
+index 0000000..d6b8299
+--- /dev/null
++++ b/packages/nextjs/hooks/stake/useUsdPrices.ts
+@@ -0,0 +1,68 @@
++import { useQuery } from "@tanstack/react-query";
++import { createPublicClient, fallback, formatUnits, http, parseAbi } from "viem";
++import { base } from "viem/chains";
++import scaffoldConfig, { DEFAULT_ALCHEMY_API_KEY } from "~~/scaffold.config";
++import { getAlchemyHttpUrl } from "~~/utils/scaffold-eth";
++import { CHAINLINK_FEEDS } from "~~/utils/stake/constants";
++
++export type UsdPrice =
++  | { status: "loading" }
++  | { status: "unavailable" }
++  | { status: "ok" | "stale"; usd: number; updatedAt: Date };
++
++const aggregatorAbi = parseAbi([
++  "function latestRoundData() view returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound)",
++]);
++
++const baseRpcOverride = (scaffoldConfig.rpcOverrides as Record<number, string> | undefined)?.[base.id];
++const baseAlchemyUrl =
++  scaffoldConfig.alchemyApiKey !== DEFAULT_ALCHEMY_API_KEY ? getAlchemyHttpUrl(base.id) : undefined;
++const basePublicClient = createPublicClient({
++  chain: base,
++  transport: fallback(
++    [baseRpcOverride, baseAlchemyUrl]
++      .filter(Boolean)
++      .map(url => http(url))
++      .concat(http()),
++  ),
++});
++
++const FEED_DECIMALS = 8;
++// Grace period on top of the feed heartbeat before a price is labelled stale.
++const STALE_GRACE_SECONDS = 600;
++
++const readFeed = async ({ address, heartbeatSeconds }: (typeof CHAINLINK_FEEDS)[keyof typeof CHAINLINK_FEEDS]) => {
++  const [, answer, , updatedAt] = await basePublicClient.readContract({
++    address,
++    abi: aggregatorAbi,
++    functionName: "latestRoundData",
++  });
++  if (answer <= 0n) throw new Error("Invalid price");
++  const ageSeconds = Date.now() / 1000 - Number(updatedAt);
++  return {
++    usd: Number(formatUnits(answer, FEED_DECIMALS)),
++    updatedAt: new Date(Number(updatedAt) * 1000),
++    isStale: ageSeconds > heartbeatSeconds + STALE_GRACE_SECONDS,
++  };
++};
++
++const useFeedPrice = (feed: keyof typeof CHAINLINK_FEEDS): UsdPrice => {
++  const { data, isLoading, isError } = useQuery({
++    queryKey: ["chainlink-usd-price", feed],
++    queryFn: () => readFeed(CHAINLINK_FEEDS[feed]),
++    refetchInterval: 60_000,
++    retry: 2,
++  });
++
++  if (isLoading) return { status: "loading" };
++  if (isError || !data) return { status: "unavailable" };
++  return { status: data.isStale ? "stale" : "ok", usd: data.usd, updatedAt: data.updatedAt };
++};
++
++/**
++ * USD prices for USDC and ETH from Chainlink on Base.
++ */
++export const useUsdPrices = () => ({
++  usdc: useFeedPrice("USDC"),
++  eth: useFeedPrice("ETH"),
++});
+diff --git a/packages/nextjs/public/favicon.png b/packages/nextjs/public/favicon.png
+index 4bef7f2..94dbca1 100644
+Binary files a/packages/nextjs/public/favicon.png and b/packages/nextjs/public/favicon.png differ
+diff --git a/packages/nextjs/public/logo.svg b/packages/nextjs/public/logo.svg
+index c5702af..7e89c64 100644
+--- a/packages/nextjs/public/logo.svg
++++ b/packages/nextjs/public/logo.svg
+@@ -1,10 +1,6 @@
+-<svg width="103" height="102" viewBox="0 0 103 102" fill="none" xmlns="http://www.w3.org/2000/svg">
+-<rect x="0.72229" y="0.99707" width="101.901" height="100.925" fill="black"/>
+-<path d="M69.4149 42.5046L70.9118 39.812L72.5438 42.5046L83.0241 59.1906L70.9533 65.9361L59.1193 59.1906L69.4149 42.5046Z" fill="white"/>
+-<path d="M70.9533 69.2496L60.6577 63.6876L70.9533 79.0719L81.184 63.4985L70.9533 69.2496Z" fill="white"/>
+-<path d="M70.953 65.9259V41.8533V39.8499L83.063 59.1785L70.953 65.9259Z" fill="#DFDFDF"/>
+-<path d="M70.9617 79.0499L71.0409 69.2969L81.2062 63.4629L70.9617 79.0499Z" fill="#DFDFDF"/>
+-<path d="M34.409 21.6931V24.6125H34.4132L34.4124 27.747H26.8093L26.8093 27.7566H25.5383L21.3839 36.4914H34.4135V39.9723H34.4091L34.4135 69.4549C34.4135 73.5268 31.1126 76.8277 27.0408 76.8277H24.7346L19.8064 84.0772H62.4172L57.3539 76.8277H51.7795C47.7076 76.8277 44.4067 73.5268 44.4067 69.4549L44.4024 43.665C44.5071 39.7076 47.7304 36.5273 51.7046 36.4914H79.5481L74.6584 27.7566H53.6021L53.6021 27.747L44.3987 27.7469L44.3994 24.6125H44.4022V18.3245L34.409 21.6931Z" fill="white"/>
+-<path d="M39.882 19.8517V76.5496C39.9731 74.9642 41.0475 70.8554 44.3648 69.1027V50.8665L44.4703 50.8998V43.8309C44.4703 39.7591 47.7712 36.4582 51.843 36.4582H79.5812L76.9508 31.8656H49.9083C46.1286 31.8656 44.3648 34.556 44.3648 34.556L44.4435 18.3066L39.882 19.8517Z" fill="#DFDFDF"/>
+-<path d="M23.622 31.7927L21.3295 36.5083H34.4247V31.7927H23.622Z" fill="#DFDFDF"/>
++<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
++  <circle cx="32" cy="32" r="30" fill="#2775CA"/>
++  <path d="M20 38v-9a12 12 0 0 1 24 0v9" stroke="#fff" stroke-width="4" stroke-linecap="round"/>
++  <rect x="16" y="36" width="32" height="14" rx="4" fill="#fff"/>
++  <text x="32" y="47" text-anchor="middle" font-family="Arial, sans-serif" font-size="11" font-weight="700" fill="#2775CA">$</text>
+ </svg>
+diff --git a/packages/nextjs/public/manifest.json b/packages/nextjs/public/manifest.json
+index a003bec..4103c63 100644
+--- a/packages/nextjs/public/manifest.json
++++ b/packages/nextjs/public/manifest.json
+@@ -1,5 +1,6 @@
+ {
+-  name: 'Scaffold-ETH 2 DApp',
+-  description: 'A DApp built with Scaffold-ETH',
+-  iconPath: 'logo.svg'
+-}
+\ No newline at end of file
++  "name": "USDC Staker",
++  "short_name": "USDC Staker",
++  "description": "Stake USDC on Base and withdraw your full position at any time.",
++  "icons": [{ "src": "/logo.svg", "type": "image/svg+xml", "sizes": "any" }]
++}
+diff --git a/packages/nextjs/public/thumbnail.jpg b/packages/nextjs/public/thumbnail.jpg
+index a3bf231..bed7d58 100644
+Binary files a/packages/nextjs/public/thumbnail.jpg and b/packages/nextjs/public/thumbnail.jpg differ
+diff --git a/packages/nextjs/scaffold.config.ts b/packages/nextjs/scaffold.config.ts
+index 5421f2b..06d9b33 100644
+--- a/packages/nextjs/scaffold.config.ts
++++ b/packages/nextjs/scaffold.config.ts
+@@ -1,7 +1,5 @@
+ import * as chains from "viem/chains";
+ 
+-
+-
+ export type BaseConfig = {
+   targetNetworks: readonly chains.Chain[];
+   pollingInterval: number;
+@@ -11,17 +9,17 @@ export type BaseConfig = {
+   burnerWalletMode: "localNetworksOnly" | "allNetworks" | "disabled";
+ };
+ 
+-export type ScaffoldConfig = BaseConfig ;
++export type ScaffoldConfig = BaseConfig;
+ 
+ export const DEFAULT_ALCHEMY_API_KEY = "IZYEU2cWBgnFmgiTAgpWD";
+ 
+ const scaffoldConfig = {
+   // The networks on which your DApp is live
+-  targetNetworks: [
+-    chains.hardhat
+-  ],
++  // For local development against `yarn chain`, swap this to `chains.hardhat`.
++  targetNetworks: [chains.base],
+   // The interval at which your front-end polls the RPC servers for new data (it has no effect if you only target the local network (default is 4000))
+-  pollingInterval: 3000,
++  // Base produces a block every 2s.
++  pollingInterval: 2000,
+   // This is ours Alchemy's default API key.
+   // You can get your own at https://dashboard.alchemyapi.io
+   // It's recommended to store it in an env variable:
+@@ -29,20 +27,18 @@ const scaffoldConfig = {
+   alchemyApiKey: process.env.NEXT_PUBLIC_ALCHEMY_API_KEY || DEFAULT_ALCHEMY_API_KEY,
+   // If you want to use a different RPC for a specific network, you can add it here.
+   // The key is the chain ID, and the value is the HTTP RPC URL
+-  rpcOverrides: {
+-    // Example:
+-    // [chains.mainnet.id]: "https://mainnet.rpc.buidlguidl.com",
+-  },
++  // Production needs a dedicated Base RPC: without it (or a private Alchemy key) reads go through the rate-limited public endpoint.
++  rpcOverrides: process.env.NEXT_PUBLIC_BASE_RPC_URL ? { [chains.base.id]: process.env.NEXT_PUBLIC_BASE_RPC_URL } : {},
+   // This is ours WalletConnect's default project ID.
+   // You can get your own at https://cloud.walletconnect.com
+   // It's recommended to store it in an env variable:
+   // .env.local for local testing, and in the Vercel/system env config for live apps.
+-  walletConnectProjectId: process.env.NEXT_PUBLIC_WALLET_CONNECT_PROJECT_ID || '3a8170812b534d0ff9d794f19a901d64',
++  walletConnectProjectId: process.env.NEXT_PUBLIC_WALLET_CONNECT_PROJECT_ID || "3a8170812b534d0ff9d794f19a901d64",
+   // Configure Burner Wallet visibility:
+   // - "localNetworksOnly": only show when all target networks are local (hardhat/anvil)
+   // - "allNetworks": show on any configured target networks
+   // - "disabled": completely disable
+-  burnerWalletMode: 'localNetworksOnly'
++  burnerWalletMode: "localNetworksOnly",
+ } as const satisfies ScaffoldConfig;
+ 
+-export default scaffoldConfig;
+\ No newline at end of file
++export default scaffoldConfig;
+diff --git a/packages/nextjs/services/web3/wagmiConnectors.tsx b/packages/nextjs/services/web3/wagmiConnectors.tsx
+index a890e71..5a177eb 100644
+--- a/packages/nextjs/services/web3/wagmiConnectors.tsx
++++ b/packages/nextjs/services/web3/wagmiConnectors.tsx
+@@ -46,7 +46,7 @@ export const wagmiConnectors = () => {
+     ],
+ 
+     {
+-      appName: "scaffold-eth-2",
++      appName: "USDC Staker",
+       projectId: scaffoldConfig.walletConnectProjectId,
+     },
+   );
+diff --git a/packages/nextjs/utils/scaffold-eth/getMetadata.ts b/packages/nextjs/utils/scaffold-eth/getMetadata.ts
+index 515ca10..64d64e0 100644
+--- a/packages/nextjs/utils/scaffold-eth/getMetadata.ts
++++ b/packages/nextjs/utils/scaffold-eth/getMetadata.ts
+@@ -1,11 +1,9 @@
+-
+ import type { Metadata } from "next";
+ 
+-
+ const baseUrl = process.env.VERCEL_PROJECT_PRODUCTION_URL
+   ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
+   : `http://localhost:${process.env.PORT || 3000}`;
+-const titleTemplate = "%s | Scaffold-ETH 2";
++const titleTemplate = "%s | USDC Staker";
+ 
+ export const getMetadata = ({
+   title,
+@@ -19,42 +17,40 @@ export const getMetadata = ({
+   const imageUrl = `${baseUrl}${imageRelativePath}`;
+ 
+   return {
+-  metadataBase: new URL(baseUrl),
+-  title: {
+-    default: title,
+-    template: titleTemplate
+-  },
+-  description: description,
+-  openGraph: {
++    metadataBase: new URL(baseUrl),
+     title: {
+       default: title,
+-      template: titleTemplate
++      template: titleTemplate,
+     },
+     description: description,
+-    images: [
+-      {
+-        url: imageUrl
+-      }
+-    ]
+-  },
+-  twitter: {
+-    title: {
+-      default: title,
+-      template: titleTemplate
++    openGraph: {
++      title: {
++        default: title,
++        template: titleTemplate,
++      },
++      description: description,
++      images: [
++        {
++          url: imageUrl,
++        },
++      ],
+     },
+-    description: description,
+-    images: [
+-      imageUrl
+-    ]
+-  },
+-  icons: {
+-    icon: [
+-      {
+-        url: '/favicon.png',
+-        sizes: '32x32',
+-        type: 'image/png'
+-      }
+-    ]
+-  }
++    twitter: {
++      title: {
++        default: title,
++        template: titleTemplate,
++      },
++      description: description,
++      images: [imageUrl],
++    },
++    icons: {
++      icon: [
++        {
++          url: "/favicon.png",
++          sizes: "32x32",
++          type: "image/png",
++        },
++      ],
++    },
++  };
+ };
+-}
+\ No newline at end of file
+diff --git a/packages/nextjs/utils/stake/constants.ts b/packages/nextjs/utils/stake/constants.ts
+new file mode 100644
+index 0000000..5a8d807
+--- /dev/null
++++ b/packages/nextjs/utils/stake/constants.ts
+@@ -0,0 +1,17 @@
++import { base } from "viem/chains";
++
++export const USDC_DECIMALS = 6;
++
++// Canonical (Circle-issued) USDC. The UI refuses to run against a Staker wired to any other token on these chains.
++export const CANONICAL_USDC: Record<number, string> = {
++  [base.id]: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
++};
++
++// Chainlink feeds on Base mainnet (8 decimals). Read from Base regardless of the target chain so local dev shows real prices.
++export const CHAINLINK_FEEDS = {
++  USDC: { address: "0x7e860098F58bBFC8648a4311b374B1D669a2bc6B", heartbeatSeconds: 86_400 },
++  ETH: { address: "0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70", heartbeatSeconds: 1_200 },
++} as const;
++
++// Below this ETH balance a stake + approve may not fit the gas bill.
++export const LOW_GAS_BALANCE_WEI = 20_000_000_000_000n; // 0.00002 ETH
+diff --git a/packages/nextjs/utils/stake/format.ts b/packages/nextjs/utils/stake/format.ts
+new file mode 100644
+index 0000000..37c56a2
+--- /dev/null
++++ b/packages/nextjs/utils/stake/format.ts
+@@ -0,0 +1,54 @@
++import { formatUnits, parseUnits } from "viem";
++import type { UsdPrice } from "~~/hooks/stake/useUsdPrices";
++import { getParsedError } from "~~/utils/scaffold-eth";
++
++const usdFormatter = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
++
++/** Formats base units with thousands separators, trimming trailing zeros but keeping at least `minFractionDigits`. */
++export const formatTokenAmount = (
++  value: bigint,
++  decimals: number,
++  { maxFractionDigits = decimals, minFractionDigits = 2 } = {},
++) => {
++  const [whole, fraction = ""] = formatUnits(value, decimals).split(".");
++  const trimmed = fraction.slice(0, maxFractionDigits).replace(/0+$/, "").padEnd(minFractionDigits, "0");
++  const wholeFormatted = BigInt(whole).toLocaleString("en-US");
++  return trimmed ? `${wholeFormatted}.${trimmed}` : wholeFormatted;
++};
++
++/** Returns a USD label for a token amount, or a reason why no value can be shown. */
++export const formatUsdValue = (value: bigint | undefined, decimals: number, price: UsdPrice) => {
++  if (price.status === "loading" || value === undefined) return "…";
++  if (price.status === "unavailable") return "USD price unavailable";
++  const usd = usdFormatter.format(Number(formatUnits(value, decimals)) * price.usd);
++  return price.status === "stale" ? `≈ ${usd} (price may be outdated)` : `≈ ${usd}`;
++};
++
++export type ParsedAmount = { value: bigint; error?: undefined } | { value?: undefined; error: string };
++
++/** Parses user input into base units, explaining why input is rejected. Empty input yields neither value nor error. */
++export const parseAmountInput = (input: string, decimals: number): ParsedAmount | undefined => {
++  const trimmed = input.trim();
++  if (trimmed === "") return undefined;
++  if (!/^\d*\.?\d*$/.test(trimmed) || trimmed === ".") return { error: "Enter a number, like 25 or 10.5" };
++  const fraction = trimmed.split(".")[1] ?? "";
++  if (fraction.length > decimals) return { error: `USDC supports at most ${decimals} decimal places` };
++  const value = parseUnits(trimmed, decimals);
++  if (value === 0n) return { error: "Amount must be greater than zero" };
++  return { value };
++};
++
++/** Turns wallet and contract errors into short, human-readable messages. */
++export const getHumanError = (error: unknown) => {
++  const message = getParsedError(error);
++  if (/user (rejected|denied)/i.test(message)) return "You cancelled the request in your wallet.";
++  if (/insufficient funds/i.test(message)) return "Not enough ETH on Base to pay the network fee.";
++  if (/NothingStaked/.test(message)) return "You have nothing staked to withdraw.";
++  if (/ZeroAmount/.test(message)) return "Amount must be greater than zero.";
++  if (/ERC20InsufficientAllowance|exceeds allowance/i.test(message))
++    return "USDC approval is lower than the amount. Approve again, then stake.";
++  if (/ERC20InsufficientBalance|exceeds balance/i.test(message)) return "You don't have enough USDC for this amount.";
++  if (/blacklisted/i.test(message)) return "This address is blocked from moving USDC by the token issuer.";
++  if (/paused/i.test(message)) return "USDC transfers are paused by the issuer. Try again later.";
++  return message;
++};
+
+# Untracked files and status
