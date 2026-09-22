@@ -1,0 +1,222 @@
+diff --git a/FORK.md b/FORK.md
+new file mode 100644
+index 0000000..fdd3ef0
+--- /dev/null
++++ b/FORK.md
+@@ -0,0 +1,199 @@
++# Forking Base locally
++
++Short version: `yarn fork base` does **not** give you Base. It gives you a fork of
++Ethereum mainnet, and `cast chain-id` cannot tell the difference. Use
++`yarn fork FORK_URL=base` and verify with a Base-specific read.
++
++## What the onboarding note gets wrong
++
++### 1. The `base` argument never reaches anvil
++
++`packages/foundry/package.json`:
++
++```json
++"fork": "make fork FORK_URL=mainnet"
++```
++
++Before the fix in this checkout that line read:
++
++```json
++"fork": "make fork FORK_URL=${1:-mainnet}"
++```
++
++`${1:-mainnet}` looks like it picks up the word you typed after `yarn fork`, but
++Yarn 4's shell does not bind script arguments to positional parameters — it
++appends them to the end of the command line. Probed in this checkout with a
++throwaway script:
++
++```
++$ yarn _p3 base      # script body: node -e "console.log(JSON.stringify(process.argv))"
++["/…/bin/node","base"]     # 'base' appended as an extra argv, not bound to $1
++
++$ yarn _p4 base      # script body: echo "one=[$1]"
++Unbound argument #1        # $1 does not exist
++```
++
++So `$1` is unset, `${1:-mainnet}` falls back to `mainnet`, and the word `base`
++lands after the make goal as a second goal:
++
++```
++make fork FORK_URL=mainnet base
++```
++
++`fork` is the first goal, and its recipe (`anvil`) blocks forever, so make never
++reaches the `base` goal and never prints the error that would have given the game
++away (`make: *** No rule to make target 'base'. Stop.`).
++
++Running the note's command verbatim in this checkout:
++
++```
++$ yarn fork base
++…
++anvil --fork-url mainnet --chain-id 31337
++```
++
++That is the whole bug. The node you get is a fork of Ethereum mainnet.
++
++### 2. Why the USDC reads come back empty
++
++`packages/foundry/Makefile`:
++
++```make
++# Start a fork
++fork: setup-anvil-wallet
++	anvil --fork-url ${FORK_URL} --chain-id 31337
++```
++
++`FORK_URL=mainnet` resolves through `packages/foundry/foundry.toml`:
++
++```toml
++mainnet = "https://eth-mainnet.alchemyapi.io/v2/${ALCHEMY_API_KEY}"
++base    = "https://mainnet.base.org"
++```
++
++`0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` is Base's USDC. On Ethereum mainnet
++that address has no code. A fork of mainnet therefore answers every read against
++it with `0x` — which ABI-decodes to nothing, or reverts, exactly as if the token
++were not deployed. Meanwhile the node itself is perfectly healthy: blocks mine,
++transactions succeed, your own deployments work. Only the address you care about
++is empty.
++
++### 3. Why the chain-id sanity check proved nothing
++
++The Makefile pins `--chain-id 31337` on every fork. The forked chain's real id is
++thrown away. A `cast chain-id` against the local node returns `31337` whatever you
++forked — mainnet, Base, or nothing at all.
++
++Measured here, on a genuine, working Base fork:
++
++```
++$ cast chain-id --rpc-url http://127.0.0.1:8546
++31337
++```
++
++And against the plain (non-fork) node that happened to be running on 8545 in this
++checkout:
++
++```
++$ cast chain-id --rpc-url http://127.0.0.1:8545
++31337
++$ cast rpc eth_getCode 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 latest --rpc-url http://127.0.0.1:8545
++"0x"
++```
++
++Same answer from a correct Base fork, a mainnet fork, and a node that is not a
++fork at all. "I got a number back, so the fork is healthy" does not follow, which
++is how the second failure got misattributed to our contract.
++
++## The command that actually forks Base
++
++```bash
++yarn fork FORK_URL=base
++```
++
++Yarn appends `FORK_URL=base` to `make fork FORK_URL=mainnet`, and make's
++last-wins rule for command-line variables makes the override stick:
++
++```
++$ make -n fork FORK_URL=mainnet FORK_URL=base | tail -1
++anvil --fork-url base --chain-id 31337
++```
++
++Equivalent, and clearer if you prefer not to rely on that:
++
++```bash
++cd packages/foundry && make fork FORK_URL=base
++```
++
++`base` is the alias from `[rpc_endpoints]` in `foundry.toml`; anvil resolves it to
++`https://mainnet.base.org`. No `ALCHEMY_API_KEY` needed — unlike the `mainnet`
++alias, which is why a missing/bad key surfaces as a *mainnet* error message and
++adds to the confusion.
++
++Note the `fork` recipe does not take a `--port`, so anvil uses 8545. If something
++else is already bound there (`yarn chain`, a stray node), anvil exits with
++`Address already in use` — check for a stale listener before blaming the fork.
++
++## The check that would have caught this
++
++Ask the fork a question only Base can answer. Read the token you actually depend
++on:
++
++```bash
++cast call 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 "symbol()(string)" --rpc-url http://127.0.0.1:8545
++cast call 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 "name()(string)"   --rpc-url http://127.0.0.1:8545
++```
++
++On a real Base fork (verified here on port 8546):
++
++```
++"USDC"
++"USD Coin"
++```
++
++On a mainnet fork, on a chain-id-spoofed anything-else, or on a non-fork node,
++that address has no code and the call returns nothing / fails to decode. This
++distinguishes *Base* from *some other chain*, which `cast chain-id` cannot do,
++and it tests the exact precondition our contract needs.
++
++Confirm what the node is actually forked from:
++
++```bash
++cast rpc anvil_nodeInfo --rpc-url http://127.0.0.1:8545 | jq .forkConfig
++```
++
++On the verified Base fork:
++
++```json
++{
++  "forkUrl": "https://mainnet.base.org",
++  "forkBlockNumber": 51663971,
++  "forkRetryBackoff": 1000
++}
++```
++
++A node that is not a fork has no `forkConfig` — and a non-anvil node (Hardhat's
++EDR, say) rejects `anvil_nodeInfo` outright, which is itself a useful signal that
++you are not talking to the node you think you are.
++
++If you want to check the upstream endpoint before starting anvil:
++
++```bash
++cast chain-id --rpc-url base   # => 8453
++```
++
++`8453` is Base. This is the only place a real chain id survives; once anvil starts
++with `--chain-id 31337`, it is gone.
++
++## Change made in this checkout
++
++`packages/foundry/package.json` — the `fork` script no longer pretends to accept a
++positional argument:
++
++```diff
++-"fork": "make fork FORK_URL=${1:-mainnet}",
+++"fork": "make fork FORK_URL=mainnet",
++```
++
++Default behaviour is unchanged (`yarn fork` still forks mainnet); the difference is
++that `yarn fork base` no longer looks like it works. Use `yarn fork FORK_URL=base`.
+diff --git a/packages/foundry/package.json b/packages/foundry/package.json
+index be52fdd..28b4963 100644
+--- a/packages/foundry/package.json
++++ b/packages/foundry/package.json
+@@ -12,7 +12,7 @@
+     "compile": "make compile",
+     "deploy": "node scripts-js/parseArgs.js",
+     "flatten": "make flatten",
+-    "fork": "make fork FORK_URL=${1:-mainnet}",
++    "fork": "make fork FORK_URL=mainnet",
+     "format": "make format",
+     "postinstall": "shx cp -n .env.example .env",
+     "lint": "make lint",
+
+# Untracked files and status
+ A FORK.md
+ M packages/foundry/package.json

@@ -1,0 +1,173 @@
+diff --git a/FORK.md b/FORK.md
+new file mode 100644
+index 0000000..cde848c
+--- /dev/null
++++ b/FORK.md
+@@ -0,0 +1,164 @@
++# Forking Base in this checkout
++
++Short version: `yarn fork base` does **not** fork Base. It forks Ethereum
++mainnet, and `cast chain-id` cannot tell you the difference because the chain id
++is hardcoded. The USDC reads are correct — there is no contract at
++`0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` on the chain the node is actually
++serving.
++
++## What the onboarding note gets wrong
++
++### 1. The `base` argument is silently dropped
++
++`packages/foundry/package.json:15`:
++
++```json
++"fork": "make fork FORK_URL=${1:-mainnet}",
++```
++
++That `${1:-mainnet}` is written as if yarn bound script arguments to shell
++positionals. Yarn 4 (`packageManager: yarn@4.13.0`) does not: `$1` is never set,
++so the default branch always wins and `FORK_URL` is always `mainnet`. Worse,
++because the script text references a positional, yarn also stops appending the
++extra argument — so the word `base` vanishes entirely rather than producing an
++error.
++
++Observed in this checkout (`make` echoes the recipe before running it):
++
++```
++$ yarn fork base
++anvil --fork-url mainnet --chain-id 31337
++Error: failed to get fork block number
++- Error #0: error sending request for url (https://eth-mainnet.alchemyapi.io/v2/...)
++```
++
++`mainnet` is an alias resolved out of `[rpc_endpoints]` in
++`packages/foundry/foundry.toml:14`:
++
++```toml
++mainnet = "https://eth-mainnet.alchemyapi.io/v2/${ALCHEMY_API_KEY}"
++```
++
++So the node people got was an Ethereum mainnet fork. On Ethereum mainnet,
++`0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` is an empty account — `eth_getCode`
++returns `0x`, every `staticcall` into it returns empty returndata, and decoding
++that as `uint256`/`string` gives you zeros or a revert. Nothing is wrong with the
++contract; it is calling an address that holds no code.
++
++Passing the value through the yarn script does not help either —
++`yarn fork FORK_URL=base` also runs `anvil --fork-url mainnet`, because the
++argument is dropped for the same reason.
++
++### 2. `cast chain-id` proves nothing
++
++`packages/foundry/Makefile:15-16`:
++
++```make
++fork: setup-anvil-wallet
++	anvil --fork-url ${FORK_URL} --chain-id 31337
++```
++
++The chain id is **pinned to 31337 regardless of what is being forked** (that is
++deliberate — `packages/nextjs/scaffold.config.ts:20-22` targets
++`chains.foundry`, i.e. 31337, so the frontend keeps working). A fork of Base, a
++fork of Ethereum mainnet, a fork of Optimism, and a bare `yarn chain` with no
++fork at all all answer `31337`. "I got a number back" only proves something is
++listening on 8545.
++
++### 3. There may not even be a fork on 8545
++
++Right now, in this checkout, port 8545 is held by a **plain (unforked) Hardhat
++node from an unrelated project** — not anvil:
++
++```
++$ lsof -nP -iTCP:8545 -sTCP:LISTEN
++node ... hardhat/dist/src/cli.js node --network hardhat
++$ cast client --rpc-url http://127.0.0.1:8545
++HardhatNetwork/3.15.0/@nomicfoundation/edr/0.3.8
++$ cast chain-id --rpc-url http://127.0.0.1:8545
++31337
++```
++
++It answers RPC, it mines transactions, it reports 31337 — and it has no tokens on
++it whatsoever. Because it holds the port, `yarn fork ...` dies with
++`Error: Address already in use (os error 48)`; if you start the fork in another
++terminal and do not read its output, you will keep talking to the stale node and
++see exactly the reported symptom. Kill whatever owns 8545 before forking.
++
++## The command that actually forks Base here
++
++Bypass the broken yarn wrapper and drive the Makefile target directly, from
++`packages/foundry` (the alias lookup needs `foundry.toml` in scope):
++
++```bash
++cd packages/foundry
++make fork FORK_URL=base
++```
++
++or, from the repo root:
++
++```bash
++yarn workspace @se-2/foundry exec make fork FORK_URL=base
++```
++
++Either one runs `anvil --fork-url base --chain-id 31337`, and anvil resolves
++`base` against `packages/foundry/foundry.toml:26`:
++
++```toml
++base = "https://mainnet.base.org"
++```
++
++Any explicit URL works in place of the alias, e.g.
++`make fork FORK_URL=https://mainnet.base.org` or your own Base RPC — recommended,
++since `mainnet.base.org` is rate-limited and archive-state reads at a pinned
++block will be flaky against it.
++
++Worth fixing at the source: `packages/foundry/package.json:15` should be
++`"fork": "make fork FORK_URL=$FORK_URL"` (with a Makefile default such as
++`FORK_URL ?= mainnet`) so that `FORK_URL=base yarn fork` works and a typo'd
++network name fails loudly instead of quietly falling back to Ethereum.
++
++## The check that would have caught this
++
++Do not ask the node *what chain id it claims*. Ask it for **state that only Base
++has**. This is the whole check:
++
++```bash
++RPC=http://127.0.0.1:8545
++
++# Must print USDC / 6 / a nonzero supply. Empty output or a revert => not Base.
++cast call 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 "symbol()(string)"   --rpc-url $RPC
++cast call 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 "decimals()(uint8)"  --rpc-url $RPC
++cast call 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 "totalSupply()(uint256)" --rpc-url $RPC
++
++# Negative control: Ethereum-mainnet USDC. Must be 0x here.
++# If THIS one has code, you are on a mainnet fork, not Base.
++cast code 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 --rpc-url $RPC
++
++# OP-Stack predeploy: present on Base (and other OP chains), absent on L1.
++cast call 0x4200000000000000000000000000000000000015 "number()(uint256)" --rpc-url $RPC
++```
++
++The positive probe alone is enough to unblock you; the negative control is what
++turns "the token reads empty" into "you are on the wrong chain" instead of "our
++contract is broken". A `symbol()` that answers `USDC` cannot be produced by a
++bare devnet or by an Ethereum fork.
++
++Two cheap extras, both of which the chain-id check misses:
++
++```bash
++# Is this even anvil? A Hardhat node answering 31337 is the classic decoy.
++cast client --rpc-url $RPC
++
++# anvil-only: reports the URL and block actually being forked.
++cast rpc anvil_nodeInfo --rpc-url $RPC | jq '.forkConfig'
++```
++
++`anvil_nodeInfo` is the most direct answer when the node *is* anvil — it names
++the fork URL outright — but it errors with `Method anvil_nodeInfo is not
++supported` on a Hardhat node, which is itself a useful signal. The `cast call`
++probes above are the portable version and are what belongs in the onboarding
++note.
++
++Rule of thumb for this repo: **chain id 31337 is a constant, not evidence.**
++Verify a fork by reading a contract that only the forked chain has.
+
+# Untracked files and status
+ A FORK.md

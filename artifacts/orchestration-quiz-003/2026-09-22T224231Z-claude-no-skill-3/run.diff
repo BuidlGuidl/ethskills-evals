@@ -1,0 +1,197 @@
+diff --git a/packages/nextjs/app/greetings/page.tsx b/packages/nextjs/app/greetings/page.tsx
+new file mode 100644
+index 0000000..ef543ea
+--- /dev/null
++++ b/packages/nextjs/app/greetings/page.tsx
+@@ -0,0 +1,162 @@
++"use client";
++
++import { useState } from "react";
++import { Address, EtherInput } from "@scaffold-ui/components";
++import type { NextPage } from "next";
++import { formatEther, parseEther } from "viem";
++import { useAccount } from "wagmi";
++import { ChatBubbleLeftRightIcon } from "@heroicons/react/24/outline";
++import {
++  useScaffoldEventHistory,
++  useScaffoldReadContract,
++  useScaffoldWriteContract,
++  useTargetNetwork,
++} from "~~/hooks/scaffold-eth";
++import { notification } from "~~/utils/scaffold-eth";
++
++const formatTimestamp = (timestamp?: bigint) =>
++  timestamp ? new Date(Number(timestamp) * 1000).toLocaleString() : "Pending…";
++
++const Greetings: NextPage = () => {
++  const { address: connectedAddress, isConnected } = useAccount();
++  const { targetNetwork } = useTargetNetwork();
++
++  const [newGreeting, setNewGreeting] = useState("");
++  const [tipAmount, setTipAmount] = useState("");
++  // EtherInput is uncontrolled (defaultValue + onValueChange), so remount it to clear the field
++  const [tipInputKey, setTipInputKey] = useState(0);
++
++  const { data: greeting, isLoading: isGreetingLoading } = useScaffoldReadContract({
++    contractName: "YourContract",
++    functionName: "greeting",
++  });
++
++  const { data: totalCounter } = useScaffoldReadContract({
++    contractName: "YourContract",
++    functionName: "totalCounter",
++  });
++
++  const { writeContractAsync, isMining } = useScaffoldWriteContract({ contractName: "YourContract" });
++
++  const {
++    data: greetingChanges,
++    isLoading: areChangesLoading,
++    error: changesError,
++  } = useScaffoldEventHistory({
++    contractName: "YourContract",
++    eventName: "GreetingChange",
++    watch: true,
++    blockData: true,
++  });
++
++  const handleSubmit = async () => {
++    const trimmedGreeting = newGreeting.trim();
++    if (!trimmedGreeting) {
++      notification.warning("Please enter a greeting first.");
++      return;
++    }
++
++    try {
++      await writeContractAsync({
++        functionName: "setGreeting",
++        args: [trimmedGreeting],
++        value: tipAmount ? parseEther(tipAmount) : undefined,
++      });
++      setNewGreeting("");
++      setTipAmount("");
++      setTipInputKey(key => key + 1);
++    } catch (error) {
++      // useScaffoldWriteContract already surfaces the parsed error as a notification
++      console.error("Failed to set greeting:", error);
++    }
++  };
++
++  return (
++    <div className="flex flex-col items-center grow w-full px-5 py-10 gap-8">
++      <div className="flex flex-col items-center gap-2">
++        <ChatBubbleLeftRightIcon className="h-8 w-8" />
++        <h1 className="text-4xl font-bold m-0">Greetings</h1>
++      </div>
++
++      <div className="card bg-base-100 shadow-xl w-full max-w-2xl">
++        <div className="card-body items-center text-center">
++          <h2 className="card-title">Current greeting</h2>
++          {isGreetingLoading ? (
++            <span className="loading loading-spinner" />
++          ) : (
++            <p className="text-2xl font-medium break-words max-w-full">{greeting}</p>
++          )}
++          <div className="stats bg-base-200 mt-2">
++            <div className="stat">
++              <div className="stat-title">Times changed</div>
++              <div className="stat-value text-2xl">{totalCounter?.toString() ?? "—"}</div>
++            </div>
++          </div>
++        </div>
++      </div>
++
++      <div className="card bg-base-100 shadow-xl w-full max-w-2xl">
++        <form
++          className="card-body gap-4"
++          onSubmit={event => {
++            event.preventDefault();
++            handleSubmit();
++          }}
++        >
++          <h2 className="card-title">Set a new greeting</h2>
++          <input
++            className="input input-bordered w-full"
++            placeholder="gm, Ethereum"
++            value={newGreeting}
++            onChange={event => setNewGreeting(event.target.value)}
++            disabled={!isConnected || isMining}
++          />
++          <EtherInput
++            key={tipInputKey}
++            placeholder="Optional tip (makes it premium)"
++            onValueChange={({ valueInEth }) => setTipAmount(valueInEth)}
++            disabled={!isConnected || isMining}
++          />
++          <button className="btn btn-primary" type="submit" disabled={!isConnected || isMining}>
++            {isMining && <span className="loading loading-spinner loading-sm" />}
++            {isConnected ? "Set greeting" : "Connect your wallet to continue"}
++          </button>
++        </form>
++      </div>
++
++      <div className="w-full max-w-2xl flex flex-col gap-4">
++        <h2 className="text-2xl font-bold m-0">Past changes</h2>
++
++        {areChangesLoading ? (
++          <span className="loading loading-spinner self-center" />
++        ) : changesError ? (
++          <div className="alert alert-error">Could not load the greeting history.</div>
++        ) : !greetingChanges?.length ? (
++          <p className="text-center italic">No greetings yet — be the first one.</p>
++        ) : (
++          greetingChanges.map(change => (
++            <div key={`${change.transactionHash}-${change.logIndex}`} className="card bg-base-100 shadow-md">
++              <div className="card-body gap-2 py-4">
++                <div className="flex flex-wrap items-center justify-between gap-2">
++                  <Address address={change.args.greetingSetter} chain={targetNetwork} size="sm" />
++                  <span className="text-xs opacity-60">{formatTimestamp(change.blockData?.timestamp)}</span>
++                </div>
++                <p className="m-0 break-words">{change.args.newGreeting}</p>
++                {change.args.premium && (
++                  <div className="badge badge-secondary badge-sm self-start">
++                    premium · {formatEther(change.args.value ?? 0n)} ETH
++                  </div>
++                )}
++                {change.args.greetingSetter?.toLowerCase() === connectedAddress?.toLowerCase() && (
++                  <div className="badge badge-outline badge-sm self-start">you</div>
++                )}
++              </div>
++            </div>
++          ))
++        )}
++      </div>
++    </div>
++  );
++};
++
++export default Greetings;
+diff --git a/packages/nextjs/components/Header.tsx b/packages/nextjs/components/Header.tsx
+index bc63eb4..62fec95 100644
+--- a/packages/nextjs/components/Header.tsx
++++ b/packages/nextjs/components/Header.tsx
+@@ -5,7 +5,7 @@ import Image from "next/image";
+ import Link from "next/link";
+ import { usePathname } from "next/navigation";
+ import { hardhat } from "viem/chains";
+-import { Bars3Icon, BugAntIcon } from "@heroicons/react/24/outline";
++import { Bars3Icon, BugAntIcon, ChatBubbleLeftRightIcon } from "@heroicons/react/24/outline";
+ import { FaucetButton, RainbowKitCustomConnectButton } from "~~/components/scaffold-eth";
+ import { useOutsideClick, useTargetNetwork } from "~~/hooks/scaffold-eth";
+ 
+@@ -22,6 +22,11 @@ export const menuLinks: HeaderMenuLink[] = [
+     label: 'Home',
+     href: '/'
+   },
++  {
++    label: 'Greetings',
++    href: '/greetings',
++    icon: <ChatBubbleLeftRightIcon className="h-4 w-4" />
++  },
+   {
+     label: 'Debug Contracts',
+     href: '/debug',
+
+# Untracked files and status
+ A packages/nextjs/app/greetings/page.tsx
+ M packages/nextjs/components/Header.tsx
