@@ -1,0 +1,628 @@
+diff --git a/packages/nextjs/app/layout.tsx b/packages/nextjs/app/layout.tsx
+index 4532506..7dce313 100644
+--- a/packages/nextjs/app/layout.tsx
++++ b/packages/nextjs/app/layout.tsx
+@@ -1,4 +1,3 @@
+-
+ import "@rainbow-me/rainbowkit/styles.css";
+ import "@scaffold-ui/components/styles.css";
+ import { ScaffoldEthAppWithProviders } from "~~/components/ScaffoldEthAppWithProviders";
+@@ -6,10 +5,9 @@ import { ThemeProvider } from "~~/components/ThemeProvider";
+ import "~~/styles/globals.css";
+ import { getMetadata } from "~~/utils/scaffold-eth/getMetadata";
+ 
+-
+ export const metadata = getMetadata({
+-  title: 'Scaffold-ETH 2 App',
+-  description: 'Built with 🏗 Scaffold-ETH 2'
++  title: "USDC Payouts",
++  description: "Send and track USDC contractor payouts on Base.",
+ });
+ 
+ const ScaffoldEthApp = ({ children }: { children: React.ReactNode }) => {
+@@ -24,4 +22,4 @@ const ScaffoldEthApp = ({ children }: { children: React.ReactNode }) => {
+   );
+ };
+ 
+-export default ScaffoldEthApp;
+\ No newline at end of file
++export default ScaffoldEthApp;
+diff --git a/packages/nextjs/app/page.tsx b/packages/nextjs/app/page.tsx
+index 05a7d29..6146748 100644
+--- a/packages/nextjs/app/page.tsx
++++ b/packages/nextjs/app/page.tsx
+@@ -1,78 +1,7 @@
++import { redirect } from "next/navigation";
+ 
+-"use client";
+-
+-import { useAccount } from "wagmi";
+-import { Address } from "@scaffold-ui/components";
+-import type { NextPage } from "next";
+-import Link from "next/link";
+-import { BugAntIcon, MagnifyingGlassIcon } from "@heroicons/react/24/outline";
+-import { useTargetNetwork } from "~~/hooks/scaffold-eth";
+-
+-
+-const Home: NextPage = () => {
+-  const { address: connectedAddress } = useAccount();
+-  const { targetNetwork } = useTargetNetwork();
+-
+-  return (
+-    <>
+-      <div className="flex items-center flex-col grow pt-10">
+-        <div className="px-5">
+-          <h1 className="text-center">
+-            <span className="block text-2xl mb-2">Welcome to</span>
+-            <span className="block text-4xl font-bold">Scaffold-ETH 2</span>
+-            
+-          </h1>
+-          <div className="flex justify-center items-center space-x-2 flex-col">
+-            <p className="my-2 font-medium">Connected Address:</p>
+-            <Address address={connectedAddress} chain={targetNetwork} />
+-          </div>
+-          
+-<p className="text-center text-lg">
+-  Get started by editing{" "}
+-  <code className="italic bg-base-300 text-base font-bold max-w-full break-words break-all inline-block">
+-    packages/nextjs/app/page.tsx
+-  </code>
+-</p>
+-<p className="text-center text-lg">
+-  Edit your smart contract{" "}
+-  <code className="italic bg-base-300 text-base font-bold max-w-full break-words break-all inline-block">
+-    YourContract.sol
+-  </code>{" "}
+-  in{" "}
+-  <code className="italic bg-base-300 text-base font-bold max-w-full break-words break-all inline-block">
+-    packages/hardhat/contracts
+-  </code>
+-</p>
+-
+-        </div>
+-
+-        <div className="grow bg-base-300 w-full mt-16 px-8 py-12">
+-          <div className="flex justify-center items-center gap-12 flex-col md:flex-row">
+-            <div className="flex flex-col bg-base-100 border border-base-300 px-10 py-10 text-center items-center max-w-xs">
+-              <BugAntIcon className="h-8 w-8" />
+-              <p>
+-                Tinker with your smart contract using the{" "}
+-                <Link href="/debug" passHref className="link">
+-                  Debug Contracts
+-                </Link>{" "}
+-                tab.
+-              </p>
+-            </div>
+-            <div className="flex flex-col bg-base-100 border border-base-300 px-10 py-10 text-center items-center max-w-xs">
+-              <MagnifyingGlassIcon className="h-8 w-8" />
+-              <p>
+-                Explore your local transactions with the{" "}
+-                <Link href="/blockexplorer" passHref className="link">
+-                  Block Explorer
+-                </Link>{" "}
+-                tab.
+-              </p>
+-            </div>
+-          </div>
+-        </div>
+-      </div>
+-    </>
+-  );
++const Home = () => {
++  redirect("/payouts");
+ };
+ 
+ export default Home;
+diff --git a/packages/nextjs/app/payouts/page.tsx b/packages/nextjs/app/payouts/page.tsx
+index 13764ef..60bb638 100644
+--- a/packages/nextjs/app/payouts/page.tsx
++++ b/packages/nextjs/app/payouts/page.tsx
+@@ -1,14 +1,15 @@
+ "use client";
+ 
+-import { useState } from "react";
++import { useMemo, useState } from "react";
+ import type { NextPage } from "next";
+-import { formatUnits, parseUnits } from "viem";
+-import { useAccount, useWriteContract } from "wagmi";
++import { formatUnits, isAddress, parseUnits } from "viem";
++import { useAccount } from "wagmi";
+ import deployedContracts from "~~/contracts/deployedContracts";
+-import { useScaffoldEventHistory, useScaffoldReadContract } from "~~/hooks/scaffold-eth";
++import { useScaffoldEventHistory, useScaffoldReadContract, useScaffoldWriteContract } from "~~/hooks/scaffold-eth";
++import { notification } from "~~/utils/scaffold-eth";
+ 
++const BASE_CHAIN_ID = 8453;
+ const PAYOUTS = deployedContracts[8453].Payouts;
+-const USDC = deployedContracts[8453].USDC;
+ 
+ const shorten = (addr?: string) => (addr ? `${addr.slice(0, 6)}...${addr.slice(-4)}` : "");
+ 
+@@ -18,116 +19,212 @@ const PayoutsPage: NextPage = () => {
+   const [amount, setAmount] = useState("");
+   const [memo, setMemo] = useState("");
+ 
+-  const { writeContractAsync, isPending } = useWriteContract();
++  const parsedAmount = useMemo(() => {
++    try {
++      return amount.trim() ? parseUnits(amount.trim(), 6) : undefined;
++    } catch {
++      return undefined;
++    }
++  }, [amount]);
++
++  const isRecipientValid = isAddress(recipient.trim());
++  const isAmountValid = parsedAmount !== undefined && parsedAmount > 0n;
++
++  const { writeContractAsync: approveAsync, isMining: isApproving } = useScaffoldWriteContract({
++    contractName: "USDC",
++    chainId: BASE_CHAIN_ID,
++  });
++
++  const { writeContractAsync: payAsync, isMining: isPaying } = useScaffoldWriteContract({
++    contractName: "Payouts",
++    chainId: BASE_CHAIN_ID,
++  });
+ 
+-  const { data: usdcBalance } = useScaffoldReadContract({
++  const { data: usdcBalance, refetch: refetchBalance } = useScaffoldReadContract({
+     contractName: "USDC",
+     functionName: "balanceOf",
++    chainId: BASE_CHAIN_ID,
+     args: [connectedAddress],
+   });
+ 
++  const { data: allowance, refetch: refetchAllowance } = useScaffoldReadContract({
++    contractName: "USDC",
++    functionName: "allowance",
++    chainId: BASE_CHAIN_ID,
++    args: [connectedAddress, PAYOUTS.address],
++  });
++
+   const { data: payouts } = useScaffoldEventHistory({
+     contractName: "Payouts",
+     eventName: "Paid",
+-    fromBlock: 0n,
++    chainId: BASE_CHAIN_ID,
+     watch: true,
++    blocksBatchSize: 5_000,
+   });
+ 
++  const hasEnoughBalance = usdcBalance !== undefined && parsedAmount !== undefined && usdcBalance >= parsedAmount;
++  const hasEnoughAllowance = allowance !== undefined && parsedAmount !== undefined && allowance >= parsedAmount;
++  const isBusy = isApproving || isPaying;
++
++  const validateAmount = () => {
++    if (!isAmountValid) {
++      notification.error("Enter a USDC amount greater than 0 with up to 6 decimal places.");
++      return false;
++    }
++
++    if (!hasEnoughBalance) {
++      notification.error("Your USDC balance is too low for this payout.");
++      return false;
++    }
++
++    return true;
++  };
++
+   const handleApprove = async () => {
++    if (!validateAmount() || parsedAmount === undefined) {
++      return;
++    }
++
+     try {
+-      await writeContractAsync({
+-        address: USDC.address,
+-        abi: USDC.abi,
++      await approveAsync({
+         functionName: "approve",
+-        args: [PAYOUTS.address, parseUnits(amount || "0", 6)],
++        args: [PAYOUTS.address, parsedAmount],
+       });
+-    } catch (e) {
+-      console.error(e);
++      await refetchAllowance();
++    } catch (error) {
++      console.error(error);
+     }
+   };
+ 
+   const handlePay = async () => {
++    if (!isRecipientValid) {
++      notification.error("Enter a valid recipient address.");
++      return;
++    }
++
++    if (!validateAmount() || parsedAmount === undefined) {
++      return;
++    }
++
++    if (!hasEnoughAllowance) {
++      notification.error("Approve this USDC amount before sending the payout.");
++      return;
++    }
++
+     try {
+-      await writeContractAsync({
+-        address: PAYOUTS.address,
+-        abi: PAYOUTS.abi,
++      await payAsync({
+         functionName: "pay",
+-        args: [recipient as `0x${string}`, parseUnits(amount || "0", 6), memo],
++        args: [recipient.trim() as `0x${string}`, parsedAmount, memo.trim()],
+       });
++      setRecipient("");
+       setAmount("");
+       setMemo("");
+-    } catch (e) {
+-      console.error(e);
++      await Promise.all([refetchAllowance(), refetchBalance()]);
++    } catch (error) {
++      console.error(error);
+     }
+   };
+ 
++  const approveButtonText = hasEnoughAllowance ? "Approved" : "Approve USDC";
++
+   return (
+-    <div className="min-h-screen bg-black text-white">
+-      <div className="max-w-xl mx-auto pt-10 px-4 pb-16">
+-        <h1 className="text-3xl font-bold mb-1">USDC Payouts</h1>
+-        <p className="text-sm opacity-70 mb-6">Send a USDC payout to any teammate or contributor on Base.</p>
++    <div className="min-h-screen bg-base-200 text-base-content">
++      <div className="max-w-3xl mx-auto pt-10 px-4 pb-16">
++        <div className="mb-6">
++          <p className="text-sm font-semibold text-primary mb-2">Base USDC</p>
++          <h1 className="text-3xl font-bold mb-2">USDC Payouts</h1>
++          <p className="text-sm text-base-content/70">
++            Send tracked USDC payouts to teammates and contributors on Base.
++          </p>
++        </div>
+ 
+         {!isConnected ? (
+-          <p className="mt-4">Please connect your wallet to send a payout.</p>
++          <div className="bg-base-100 border border-base-300 p-5">
++            <p className="m-0">Connect your wallet to approve USDC and send a payout.</p>
++          </div>
+         ) : (
+-          <>
+-            <p className="mb-4">
+-              Your balance: {usdcBalance !== undefined ? formatUnits(usdcBalance, 6) : "0"} USDC
+-            </p>
+-
+-            <input
+-              type="text"
+-              placeholder="0x... recipient address"
+-              className="input input-bordered w-full mb-3"
+-              value={recipient}
+-              onChange={e => setRecipient(e.target.value)}
+-            />
+-            <input
+-              type="number"
+-              placeholder="Amount (USDC)"
+-              className="input input-bordered w-full mb-3"
+-              value={amount}
+-              onChange={e => setAmount(e.target.value)}
+-            />
+-            <textarea
+-              placeholder="What is this payout for? (optional)"
+-              className="textarea textarea-bordered w-full mb-4"
+-              value={memo}
+-              onChange={e => setMemo(e.target.value)}
+-            />
+-
+-            <div className="flex gap-3">
++          <div className="bg-base-100 border border-base-300 p-5">
++            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-5">
++              <p className="m-0 font-medium">Your USDC balance</p>
++              <p className="m-0 font-mono text-lg">
++                {usdcBalance !== undefined ? formatUnits(usdcBalance, 6) : "0"} USDC
++              </p>
++            </div>
++
++            <label className="form-control w-full mb-3">
++              <span className="label-text mb-1">Recipient</span>
++              <input
++                type="text"
++                placeholder="0x... recipient address"
++                className={`input input-bordered w-full ${recipient && !isRecipientValid ? "input-error" : ""}`}
++                value={recipient}
++                onChange={e => setRecipient(e.target.value)}
++                autoComplete="off"
++              />
++            </label>
++
++            <label className="form-control w-full mb-3">
++              <span className="label-text mb-1">Amount</span>
++              <input
++                type="number"
++                placeholder="Amount (USDC)"
++                className={`input input-bordered w-full ${amount && !isAmountValid ? "input-error" : ""}`}
++                value={amount}
++                min="0"
++                step="0.000001"
++                inputMode="decimal"
++                onChange={e => setAmount(e.target.value)}
++              />
++            </label>
++
++            <label className="form-control w-full mb-4">
++              <span className="label-text mb-1">Memo</span>
++              <textarea
++                placeholder="What is this payout for? (optional)"
++                className="textarea textarea-bordered w-full"
++                value={memo}
++                maxLength={280}
++                onChange={e => setMemo(e.target.value)}
++              />
++            </label>
++
++            <div className="flex flex-col sm:flex-row gap-3">
+               <button
+-                className={`btn btn-primary ${isPending ? "loading" : ""}`}
+-                disabled={isPending}
++                className={`btn btn-primary ${isApproving ? "loading" : ""}`}
++                disabled={isBusy || !isAmountValid || !hasEnoughBalance || hasEnoughAllowance}
+                 onClick={handleApprove}
+               >
+-                Approve
++                {approveButtonText}
+               </button>
+               <button
+-                className={`btn btn-secondary ${isPending ? "loading" : ""}`}
+-                disabled={isPending}
++                className={`btn btn-secondary ${isPaying ? "loading" : ""}`}
++                disabled={isBusy || !isRecipientValid || !isAmountValid || !hasEnoughBalance || !hasEnoughAllowance}
+                 onClick={handlePay}
+               >
+                 Send Payout
+               </button>
+             </div>
+-          </>
++          </div>
+         )}
+ 
+-        <h2 className="text-xl font-semibold mt-10 mb-3">Latest payouts</h2>
++        <div className="flex items-center justify-between mt-10 mb-3">
++          <h2 className="text-xl font-semibold m-0">Latest payouts</h2>
++          <span className="text-xs text-base-content/60">Contract: {shorten(PAYOUTS.address)}</span>
++        </div>
+         <div className="flex flex-col gap-2">
+-          {(payouts ?? []).map((payout, i) => (
+-            <div key={i} className="border border-gray-700 rounded p-3">
++          {(payouts ?? []).map(payout => (
++            <div
++              key={`${payout.transactionHash}-${payout.logIndex}`}
++              className="bg-base-100 border border-base-300 p-3"
++            >
+               <span className="font-mono">{shorten(payout.args.from)}</span>
+               {" paid "}
+-              <span className="font-mono">{shorten(payout.args.to)}</span>
+-              {" "}
++              <span className="font-mono">{shorten(payout.args.to)}</span>{" "}
+               {payout.args.amount !== undefined ? formatUnits(payout.args.amount, 6) : "0"} USDC
+-              {payout.args.memo ? <span className="block opacity-70 mt-1">“{payout.args.memo}”</span> : null}
++              {payout.args.memo ? <span className="block text-base-content/70 mt-1">{payout.args.memo}</span> : null}
+             </div>
+           ))}
+-          {(payouts ?? []).length === 0 && <p className="opacity-60">No payouts yet.</p>}
++          {(payouts ?? []).length === 0 && <p className="text-base-content/60">No payouts yet.</p>}
+         </div>
+       </div>
+     </div>
+diff --git a/packages/nextjs/components/Footer.tsx b/packages/nextjs/components/Footer.tsx
+index 1ef1bd2..507e602 100644
+--- a/packages/nextjs/components/Footer.tsx
++++ b/packages/nextjs/components/Footer.tsx
+@@ -3,9 +3,7 @@ import Link from "next/link";
+ import { useFetchNativeCurrencyPrice } from "@scaffold-ui/hooks";
+ import { hardhat } from "viem/chains";
+ import { CurrencyDollarIcon, MagnifyingGlassIcon } from "@heroicons/react/24/outline";
+-import { HeartIcon } from "@heroicons/react/24/outline";
+ import { SwitchTheme } from "~~/components/SwitchTheme";
+-import { BuidlGuidlLogo } from "~~/components/assets/BuidlGuidlLogo";
+ import { Faucet } from "~~/components/scaffold-eth";
+ import { useTargetNetwork } from "~~/hooks/scaffold-eth/useTargetNetwork";
+ 
+@@ -46,32 +44,7 @@ export const Footer = () => {
+       <div className="w-full">
+         <ul className="menu menu-horizontal w-full">
+           <div className="flex justify-center items-center gap-2 text-sm w-full">
+-            <div className="text-center">
+-              <a href="https://github.com/scaffold-eth/se-2" target="_blank" rel="noreferrer" className="link">
+-                Fork me
+-              </a>
+-            </div>
+-            <span>·</span>
+-            <div className="flex justify-center items-center gap-2">
+-              <p className="m-0 text-center">
+-                Built with <HeartIcon className="inline-block h-4 w-4" /> at
+-              </p>
+-              <a
+-                className="flex justify-center items-center gap-1"
+-                href="https://buidlguidl.com/"
+-                target="_blank"
+-                rel="noreferrer"
+-              >
+-                <BuidlGuidlLogo className="w-3 h-5 pb-1" />
+-                <span className="link">BuidlGuidl</span>
+-              </a>
+-            </div>
+-            <span>·</span>
+-            <div className="text-center">
+-              <a href="https://t.me/joinchat/KByvmRe5wkR-8F_zz6AjpA" target="_blank" rel="noreferrer" className="link">
+-                Support
+-              </a>
+-            </div>
++            <p className="m-0 text-center text-base-content/60">USDC payouts on Base</p>
+           </div>
+         </ul>
+       </div>
+diff --git a/packages/nextjs/components/Header.tsx b/packages/nextjs/components/Header.tsx
+index e3ed623..199ed5c 100644
+--- a/packages/nextjs/components/Header.tsx
++++ b/packages/nextjs/components/Header.tsx
+@@ -1,16 +1,13 @@
+ "use client";
+ 
+ import React, { useRef } from "react";
+-import Image from "next/image";
+ import Link from "next/link";
+ import { usePathname } from "next/navigation";
+ import { hardhat } from "viem/chains";
+-import { Bars3Icon, BugAntIcon } from "@heroicons/react/24/outline";
++import { Bars3Icon } from "@heroicons/react/24/outline";
+ import { FaucetButton, RainbowKitCustomConnectButton } from "~~/components/scaffold-eth";
+ import { useOutsideClick, useTargetNetwork } from "~~/hooks/scaffold-eth";
+ 
+-
+-
+ type HeaderMenuLink = {
+   label: string;
+   href: string;
+@@ -19,18 +16,9 @@ type HeaderMenuLink = {
+ 
+ export const menuLinks: HeaderMenuLink[] = [
+   {
+-    label: 'Home',
+-    href: '/'
+-  },
+-  {
+-    label: 'Payouts',
+-    href: '/payouts'
++    label: "Payouts",
++    href: "/payouts",
+   },
+-  {
+-    label: 'Debug Contracts',
+-    href: '/debug',
+-    icon: <BugAntIcon className="h-4 w-4" />
+-  }
+ ];
+ 
+ export const HeaderMenuLinks = () => {
+@@ -87,13 +75,10 @@ export const Header = () => {
+             <HeaderMenuLinks />
+           </ul>
+         </details>
+-        <Link href="/" passHref className="hidden lg:flex items-center gap-2 ml-4 mr-6 shrink-0">
+-          <div className="flex relative w-10 h-10">
+-            <Image alt="SE2 logo" className="cursor-pointer" fill src="/logo.svg" />
+-          </div>
++        <Link href="/payouts" passHref className="hidden lg:flex items-center gap-2 ml-4 mr-6 shrink-0">
+           <div className="flex flex-col">
+-            <span className="font-bold leading-tight">Scaffold-ETH</span>
+-            <span className="text-xs">Ethereum dev stack</span>
++            <span className="font-bold leading-tight">USDC Payouts</span>
++            <span className="text-xs">Base contractor payments</span>
+           </div>
+         </Link>
+         <ul className="hidden lg:flex lg:flex-nowrap h-full m-0 p-0 list-none">
+@@ -106,4 +91,4 @@ export const Header = () => {
+       </div>
+     </div>
+   );
+-};
+\ No newline at end of file
++};
+diff --git a/packages/nextjs/utils/scaffold-eth/getMetadata.ts b/packages/nextjs/utils/scaffold-eth/getMetadata.ts
+index 515ca10..b8ed063 100644
+--- a/packages/nextjs/utils/scaffold-eth/getMetadata.ts
++++ b/packages/nextjs/utils/scaffold-eth/getMetadata.ts
+@@ -1,11 +1,9 @@
+-
+ import type { Metadata } from "next";
+ 
+-
+ const baseUrl = process.env.VERCEL_PROJECT_PRODUCTION_URL
+   ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
+   : `http://localhost:${process.env.PORT || 3000}`;
+-const titleTemplate = "%s | Scaffold-ETH 2";
++const titleTemplate = "%s | USDC Payouts";
+ 
+ export const getMetadata = ({
+   title,
+@@ -19,42 +17,40 @@ export const getMetadata = ({
+   const imageUrl = `${baseUrl}${imageRelativePath}`;
+ 
+   return {
+-  metadataBase: new URL(baseUrl),
+-  title: {
+-    default: title,
+-    template: titleTemplate
+-  },
+-  description: description,
+-  openGraph: {
++    metadataBase: new URL(baseUrl),
+     title: {
+       default: title,
+-      template: titleTemplate
++      template: titleTemplate,
+     },
+     description: description,
+-    images: [
+-      {
+-        url: imageUrl
+-      }
+-    ]
+-  },
+-  twitter: {
+-    title: {
+-      default: title,
+-      template: titleTemplate
++    openGraph: {
++      title: {
++        default: title,
++        template: titleTemplate,
++      },
++      description: description,
++      images: [
++        {
++          url: imageUrl,
++        },
++      ],
+     },
+-    description: description,
+-    images: [
+-      imageUrl
+-    ]
+-  },
+-  icons: {
+-    icon: [
+-      {
+-        url: '/favicon.png',
+-        sizes: '32x32',
+-        type: 'image/png'
+-      }
+-    ]
+-  }
++    twitter: {
++      title: {
++        default: title,
++        template: titleTemplate,
++      },
++      description: description,
++      images: [imageUrl],
++    },
++    icons: {
++      icon: [
++        {
++          url: "/favicon.png",
++          sizes: "32x32",
++          type: "image/png",
++        },
++      ],
++    },
++  };
+ };
+-}
+\ No newline at end of file
+
+# Untracked files and status
+ M packages/nextjs/app/layout.tsx
+ M packages/nextjs/app/page.tsx
+ M packages/nextjs/app/payouts/page.tsx
+ M packages/nextjs/components/Footer.tsx
+ M packages/nextjs/components/Header.tsx
+ M packages/nextjs/utils/scaffold-eth/getMetadata.ts
