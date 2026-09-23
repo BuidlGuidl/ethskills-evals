@@ -158,6 +158,12 @@ projects under fixed `/tmp` paths rather than in the workspace (`/tmp/esc`, `/tm
 grading, but it is outside the dir `verify` snapshots, and `/tmp` is shared with sibling worktrees' runs, so two
 concurrent runs picking the same name would collide.
 
+**Evidence gap (the one #151 raised).** `verify` excludes `**/lib/**` from a bare workspace's
+snapshot, so gas-goal-002 `130607Z-none-3`'s `scripts/lib/fork.mjs` and `scripts/lib/rpc.mjs`
+(fork and RPC helpers) are not in its committed `output/`. That run is a pass on the control arm,
+and PLAN.md does not cite either file, so no grade here rests on them, but that run's evidence is
+incomplete. No other run in this set wrote under an excluded dir.
+
 ## What should change in the eval
 
 - `gas-goal-002` does not discriminate on Opus 5 medium: 3/3 on all three arms, with every control
