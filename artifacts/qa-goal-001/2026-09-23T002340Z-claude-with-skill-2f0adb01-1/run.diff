@@ -1,0 +1,323 @@
+diff --git a/REVIEW.md b/REVIEW.md
+new file mode 100644
+index 0000000..2197ae8
+--- /dev/null
++++ b/REVIEW.md
+@@ -0,0 +1,314 @@
++# Pre-Ship Review — USDC Payouts dApp (Base)
++
++Reviewer pass over `packages/nextjs` + configuration, against the SE-2 pre-ship QA checklist.
++Scope: report only, no code changed.
++
++**Verdict: do not ship.** 8 ship-blocking issues, 19 should-fix. The most serious is that the
++address the frontend transacts against has no code on Base mainnet.
++
++---
++
++## Ship-blocking
++
++### 1. The Payouts contract is not deployed at the address the app uses
++**File:** `packages/nextjs/contracts/deployedContracts.ts:10` (`0x7c3f2A9d41B85E60Cf14a14e2b9D073A55e0b6F2`)
++
++Verified live against Base mainnet:
++```
++eth_getCode(0x7c3f...b6F2) -> "0x"      # no contract
++eth_getBalance(0x7c3f...b6F2) -> 0x0    # never used
++eth_getCode(0x8335...2913) -> "0x6080…" # USDC is real, so the RPC call is sound
++```
++Every `pay()` call from the UI will be a value-less call to an EOA: it silently "succeeds" on
++chain, no transfer happens, no `Paid` event is emitted, and the user's approval is left standing
++to an address nobody controls. The event feed will stay permanently empty.
++
++**Fix:** redeploy (`yarn deploy --network base`), let the deploy step regenerate
++`deployedContracts.ts`, and confirm `eth_getCode` is non-empty before shipping. Do not hand-edit
++the address.
++
++### 2. Contract is not verified on Basescan
++**File:** same as above
++
++Cannot be verified — there is nothing there to verify. After the redeploy in #1, run
++`yarn verify --network base` and confirm the green checkmark on basescan.org. Also replace the
++shared default key in `packages/hardhat/hardhat.config.ts:17`
++(`ETHERSCAN_API_KEY || "DNXJA8RX2Q3VZ4URQIWP7Z68CJXQZSC6AW"`) with the team's own key.
++
++### 3. Disconnected state is a sentence, not a Connect button
++**File:** `packages/nextjs/app/payouts/page.tsx:70-71`
++```tsx
++{!isConnected ? (
++  <p className="mt-4">Please connect your wallet to send a payout.</p>
++```
++The primary CTA slot on the page's main flow is a paragraph. The only way to connect is the small
++header button.
++
++**Fix:** render the connect button in the CTA slot:
++```tsx
++import { RainbowKitCustomConnectButton } from "~~/components/scaffold-eth";
++...
++{!isConnected ? <RainbowKitCustomConnectButton /> : ( ... )}
++```
++
++### 4. No network check — wrong-chain users transact into the void
++**File:** `packages/nextjs/app/payouts/page.tsx:21, 36-62`
++
++`useWriteContract()` is called with no `chainId`, so wagmi submits to whatever chain the wallet is
++currently on. A user on Ethereum mainnet clicking **Approve** sends an `approve` to
++`0x8335…2913` on mainnet — a different contract entirely. The header `WrongNetworkDropdown` is not
++sufficient; the action button itself must become the switch CTA.
++
++**Fix:** branch the CTA slot:
++```tsx
++const chainId = useChainId();
++const { switchChain } = useSwitchChain();
++if (chainId !== targetNetwork.id)
++  return <button className="btn btn-primary" onClick={() => switchChain({ chainId: targetNetwork.id })}>
++    Switch to {targetNetwork.name}
++  </button>;
++```
++Also pass `chainId: targetNetwork.id` on every write as a backstop.
++
++### 5. Raw wagmi `useWriteContract` instead of `useScaffoldWriteContract`
++**File:** `packages/nextjs/app/payouts/page.tsx:6, 21`
++
++`isPending` from raw wagmi flips back to `false` the moment the wallet returns a tx hash — not when
++the transaction confirms. Both buttons re-enable mid-flight, and there is no tx toast, no block
++confirmation wait, and no `getParsedError` handling. AGENTS.md requires the scaffold hooks.
++
++**Fix:**
++```tsx
++const { writeContractAsync: payWrite, isPending } = useScaffoldWriteContract({ contractName: "Payouts" });
++const { writeContractAsync: usdcWrite } = useScaffoldWriteContract({ contractName: "USDC" });
++await payWrite({ functionName: "pay", args: [recipient, parseUnits(amount, 6), memo] });
++```
++This also removes the direct `deployedContracts` import at line 7.
++
++### 6. Approve and Send Payout are both visible, with no allowance check
++**File:** `packages/nextjs/app/payouts/page.tsx:99-114`
++
++Both buttons render side by side at all times. There is no `allowance` read (the ABI has it —
++`deployedContracts.ts:71`), so the app cannot know which step the user is on. A user who clicks
++**Send Payout** first eats a revert on `transferFrom`; a user who has already approved is still
++shown **Approve**.
++
++**Fix:** read allowance and render exactly one button:
++```tsx
++const { data: allowance, refetch: refetchAllowance } = useScaffoldReadContract({
++  contractName: "USDC", functionName: "allowance",
++  args: [connectedAddress, PAYOUTS_ADDRESS],
++});
++const needsApproval = (allowance ?? 0n) < parseUnits(amount || "0", 6);
++```
++then `{needsApproval ? <ApproveButton/> : <PayButton/>}`.
++
++### 7. Double-submit window on Approve
++**File:** `packages/nextjs/app/payouts/page.tsx:100-106`
++
++`disabled={isPending}` is the only guard, and it is the *same* `isPending` shared by both buttons.
++Between wallet-signature and block-confirmation, and again between confirmation and allowance cache
++refresh, the button is live. Users will approve twice and pay gas twice.
++
++**Fix:** the two-state lock from the QA checklist:
++```tsx
++const [approvalSubmitting, setApprovalSubmitting] = useState(false);
++const [approveCooldown, setApproveCooldown] = useState(false);
++
++const handleApprove = async () => {
++  if (approvalSubmitting || approveCooldown) return;
++  setApprovalSubmitting(true);
++  try {
++    await usdcWrite({ functionName: "approve", args: [PAYOUTS_ADDRESS, parseUnits(amount, 6)] });
++    setApproveCooldown(true);
++    setTimeout(() => { setApproveCooldown(false); refetchAllowance(); }, 4000);
++  } catch (e) {
++    notification.error(getParsedError(e));
++  } finally {
++    setApprovalSubmitting(false);   // must be finally — releases on user rejection too
++  }
++};
++<button disabled={isPending || approvalSubmitting || approveCooldown}>
++```
++
++### 8. All errors are swallowed to the console
++**File:** `packages/nextjs/app/payouts/page.tsx:44-46, 59-61`
++```tsx
++} catch (e) {
++  console.error(e);
++}
++```
++Every failure mode — user rejection, insufficient balance, `Payouts: zero amount`,
++`Payouts: zero recipient`, `Payouts: transfer failed`, wrong chain — produces zero UI feedback. The
++button just re-enables and the user assumes the app is broken.
++
++**Fix:**
++```tsx
++import { getParsedError, notification } from "~~/utils/scaffold-eth";
++...
++} catch (e) { notification.error(getParsedError(e)); }
++```
++`useScaffoldWriteContract` (#5) also surfaces tx toasts automatically.
++
++### 9. SE-2 template branding is still everywhere
++Users will see a payouts app that claims to be Scaffold-ETH.
++
++| Where | Line | Current |
++|---|---|---|
++| `packages/nextjs/app/layout.tsx` | 11-12 | `title: 'Scaffold-ETH 2 App'`, `description: 'Built with 🏗 Scaffold-ETH 2'` |
++| `packages/nextjs/utils/scaffold-eth/getMetadata.ts` | 8 | `titleTemplate = "%s \| Scaffold-ETH 2"` |
++| `packages/nextjs/components/Header.tsx` | 90-98 | "SE2 logo", "Scaffold-ETH / Ethereum dev stack" brand block |
++| `packages/nextjs/components/Footer.tsx` | 46-77 | "Fork me" → scaffold-eth repo, "Built with ❤ at BuidlGuidl", SE-2 Telegram "Support" link |
++| `packages/nextjs/app/page.tsx` | 21-40 | "Welcome to Scaffold-ETH 2", "Get started by editing packages/nextjs/app/page.tsx", `YourContract.sol` |
++| `README.md` | 1-20 | Unmodified SE-2 template README |
++| `packages/nextjs/public/manifest.json` | 2-3 | `'Scaffold-ETH 2 DApp'` |
++| `packages/nextjs/public/favicon.png`, `thumbnail.jpg` | — | Stock SE-2 assets |
++
++**Fix:** title/description → "USDC Payouts"; drop `titleTemplate` or make it `%s | USDC Payouts`;
++replace the Footer link row with the team's repo (keep `SwitchTheme`, drop `BuidlGuidlLogo`);
++rewrite the home page as a real landing page (or redirect `/` → `/payouts`); rewrite README for this
++project; swap favicon and OG thumbnail.
++
++---
++
++## Should-fix
++
++### 10. `pollingInterval: 30000` on an L2
++**File:** `packages/nextjs/scaffold.config.ts:24` — Base blocks every 2s; a 30s poll makes the
++balance and payout feed look frozen after a successful tx. Set to `3000`.
++
++### 11. Shipping with the shared default Alchemy key and WalletConnect project ID
++**File:** `packages/nextjs/scaffold.config.ts:29, 40`, `rpcOverrides` empty at 32-35.
++`NEXT_PUBLIC_ALCHEMY_API_KEY` and `NEXT_PUBLIC_WALLET_CONNECT_PROJECT_ID` are referenced but there
++is no `.env.local` here and nothing confirms they are set on the host. Under the default key you
++share a rate limit with every SE-2 project on the internet.
++
++**Fix:** get project-owned keys, add
++`rpcOverrides: { [chains.base.id]: process.env.NEXT_PUBLIC_BASE_RPC_URL }`, then confirm on the
++host (`vercel env ls | grep -i "RPC\|ALCHEMY\|WALLET_CONNECT"`) — referencing `process.env` is not
++the same as setting it.
++
++### 12. Bare `http()` fallback transport still in the wagmi config
++**File:** `packages/nextjs/services/web3/wagmiConfig.tsx:20` — `rpcFallbacks` always ends with a
++bare `http()`, which resolves to the public `mainnet.base.org` endpoint and will rate-limit under
++real traffic. Remove the bare `http()` once a real RPC override (#11) is configured.
++
++### 13. Recipient uses a raw `<input type="text">`
++**File:** `packages/nextjs/app/payouts/page.tsx:78-84` — no ENS resolution, no checksum validation,
++no blockie preview. The value is cast straight to `0x${string}` at line 55, so a typo'd or truncated
++address becomes a failed tx (or, if it happens to be valid, an unrecoverable payout to a stranger).
++
++**Fix:** `import { AddressInput } from "@scaffold-ui/components";` →
++`<AddressInput value={recipient} onChange={setRecipient} placeholder="0x... or ENS name" />`, and
++gate the pay button on `isAddress(recipient)`.
++
++### 14. The Payouts contract address is never shown
++**File:** `packages/nextjs/app/payouts/page.tsx` (whole page) — users are approving USDC spend to a
++contract they cannot see or inspect. Render it near the form with
++`<Address address={PAYOUTS.address} chain={targetNetwork} />` for the blockie, copy button, and
++Basescan link.
++
++### 15. Feed addresses use a hand-rolled `shorten()` instead of `<Address/>`
++**File:** `packages/nextjs/app/payouts/page.tsx:13, 122, 124` — loses ENS names, blockies, copy, and
++explorer links. Replace both spans with `<Address address={payout.args.from} chain={targetNetwork} />`.
++
++### 16. No USD values anywhere
++**File:** `packages/nextjs/app/payouts/page.tsx:75, 87, 126` — USDC is dollar-pegged, so the fix is
++cheap: render the balance and the feed amounts formatted as currency (`$1,250.00`) rather than a
++bare `1250 USDC`, and echo the dollar value under the amount input as the user types.
++
++### 17. Event history scans from block 0
++**File:** `packages/nextjs/app/payouts/page.tsx:32` — `fromBlock: 0n` on Base mainnet means ~36M
++blocks of `eth_getLogs`, which every provider will reject or throttle; combined with `watch: true`
++it re-runs continuously. `deployedContracts.ts:48` already records `deployedOnBlock: 33712450`.
++
++**Fix:** `fromBlock: BigInt(deployedContracts[8453].Payouts.deployedOnBlock)`.
++
++### 18. USDC was hand-added to `deployedContracts.ts`
++**File:** `packages/nextjs/contracts/deployedContracts.ts:50` — that file is autogenerated (see its
++own header comment) and only `Payouts` is in `packages/hardhat/deploy/00_deploy_payouts.ts`. The
++next `yarn deploy` wipes the USDC entry and the page breaks.
++`packages/nextjs/contracts/externalContracts.ts:14` is empty.
++
++**Fix:** move the USDC block into `externalContracts.ts` under key `8453`.
++
++### 19. Hardcoded dark background breaks the theme system
++**File:** `packages/nextjs/app/payouts/page.tsx:65` — `bg-black text-white` (and `border-gray-700`
++at line 121) bypasses DaisyUI entirely. The `SwitchTheme` toggle in the footer does nothing on this
++page, and light-mode users get a black page inside a light header/footer.
++
++**Fix:** `<div className="min-h-screen bg-base-200 text-base-content">` and `border-base-300`.
++
++### 20. DaisyUI `loading` class applied to the buttons
++**File:** `packages/nextjs/app/payouts/page.tsx:101, 108` — `${isPending ? "loading" : ""}` on a
++`btn` replaces the whole label with a full-size spinner; the button looks broken and the text
++vanishes.
++
++**Fix:**
++```tsx
++<button className="btn btn-primary" disabled={...}>
++  {isPending && <span className="loading loading-spinner loading-sm mr-2" />}
++  {isPending ? "Approving..." : "Approve"}
++</button>
++```
++
++### 21. `--radius-field: 9999rem` makes the memo textarea a pill
++**File:** `packages/nextjs/styles/globals.css:36` and `:63` — the multi-line memo textarea at
++`app/payouts/page.tsx:92-97` renders with fully rounded ends and clips text at the corners. Set
++`--radius-field: 0.5rem;` in **both** `@plugin "daisyui/theme"` blocks — do not patch with
++per-component `rounded-*` classes.
++
++### 22. Phantom is missing from the wallet list
++**File:** `packages/nextjs/services/web3/wagmiConnectors.tsx:20-28` — add `phantomWallet` to the
++`wallets` array (import from `@rainbow-me/rainbowkit/wallets`). A meaningful share of users cannot
++connect today.
++
++### 23. No mobile deep-linking on any transaction button
++**File:** `packages/nextjs/app/payouts/page.tsx:36-62` — RainbowKit v2 / WalletConnect v2 does not
++auto-open the wallet app. A mobile user taps Approve and nothing visible happens; they must
++manually switch apps and hope a push arrived.
++
++**Fix:** a `writeAndOpen` helper wrapping **both** writes — fire the write first, then
++`setTimeout(openWallet, 2000)`. `openWallet` must skip when `window.ethereum` exists (already inside
++a wallet browser) and must pick the scheme from the WalletConnect session in `localStorage`
++(`wc@2:client…`) plus `wagmi.recentConnectorId`, since `connector.id` only ever says
++`"walletConnect"`.
++
++### 24. OG image falls back to a localhost URL
++**File:** `packages/nextjs/utils/scaffold-eth/getMetadata.ts:5-7, 19` — if
++`VERCEL_PROJECT_PRODUCTION_URL` is not set in the build environment, every OG/Twitter card points at
++`http://localhost:3000/thumbnail.jpg` and unfurls as a broken image everywhere the app is shared.
++
++**Fix:** set an explicit `NEXT_PUBLIC_SITE_URL` and use it as the base, failing the build (or at
++least warning loudly) if it is missing in production.
++
++### 25. `manifest.json` is not valid JSON
++**File:** `packages/nextjs/public/manifest.json:2-4` — unquoted keys and single-quoted strings; any
++parser rejects it. It is also not linked from `layout.tsx`, so it is currently dead weight either
++way. Either fix it to real JSON with the project's own name/icons and add
++`<link rel="manifest">`, or delete the file.
++
++### 26. WalletConnect app name is `scaffold-eth-2`
++**File:** `packages/nextjs/services/web3/wagmiConnectors.tsx:49` — this string is what shows in the
++wallet's connection-approval sheet. Users approving a payout app see "scaffold-eth-2". Set it to the
++product name.
++
++### 27. Debug Contracts is in the production nav
++**File:** `packages/nextjs/components/Header.tsx:30-31` — a raw ABI console pointed at a mainnet
++contract, shipped to end users. Remove the link (and ideally the route) for the production build, or
++gate it on `targetNetwork.id === hardhat.id` the way the Faucet and Block Explorer links already are.
++
++### 28. No client-side validation before submitting
++**File:** `packages/nextjs/app/payouts/page.tsx:49-62` — `amount` empty coerces to `parseUnits("0")`
++and reverts on `Payouts: zero amount` (line 22 of `Payouts.sol`); an amount over the user's balance
++reverts inside `transferFrom`; an empty `recipient` reverts on `Payouts: zero recipient`. All three
++cost gas and, per #8, show nothing.
++
++**Fix:** disable the pay button unless `isAddress(recipient)`, `parsedAmount > 0n`, and
++`parsedAmount <= usdcBalance`; show the reason inline.
++
++### 29. Approval amount goes stale
++**File:** `packages/nextjs/app/payouts/page.tsx:42` — approval is for exactly `amount` at click
++time. If the user raises the amount after approving, the pay call reverts with no explanation.
++Re-deriving `needsApproval` from the live allowance (#6) covers this; approving `maxUint256` (with
++the tradeoff stated in the UI) is the other option.
+
+# Untracked files and status
+ A REVIEW.md
