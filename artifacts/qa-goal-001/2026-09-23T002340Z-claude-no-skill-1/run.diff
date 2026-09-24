@@ -1,0 +1,541 @@
+diff --git a/REVIEW.md b/REVIEW.md
+new file mode 100644
+index 0000000..aae33f7
+--- /dev/null
++++ b/REVIEW.md
+@@ -0,0 +1,532 @@
++# Pre-ship review — USDC Payouts dApp (Base)
++
++Scope: `packages/nextjs` (frontend + configuration) and the deploy/CI configuration that
++affects it. Reviewed at commit `14da841` on `main`.
++
++What I ran:
++
++- `yarn next:lint` → 0 errors, **100 prettier warnings**
++- `yarn tsc --noEmit` → clean
++- `yarn next build` → see Note 1 at the bottom (local build blocked by a sandbox Node artifact, not a repo defect)
++
++Findings are ordered most-severe first.
++
++---
++
++## Ship-blocking
++
++### 1. Payout feed scans Base from block 0 — ~67,000 sequential `getLogs` calls per page load
++
++**File:** `packages/nextjs/app/payouts/page.tsx:29-34`
++
++```ts
++const { data: payouts } = useScaffoldEventHistory({
++  contractName: "Payouts",
++  eventName: "Paid",
++  fromBlock: 0n,
++  watch: true,
++});
++```
++
++`useScaffoldEventHistory` pages through history in `blocksBatchSize` chunks of **500 blocks**
++(`packages/nextjs/hooks/scaffold-eth/useScaffoldEventHistory.ts:95`, `:180-191`), firing each
++batch sequentially. Base is past block 33.7M, so `fromBlock: 0n` means roughly **67,000
++round-trips** before the feed renders anything. On the public RPC / shared Alchemy key this
++will rate-limit or hang indefinitely, and it re-runs for every visitor.
++
++The contract entry already carries the right starting point — `deployedOnBlock: 33712450`
++(`packages/nextjs/contracts/deployedContracts.ts:45`) — and the hook defaults to it when
++`fromBlock` is omitted (`useScaffoldEventHistory.ts:128-135`). The explicit `0n` overrides that
++default and throws the optimization away.
++
++**Fix:** delete the `fromBlock: 0n` line so the hook picks up `deployedOnBlock`. That alone cuts
++it to whatever has elapsed since deploy — still growing, so also cap the window and raise the
++batch size:
++
++```ts
++const { data: payouts } = useScaffoldEventHistory({
++  contractName: "Payouts",
++  eventName: "Paid",
++  watch: true,
++  blocksBatchSize: 10_000,
++});
++```
++
++Longer term this hook is explicitly `@deprecated` for production use
++(`useScaffoldEventHistory.ts:57-60`: *"It uses getLogs which can overload RPC endpoints
++(especially on L2s)"*). For a real launch the feed should be backed by an indexer (the repo
++already documents `ponder` and `subgraph` skills in `AGENTS.md`). At minimum, ship with the
++`deployedOnBlock` default; the indexer can follow.
++
++### 2. Page uses raw wagmi `useWriteContract`, bypassing every SE-2 write safeguard
++
++**File:** `packages/nextjs/app/payouts/page.tsx:6, 21, 36-62`
++
++```ts
++import { useAccount, useWriteContract } from "wagmi";
++const { writeContractAsync, isPending } = useWriteContract();
++```
++
++`AGENTS.md` mandates `useScaffoldWriteContract` for contract writes, and this is not a style
++preference — `packages/nextjs/hooks/scaffold-eth/useScaffoldWriteContract.ts:93-138` supplies
++four things the page now has none of:
++
++1. **Wrong-network guard** (`:103-106`). Raw `useWriteContract` sends to *whatever chain the
++   wallet is currently on*. `enabledChains` always includes mainnet
++   (`services/web3/wagmiConfig.tsx:12-14`), so a user connected to Ethereum gets an `approve`
++   sent to `0x833589fC...` **on mainnet**, where that address is not USDC. Meanwhile
++   `useScaffoldReadContract` reads the balance from Base regardless
++   (`useScaffoldReadContract.ts:35-46`), so the UI shows a correct Base balance while the writes
++   go somewhere else. The header does render a "Wrong network" dropdown
++   (`RainbowKitCustomConnectButton/index.tsx:41-43`), but it does not disable the page's buttons.
++2. **Pre-flight simulation** (`:118-124`, `simulateContractWriteAndNotifyError`). Without it, a
++   revert (insufficient allowance, insufficient balance) surfaces only as a wallet-level failure
++   or a failed on-chain tx that costs real gas.
++3. **`useTransactor` toasts** (`:138`) — "waiting for confirmation" / "transaction completed" /
++   block explorer link. There is currently zero feedback that a payout succeeded.
++4. **`isMining`**, which stays true until the receipt lands. Wagmi's `isPending` flips false as
++   soon as the wallet returns the hash — see issue 4.
++
++**Fix:** two hooks, and drop the `deployedContracts` import entirely:
++
++```ts
++const { writeContractAsync: writeUsdc, isMining: isApproving } = useScaffoldWriteContract({ contractName: "USDC" });
++const { writeContractAsync: writePayouts, isMining: isPaying } = useScaffoldWriteContract({ contractName: "Payouts" });
++
++await writeUsdc({ functionName: "approve", args: [payoutsAddress, parseUnits(amount, 6)] });
++await writePayouts({ functionName: "pay", args: [recipient, parseUnits(amount, 6), memo] });
++```
++
++Get `payoutsAddress` from `useDeployedContractInfo({ contractName: "Payouts" })` rather than
++indexing `deployedContracts[8453]` (see issue 6).
++
++### 3. Every error is swallowed into `console.error` — failures are silent to the user
++
++**File:** `packages/nextjs/app/payouts/page.tsx:44-46, 59-61`
++
++```ts
++} catch (e) {
++  console.error(e);
++}
++```
++
++Both handlers catch and log. A user who rejects in their wallet, is on the wrong chain, has
++insufficient allowance, or typed a malformed address sees **nothing at all** — the button
++re-enables and the form sits there. For an app that moves real money, "I clicked Send Payout and
++nothing happened" is the worst possible failure mode: the likely user response is to click again.
++
++`AGENTS.md` specifies the intended pattern, and the utilities are already in the repo
++(`packages/nextjs/utils/scaffold-eth/notification.tsx`, `getParsedError.ts`):
++
++```ts
++import { getParsedError, notification } from "~~/utils/scaffold-eth";
++
++} catch (e) {
++  notification.error(getParsedError(e));
++}
++```
++
++Note that switching to `useScaffoldWriteContract` (issue 2) already notifies on simulation
++failure and wrong network, so this `catch` becomes the backstop rather than the only handler.
++
++### 4. Approve → Pay has no allowance check and no wait for the approval to confirm
++
++**File:** `packages/nextjs/app/payouts/page.tsx:36-62`
++
++Three separate problems in the same flow:
++
++- **Nothing reads the current allowance.** The USDC ABI exposes `allowance`
++  (`contracts/deployedContracts.ts:74`) and it is never called. The user has no way to know
++  whether Approve is needed, and always pays for two transactions — including on a repeat payout
++  where allowance already covers the amount.
++- **`isPending` is not `isMining`.** Wagmi's `isPending` is true only while the wallet request is
++  outstanding; it goes false the moment the hash is returned, *before* the approval is mined. So
++  the moment the user confirms Approve in their wallet, `Send Payout` re-enables — click it and
++  `transferFrom` reverts against a zero allowance (`Payouts.sol:24`), burning gas.
++- **One shared `isPending` for two buttons** (`:101-110`): approving puts a spinner on *both*
++  buttons, so the UI cannot express "approval mined, now send."
++
++**Fix:** read the allowance, derive button state from it, and use two independent
++`isMining` flags:
++
++```ts
++const { data: allowance } = useScaffoldReadContract({
++  contractName: "USDC",
++  functionName: "allowance",
++  args: [connectedAddress, payoutsAddress],
++});
++
++const parsedAmount = amount ? parseUnits(amount, 6) : 0n;
++const needsApproval = parsedAmount > 0n && (allowance ?? 0n) < parsedAmount;
++```
++
++Then render only the button that applies (`needsApproval ? <Approve/> : <Send/>`), and disable
++`Send` while `isApproving`. Consider approving `parsedAmount` exactly (current behaviour, safer)
++but surface to the user that a second approval is needed if they raise the amount afterwards —
++today, editing the amount up after approving silently guarantees a revert.
++
++### 5. No input validation — empty or malformed input throws inside viem and is discarded
++
++**File:** `packages/nextjs/app/payouts/page.tsx:55, 78-113`
++
++```ts
++args: [recipient as `0x${string}`, parseUnits(amount || "0", 6), memo],
++```
++
++- `recipient` is a free-text `<input type="text">` with a bare `as \`0x${string}\`` cast. The cast
++  is a lie to the compiler; there is no `isAddress` check anywhere. An empty string or a typo
++  makes viem throw `InvalidAddressError`, which lands in the silent `catch` from issue 3.
++- `parseUnits(amount || "0", 6)` sends `0` when the field is blank. `Payouts.pay` reverts on
++  `amount == 0` (`Payouts.sol:23`), but only after the user has signed.
++- `<input type="number">` accepts negative values and `e` notation. `parseUnits("-5", 6)` yields a
++  negative bigint, which fails ABI encoding for `uint256` — again silently.
++- Neither button is ever `disabled` on empty input; both are clickable on a blank form.
++
++**Fix:** use the SE-2 inputs, which `AGENTS.md` requires and which solve validation and ENS
++resolution at once:
++
++```tsx
++import { AddressInput, IntegerInput } from "@scaffold-ui/components";
++
++<AddressInput value={recipient} onChange={setRecipient} placeholder="Recipient address or ENS" />
++```
++
++and gate the submit:
++
++```ts
++const isValid = isAddress(recipient) && parsedAmount > 0n && parsedAmount <= (usdcBalance ?? 0n);
++<button disabled={!isValid || isPaying} …>
++```
++
++Checking against `usdcBalance` also catches the over-spend case client-side instead of letting
++`transferFrom` revert.
++
++### 6. `USDC` was hand-added to the autogenerated `deployedContracts.ts` — the next deploy deletes it
++
++**File:** `packages/nextjs/contracts/deployedContracts.ts:50-51` (and the file header, `:1-4`)
++
++```
++/**
++ * This file is autogenerated by Scaffold-ETH.
++ * You should not edit it manually or your changes might be overwritten.
++ */
++```
++
++The `USDC` entry is not produced by any deploy script — `packages/hardhat/deploy/00_deploy_payouts.ts`
++deploys only `Payouts` and passes the USDC address as a constructor arg. So `USDC` was pasted into
++a generated file. The next `yarn deploy` regenerates this file from the deployments directory and
++the `USDC` entry vanishes, at which point `useScaffoldReadContract({ contractName: "USDC" })` and
++the page's `deployedContracts[8453].USDC` both break — and `deployedContracts[8453].USDC` is a
++**build-time** reference (`page.tsx:11`), so this becomes a type error or a runtime
++`Cannot read properties of undefined`.
++
++`externalContracts.ts` exists for exactly this and is currently empty
++(`packages/nextjs/contracts/externalContracts.ts:14`).
++
++**Fix:** move the `USDC` block out of `deployedContracts.ts` and into `externalContracts.ts`:
++
++```ts
++const externalContracts = {
++  8453: {
++    USDC: { address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", abi: [...] },
++  },
++} as const;
++```
++
++The scaffold hooks read from both files transparently, so no call site changes — and the direct
++`deployedContracts[8453]` indexing at `page.tsx:10-11` should go away anyway (see issue 2), since
++hardcoding chain `8453` breaks the moment anyone adds a testnet to `targetNetworks`.
++
++### 7. Production ships on Scaffold-ETH's shared demo Alchemy key and WalletConnect project ID
++
++**File:** `packages/nextjs/scaffold.config.ts:17, 27, 38`; `packages/nextjs/.env.example`
++
++```ts
++export const DEFAULT_ALCHEMY_API_KEY = "IZYEU2cWBgnFmgiTAgpWD";
++alchemyApiKey: process.env.NEXT_PUBLIC_ALCHEMY_API_KEY || DEFAULT_ALCHEMY_API_KEY,
++walletConnectProjectId: process.env.NEXT_PUBLIC_WALLET_CONNECT_PROJECT_ID || '3a8170812b534d0ff9d794f19a901d64',
++```
++
++Both fall back to the public SE-2 demo credentials shared by every scaffold project on the
++internet. Neither is set anywhere in the repo — `.env.example` has them blank and there is no
++`.env.local`. Combined with issue 1, the RPC fallback ordering in
++`services/web3/wagmiConfig.tsx:20` also degrades: when the default key is detected, Alchemy is
++demoted *behind* the unkeyed public endpoint, so production traffic lands on Base's public RPC.
++
++The WalletConnect ID additionally drives what users see in their wallet: the connection prompt
++will read `scaffold-eth-2` (`services/web3/wagmiConnectors.tsx:49`), not your product name. For an
++app asking people to approve USDC spending, an unrecognized app name in the signing prompt is a
++trust problem, not just a cosmetic one.
++
++**Fix:** before launch, provision your own Alchemy app and WalletConnect project, set
++`NEXT_PUBLIC_ALCHEMY_API_KEY` and `NEXT_PUBLIC_WALLET_CONNECT_PROJECT_ID` in the Vercel project
++env (Production + Preview), and set `appName` in `wagmiConnectors.tsx:49` to the real product
++name. Verify after deploy that `scaffoldConfig.alchemyApiKey !== DEFAULT_ALCHEMY_API_KEY` in the
++deployed bundle — the fallback fails silently, so a missing env var looks like a working app
++right up until you hit the rate limit.
++
++### 8. The landing page is still Scaffold-ETH boilerplate, with a link that is broken on Base
++
++**Files:** `packages/nextjs/app/page.tsx:20-72`; `packages/nextjs/components/Header.tsx:29-33`;
++`packages/nextjs/app/layout.tsx:10-13`
++
++`/` is the unmodified SE-2 template: *"Welcome to Scaffold-ETH 2"*, *"Get started by editing
++packages/nextjs/app/page.tsx"*, *"Edit your smart contract YourContract.sol"*. This is the first
++thing a real user sees.
++
++Worse, it links to `/blockexplorer` (`page.tsx:65`) — the built-in explorer only works against a
++local hardhat chain. The Footer correctly hides that link off local networks
++(`Footer.tsx:33-41`), but the home page links to it unconditionally, so on Base it leads to a page
++that cannot function.
++
++The header also exposes a **Debug Contracts** tab (`Header.tsx:29-33`) pointing at `/debug`, which
++gives any visitor a raw write interface to the deployed contracts.
++
++Page metadata is likewise still `'Scaffold-ETH 2 App'` / `'Built with 🏗 Scaffold-ETH 2'`
++(`layout.tsx:11-12`), which is what appears in the browser tab, in search results, and in every
++Slack/Twitter link preview via `getMetadata`'s OpenGraph tags.
++
++**Fix:**
++- Rewrite `app/page.tsx` as a real landing page, or redirect `/` to `/payouts`.
++- Remove the `/blockexplorer` card from `app/page.tsx:61-70`.
++- Gate the Debug tab on local networks, matching the Footer's pattern:
++  `...(targetNetwork.id === hardhat.id ? [{ label: "Debug Contracts", href: "/debug", … }] : [])`.
++- Set real `title` / `description` in `layout.tsx:10-13` and replace `public/thumbnail.jpg`.
++
++---
++
++## Should-fix
++
++### 9. `pollingInterval: 30000` is far too slow for Base
++
++**File:** `packages/nextjs/scaffold.config.ts:22`
++
++Base produces a block every ~2 seconds. `AGENTS.md` explicitly says to *decrease* the polling
++interval for L2s; this raises it to 30s. The value feeds `wagmiConfig`'s client
++(`services/web3/wagmiConfig.tsx:20`) and therefore `useBlockNumber`, which is what drives balance
++refetching in `useScaffoldReadContract.ts:64-77` and the live-event poll in
++`useScaffoldEventHistory.ts:115`. Net effect: after a payout confirms, the sender's USDC balance
++and the payout feed stay stale for up to half a minute.
++
++**Fix:** `pollingInterval: 5000`. Combined with issue 1's fix the RPC load is manageable; with
++issue 1 unfixed, lowering this makes things worse, so fix them together.
++
++### 10. Hardcoded `bg-black text-white` breaks the theme system
++
++**File:** `packages/nextjs/app/payouts/page.tsx:65, 121`
++
++```tsx
++<div className="min-h-screen bg-black text-white">
++…
++<div className="border border-gray-700 rounded p-3">
++```
++
++The app ships a daisyUI light/dark theme pair (`styles/globals.css:10-13`) and a working theme
++switcher in the footer (`Footer.tsx:43`). This page ignores both: it is pure black regardless of
++theme, so in light mode the header and footer are light and the page body is black. `AGENTS.md`
++also calls for daisyUI classes over raw Tailwind.
++
++The black background is also applied to a `min-h-screen` div nested inside the layout's
++`flex-1 main` (`ScaffoldEthAppWithProviders.tsx:22`), which forces the page taller than the
++viewport and leaves dead scroll space under the fold.
++
++**Fix:** drop `min-h-screen bg-black text-white` and let the layout theme apply; use
++`border-base-300` instead of `border-gray-700`, and wrap the form in a daisyUI
++`card bg-base-100 shadow-xl` to match the rest of the app.
++
++### 11. `btn loading` is a no-op in daisyUI 5 — the buttons show no spinner
++
++**File:** `packages/nextjs/app/payouts/page.tsx:101, 108`
++
++```tsx
++className={`btn btn-primary ${isPending ? "loading" : ""}`}
++```
++
++The repo is on daisyUI 5.5.19 (`package.json`, and the build log confirms `🌼 daisyUI 5.5.19`).
++daisyUI 5 removed `loading` as a button modifier; it is now a standalone element class. So the
++button greys out via `disabled` but gives no indication that anything is in flight — on Base,
++where confirmation takes a couple of seconds, that reads as an unresponsive button.
++
++**Fix:**
++
++```tsx
++<button className="btn btn-primary" disabled={isPaying || !isValid}>
++  {isPaying && <span className="loading loading-spinner loading-xs" />}
++  Send Payout
++</button>
++```
++
++### 12. Payout feed uses array index as React key
++
++**File:** `packages/nextjs/app/payouts/page.tsx:120-121`
++
++```tsx
++{(payouts ?? []).map((payout, i) => (
++  <div key={i} …>
++```
++
++With `watch: true`, new events are **prepended** (`useScaffoldEventHistory.ts:247, 271`), so every
++new payout shifts every index. React then reconciles by position rather than identity, remounting
++the whole list and producing visible flicker; it also fights the historical-vs-live merge, which
++already dedupes on a composite key.
++
++**Fix:** use the same identity the hook dedupes on
++(`useScaffoldEventHistory.ts:276`):
++`key={`${payout.transactionHash}-${payout.logIndex}`}`.
++
++### 13. Hand-rolled address truncation instead of the `Address` component
++
++**File:** `packages/nextjs/app/payouts/page.tsx:13, 122, 124`
++
++```ts
++const shorten = (addr?: string) => (addr ? `${addr.slice(0, 6)}...${addr.slice(-4)}` : "");
++```
++
++`AGENTS.md` requires `@scaffold-ui/components`' `Address`, which is already a dependency and used
++elsewhere (`app/page.tsx:27`). Reimplementing it loses ENS name resolution, ENS avatars, blockie
++avatars, copy-to-clipboard, and the block-explorer link. In a payouts feed, "who got paid" is the
++primary information and a bare `0x1234…abcd` is the least useful rendering of it.
++
++**Fix:** `<Address address={payout.args.to} chain={targetNetwork} />` and delete `shorten`.
++
++### 14. Feed is labelled ambiguously and renders attacker-controlled memo text
++
++**File:** `packages/nextjs/app/payouts/page.tsx:118, 127`
++
++The heading reads "Latest payouts" over an unfiltered global event query, so users see **every**
++payout anyone has ever made through the contract, not their own. Two consequences:
++
++- Users will reasonably read their own history into it and won't find their transactions.
++- `memo` is arbitrary sender-controlled text (`Payouts.sol:21`) displayed to every visitor. React
++  escapes it so there is no XSS, but nothing stops a spammer from emitting `pay()` calls of 1 wei
++  of USDC with memos like *"Claim your refund at evil.example"*. A public, unfiltered,
++  unmoderated text feed on a payments app is a phishing surface.
++
++Worth flagging to whoever owns product: on-chain memos are permanently public, so "What is this
++payout for?" invites users to publish information they may not intend to.
++
++**Fix:** filter to the connected user and relabel — `useScaffoldEventHistory` supports
++`filters: { from: connectedAddress }` (`useScaffoldEventHistory.ts:89, 168`) — under a heading of
++"Your payouts". If a global feed is genuinely wanted, keep it as a separate, clearly labelled
++section and truncate/flag memos from unknown senders.
++
++### 15. `recipient` is not cleared after a successful payout
++
++**File:** `packages/nextjs/app/payouts/page.tsx:57-58`
++
++```ts
++setAmount("");
++setMemo("");
++```
++
++`amount` and `memo` reset; `recipient` persists. The form then reads as half-reset, with a
++populated recipient and blank amount — one of the easier ways to send a second payout to the
++wrong person. Either clear all three or clear none (and show a success state instead).
++
++**Fix:** add `setRecipient("")`, and pair it with a `notification.success` so the cleared form is
++unambiguously a success rather than a lost submission.
++
++### 16. CI is red: `--max-warnings=0` against 100 prettier warnings
++
++**File:** `.github/workflows/lint.yaml:30`
++
++```yaml
++- name: Run nextjs lint
++  run: yarn next:lint --max-warnings=0
++```
++
++`yarn next:lint` currently emits 100 `prettier/prettier` warnings (formatting drift in
++`scaffold.config.ts`, `next.config.ts`, `layout.tsx`, `getMetadata.ts`, `page.tsx`,
++`Header.tsx`, `wagmiConfig.tsx` — note `wagmiConfig.tsx:20` is a single ~700-character line).
++With `--max-warnings=0` this job fails on every push to `main`. A permanently-red pipeline in the
++week of launch means no one will notice a genuinely broken build.
++
++**Fix:** run `yarn format` at the repo root and commit. There is a Husky + lint-staged setup
++(`.husky/`, `.lintstagedrc.js`) that should have caught this, so it is worth checking hooks are
++actually installed locally for the team.
++
++### 17. CI never builds or type-checks
++
++**File:** `.github/workflows/lint.yaml`
++
++The only workflow runs lint. Nothing runs `next build` or `yarn check-types`, so a type error or
++prerender failure reaches Vercel unnoticed. This matters more than usual given issue 18.
++
++**Fix:** add to the same job:
++
++```yaml
++- name: Type check
++  run: yarn next:check-types
++- name: Build
++  run: yarn next:build
++```
++
++### 18. Documented deploy command disables TypeScript build errors
++
++**Files:** `packages/nextjs/next.config.ts:7-9`; `packages/nextjs/package.json` (`vercel:yolo`); `AGENTS.md`
++
++```ts
++typescript: { ignoreBuildErrors: process.env.NEXT_PUBLIC_IGNORE_BUILD_ERROR === "true" }
++```
++
++`vercel:yolo` sets `NEXT_PUBLIC_IGNORE_BUILD_ERROR=true`, and `AGENTS.md` names
++`yarn vercel:yolo --prod` as *the* frontend deploy command. That's a reasonable escape hatch for
++prototyping and the wrong default for a production payments app — it is exactly the mechanism that
++would let issue 6 (`deployedContracts[8453].USDC` becoming `undefined`) ship as a runtime crash
++instead of failing the build.
++
++**Fix:** use `yarn vercel --prod` for the production deploy. Type-checking currently passes
++(`tsc --noEmit` is clean), so nothing is lost by enforcing it.
++
++### 19. `vercel.json` pins no Node version or build command
++
++**File:** `packages/nextjs/vercel.json`
++
++```json
++{ "installCommand": "yarn install" }
++```
++
++Nothing pins the Node major version, so Vercel's default moves under you between deploys. Given
++this is a yarn 4 workspace with `nmHoistingLimits: workspaces`, and given Note 1 below, an
++unpinned runtime is avoidable risk the week of a launch.
++
++**Fix:** add `"engines": { "node": "22.x" }` to `packages/nextjs/package.json` (or set the Node
++version in Vercel project settings) so local, CI, and production agree.
++
++---
++
++## Note 1 — local production build
++
++`yarn next build` fails in this workspace while prerendering `/_not-found`:
++
++```
++TypeError: localStorage.getItem is not a function
++Error occurred prerendering page "/_not-found"
++```
++
++**This is an environment artifact, not a repo defect.** This sandbox runs Node v25.9.0 launched
++with `--localstorage-file` *without a valid path*, which leaves a `localStorage` global defined but
++non-functional (`typeof localStorage === "object"`, `typeof localStorage.getItem === "undefined"`).
++wagmi/zustand storage feature-detects `typeof localStorage !== "undefined"` and then calls
++`getItem`, which explodes. On Node 20/22 — including Vercel's default — there is no `localStorage`
++global, the feature detection correctly falls through to the no-op SSR storage, and the page
++prerenders.
++
++I could not produce a clean production build locally to confirm there is no *second*, real build
++problem hiding behind this one. Compilation and type-checking both pass
++(`✓ Compiled successfully`, `Finished TypeScript`), and the failure occurs in the static-export
++phase on the one route that has no project code in it, so I am fairly confident the build is
++otherwise healthy — but **please verify on a Node 22 machine or a Vercel preview deploy before
++launch.** Pinning the Node version (issue 19) would make this reproducible for everyone.
++
++## Note 2 — not reviewed
++
++Per the brief I scoped this to the frontend and its configuration. Two adjacent things I did not
++review in depth but that are worth someone's time before shipping:
++
++- **`packages/hardhat/contracts/Payouts.sol`** — the contract is already deployed, so it is out of
++  scope for changes, but note it has no test file (`packages/hardhat/test/` is absent) and
++  `transferFrom`'s boolean return is checked (`Payouts.sol:24`), which is correct for USDC.
++- **Operational readiness** — no error tracking (Sentry or equivalent) is wired up, so once issue 3
++  is fixed and errors surface to users, you still won't see them. Worth adding before the launch
++  rather than after.
+
+# Untracked files and status
+ A REVIEW.md
