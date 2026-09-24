@@ -1,0 +1,176 @@
+diff --git a/FORK.md b/FORK.md
+new file mode 100644
+index 0000000..90d015d
+--- /dev/null
++++ b/FORK.md
+@@ -0,0 +1,167 @@
++# Forking Base in this checkout
++
++## TL;DR
++
++`yarn fork base` does not fork Base. It forks Ethereum mainnet, and `cast chain-id`
++cannot tell you that. Use:
++
++```bash
++yarn fork --network base
++```
++
++and verify with a check that looks at *state*, not at the chain id.
++
++---
++
++## 1. What the onboarding note gets wrong
++
++### `yarn fork base` silently forks mainnet
++
++The workspace script takes the fork target from `$1`:
++
++`packages/foundry/package.json`
++
++```json
++"fork": "make fork FORK_URL=${1:-mainnet}",
++```
++
++yarn binds the **first** token after the script name to `$0`, not `$1` — whatever that
++token looks like. So in `yarn fork base`, `base` lands in `$0`, `$1` is empty, and
++`${1:-mainnet}` falls back to `mainnet`.
++
++Reproduced in this checkout (make echoes the recipe it runs):
++
++```
++$ yarn fork base
++...
++anvil --fork-url mainnet --chain-id 31337
++```
++
++That is the whole bug. The note's command forks Ethereum mainnet every time.
++
++### Why the token reads come back empty
++
++`0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` is USDC **on Base**. On Ethereum mainnet
++nothing is deployed at that address — mainnet USDC lives at
++`0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48`.
++
++So the node is healthy and honest: it is serving a mainnet fork, and on mainnet that
++address is an empty account. Reads against it return empty, `eth_call` into it returns
++`0x`, and the contract looks "not deployed" because from the forked chain's point of
++view it is not. Nothing is wrong with our contract.
++
++### Why the chain-id check proved nothing
++
++`packages/foundry/Makefile`
++
++```make
++# Start a fork
++fork: setup-anvil-wallet
++	anvil --fork-url ${FORK_URL} --chain-id 31337
++```
++
++The chain id is **hardcoded to 31337** and overrides whatever was forked. A fork of
++Base, a fork of mainnet, and a plain `yarn chain` with no fork at all are
++indistinguishable by chain id — all three answer `31337`. Confirmed here:
++
++```
++$ cast chain-id --rpc-url http://127.0.0.1:8545
++31337
++$ cast code 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 --rpc-url http://127.0.0.1:8545
++0x
++```
++
++A number came back, exactly as the note promises — and the fork was not Base. "If you
++get a chain id back, the fork is up and you're on Base" is two claims, and the chain id
++supports neither: it does not prove a fork happened, and it says nothing about *which*
++chain was forked.
++
++---
++
++## 2. The command that actually forks Base
++
++```bash
++yarn fork --network base
++```
++
++`--network` is consumed as `$0`, so `base` reaches `$1` and the Makefile runs
++`anvil --fork-url base --chain-id 31337`. `base` is resolved as an RPC alias from
++
++`packages/foundry/foundry.toml`
++
++```toml
++[rpc_endpoints]
++base = "https://mainnet.base.org"
++```
++
++Equivalent forms that also put the target in `$1`:
++
++```bash
++yarn fork -n base
++yarn fork -- base
++```
++
++Forms that **silently fork mainnet** — anything that leaves `$1` empty:
++
++```bash
++yarn fork base            # ← the onboarding note
++yarn fork --network=base  # single token, lands in $0
++yarn fork                 # explicit default
++```
++
++`--network=base` is the nastiest of the three: it looks correct and is not. Two tokens
++before the value is the rule.
++
++---
++
++## 3. The check that would have caught this
++
++Check for **state only Base has**. The Base USDC address is a good probe precisely
++because it is the address we depend on — it has code on Base and nothing on mainnet:
++
++```bash
++cast call 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 "symbol()(string)" \
++  --rpc-url http://127.0.0.1:8545
++# fork of Base → "USDC"
++# fork of mainnet, or no fork at all → empty / execution reverted
++```
++
++A bit more thorough, as a paste-once sanity script:
++
++```bash
++RPC=http://127.0.0.1:8545
++BASE_USDC=0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
++L1_USDC=0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48
++
++# must be non-empty
++cast code  $BASE_USDC --rpc-url $RPC | head -c 20
++cast call  $BASE_USDC "symbol()(string)"  --rpc-url $RPC   # → "USDC"
++cast call  $BASE_USDC "decimals()(uint8)" --rpc-url $RPC   # → 6
++
++# must be EMPTY — if this has code you forked Ethereum mainnet
++cast code  $L1_USDC --rpc-url $RPC
++```
++
++Both halves matter. The positive probe alone catches "no fork"; the negative probe is
++what names the actual failure mode here — code at the *mainnet* USDC address is a
++direct readout that `${1:-mainnet}` fell through.
++
++Rules of thumb, so this does not recur:
++
++- Chain id is **never** evidence of what you forked. The Makefile pins it to 31337.
++- Probe a contract address that is unique to the target chain, and assert on a value
++  (`symbol()`, `decimals()`), not just on "the node answered".
++- Same trap on the frontend side: during fork work `scaffold.config.ts` `targetNetworks`
++  stays on `chains.foundry`, because the fork answers 31337 no matter what it forked.
++
++---
++
++## Note on verification in this environment
++
++The command-line behaviour above (`yarn fork base` → `anvil --fork-url mainnet`, the
++hardcoded `--chain-id 31337`, the empty reads and the `31337` response) was reproduced
++directly in this checkout. The sandbox has no outbound network access, so anvil could
++not actually complete a fork of either chain — the positive half of the check
++(`symbol()` → `"USDC"` against a real Base fork) is derived from the repo's config and
++the published Base USDC address, not observed here. Run the script in section 3 the
++first time you bring up a fork with network access.
+
+# Untracked files and status
+ A FORK.md

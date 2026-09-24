@@ -1,0 +1,173 @@
+diff --git a/FORK.md b/FORK.md
+new file mode 100644
+index 0000000..0bd1fba
+--- /dev/null
++++ b/FORK.md
+@@ -0,0 +1,150 @@
++# Forking Base locally
++
++Short version: `yarn fork base` does **not** fork Base. It forks Ethereum
++mainnet, where our USDC address has no code — hence the empty reads. And
++`cast chain-id` cannot tell you otherwise, because the fork is pinned to
++31337 no matter what it forks.
++
++## What the onboarding note gets wrong
++
++### 1. `yarn fork base` ignores the `base` argument
++
++The chain of scripts, verbatim:
++
++`package.json` (repo root):
++
++```json
++"fork": "yarn foundry:fork",
++"foundry:fork": "yarn workspace @se-2/foundry fork",
++```
++
++`packages/foundry/package.json` (as originally written):
++
++```json
++"fork": "make fork FORK_URL=${1:-mainnet}",
++```
++
++`${1:-mainnet}` looks like "use the first CLI argument, default to
++mainnet", but `$1` is never set: Yarn runs the script through its own
++shell with no positional parameters, and extra CLI words are not
++forwarded down the root → workspace → script chain anyway. `${1:-mainnet}`
++therefore always expands to `mainnet`, and the `base` you typed is
++dropped on the floor. Observed:
++
++```
++$ yarn fork base
++anvil --fork-url mainnet --chain-id 31337
++```
++
++Same result for `yarn fork FORK_URL=base`, `yarn workspace @se-2/foundry
++fork FORK_URL=base`, and (before the fix below) `FORK_URL=base yarn fork`
++— every one of them printed `--fork-url mainnet`. There is no argument
++you can append to `yarn fork` that changes the fork target.
++
++`mainnet` here is the alias from `packages/foundry/foundry.toml`:
++
++```toml
++mainnet = "https://eth-mainnet.alchemyapi.io/v2/${ALCHEMY_API_KEY}"
++base    = "https://mainnet.base.org"
++```
++
++So the node comes up as a healthy fork — of Ethereum mainnet.
++
++### 2. Why the USDC reads come back empty
++
++`0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` is USDC **on Base**. On
++Ethereum mainnet that address is an empty account. Every call to it
++returns `0x`, which viem/wagmi surfaces as an empty/failed read — exactly
++"as though the token were not deployed", because on the chain you
++actually forked, it is not. Nothing is wrong with the contract.
++
++### 3. Why `cast chain-id` proves nothing
++
++`packages/foundry/Makefile`:
++
++```make
++# Start a fork
++fork: setup-anvil-wallet
++	anvil --fork-url ${FORK_URL} --chain-id 31337
++```
++
++The fork is **hard-pinned to 31337** so the SE-2 frontend
++(`targetNetworks: [chains.foundry]` in `packages/nextjs/scaffold.config.ts`)
++and the `31337` deploy paths keep working. A correct Base fork reports
++31337; a mainnet fork reports 31337; a plain non-forking `yarn chain`
++anvil reports 31337. `cast chain-id` returning a number only proves an
++RPC is listening. The teammate who ran it got a true answer to a question
++that does not distinguish the failure.
++
++## The command that actually forks Base
++
++The `fork` script in `packages/foundry/package.json` has been changed to
++read the target from the environment instead of a phantom `$1`:
++
++```json
++"fork": "make fork FORK_URL=${FORK_URL:-mainnet}",
++```
++
++With that, from the repo root:
++
++```bash
++FORK_URL=base yarn fork      # → anvil --fork-url base --chain-id 31337
++```
++
++`yarn fork` with no variable still defaults to mainnet, unchanged.
++`FORK_URL` takes any alias from the `[rpc_endpoints]` table in
++`foundry.toml` (`base`, `baseSepolia`, `optimism`, …) or a full RPC URL.
++
++If you are on a checkout without that fix, invoke make directly — use
++`yarn exec` so the Yarn-managed `shx` on which `setup-anvil-wallet`
++depends is on `PATH`:
++
++```bash
++cd packages/foundry && yarn exec make fork FORK_URL=base
++```
++
++Plain `make fork FORK_URL=base` fails with `setup-anvil-wallet Error 127`
++outside the Yarn environment.
++
++Note `https://mainnet.base.org` is a public rate-limited endpoint; for
++sustained forking, point `FORK_URL` at your own Base RPC URL.
++
++## The check that would have caught this
++
++Ask the chain for state that only Base has. Our own USDC address is the
++best probe, because it is the exact thing the contract depends on:
++
++```bash
++cast code 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 --rpc-url http://127.0.0.1:8545
++```
++
++- long bytecode blob → you are on a fork of Base
++- `0x` → you are **not**, whatever `cast chain-id` says
++
++Confirm it is really the token, not just some deployed account:
++
++```bash
++cast call 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 "symbol()(string)" --rpc-url http://127.0.0.1:8545
++# expect: USDC
++```
++
++This distinguishes Base from every other chain we might have forked:
++mainnet, Sepolia and a bare anvil have nothing at that address, and it is
++not one of the `0x42...` OP-Stack predeploys that Optimism, Base and
++every other OP chain share — so it will not pass on an Optimism fork
++either.
++
++Run against the node currently on port 8545 in this checkout:
++
++```
++$ cast chain-id  --rpc-url http://127.0.0.1:8545
++31337                       # "looks fine"
++$ cast code 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 --rpc-url http://127.0.0.1:8545
++0x                          # not a Base fork
++```
++
++That is the whole bug, in two commands.
++
++A useful secondary signal: a real fork starts at the upstream chain's
++current height, so `cast block-number` should return a number in the
++tens of millions for Base. A handful of blocks means no fork at all.
+diff --git a/packages/foundry/package.json b/packages/foundry/package.json
+index be52fdd..629203f 100644
+--- a/packages/foundry/package.json
++++ b/packages/foundry/package.json
+@@ -12,7 +12,7 @@
+     "compile": "make compile",
+     "deploy": "node scripts-js/parseArgs.js",
+     "flatten": "make flatten",
+-    "fork": "make fork FORK_URL=${1:-mainnet}",
++    "fork": "make fork FORK_URL=${FORK_URL:-mainnet}",
+     "format": "make format",
+     "postinstall": "shx cp -n .env.example .env",
+     "lint": "make lint",
+
+# Untracked files and status
+ A FORK.md
+ M packages/foundry/package.json
