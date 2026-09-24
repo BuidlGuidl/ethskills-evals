@@ -7,7 +7,7 @@
 | Executor | `codex` · `gpt-5.5` · effort `high` |
 | Judge | `claude` · `claude-opus-5` · effort `high` — `self_judged: false` on every run |
 | Arms | none (`skill_version: null`) · old (`2f0adb01`) · new (`d9952522`) |
-| Runs | 3 per arm per task, 5 tasks, 45 executions; 44 graded, 1 ungradeable (below) |
+| Runs | 3 per arm per task, 5 tasks, 45 executions plus one replacement; 45 graded, 1 ungradeable (below) |
 | Tasks | `ship-goal-001`, `ship-quiz-001`, `ship-quiz-002`, `ship-quiz-003`, `ship-quiz-004` (every live task with `skill: skills/ship`) |
 
 Both skill refs were installed through `--skill-ref`, so neither arm read the working tree.
@@ -19,7 +19,7 @@ these are trigger-inclusive numbers.
 | Task | new | old | none |
 | --- | --- | --- | --- |
 | `ship-goal-001` | **3/3** | **3/3** | **0/3** |
-| `ship-quiz-001` | 3/3 | 2/2 | 3/3 |
+| `ship-quiz-001` | 3/3 | 3/3 | 3/3 |
 | `ship-quiz-002` | 3/3 | 3/3 | 3/3 |
 | `ship-quiz-003` | 3/3 | 3/3 | 2/3 |
 | `ship-quiz-004` | 3/3 | 3/3 | 3/3 |
@@ -28,11 +28,11 @@ Denominators are **graded** runs, not runs attempted. One run could not be grade
 excluded from the counts rather than deleted — see "Run incidents". Two goal-001 runs that
 were ungradeable when this report was first written were graded on 2026-09-24 off their
 surviving workspaces (incident 2 below), which took the skill arms of goal-001 from 2/2 to
-3/3.
+3/3, and the leaked quiz-001 old run was replaced by a fresh run 4 the same day (incident 1),
+taking that cell from 2/2 to 3/3.
 
 One task discriminates. Three of the four quizzes are saturated on this stack: quiz-001,
-quiz-002 and quiz-004 pass every graded run across all three arms (9/9, quiz-001 8/8
-graded), and on quiz-004 all nine runs picked
+quiz-002 and quiz-004 pass every graded run across all three arms, and on quiz-004 all nine runs picked
 Base. quiz-003 gave up one `none` run. Everything interesting is in `ship-goal-001`.
 
 ## What happened on ship-goal-001
@@ -67,7 +67,7 @@ Counting transcripts for a `curl`/`web_search` against `https://ethskills.com/<s
 | Arm | Runs that fetched another ethskills skill |
 | --- | --- |
 | none | 0/15 |
-| old (`2f0adb01`) | **8/15** — goal-001 3/3, quiz-001 2/3, quiz-003 1/3, quiz-004 3/3, quiz-002 0/3 |
+| old (`2f0adb01`) | **9/16** — goal-001 3/3, quiz-001 3/4, quiz-003 1/3, quiz-004 3/3, quiz-002 0/3 |
 | new (`d9952522`) | 0/15 |
 
 The old text (318 lines) advertises "All skills are at `https://ethskills.com/<skill>/SKILL.md`"
@@ -87,7 +87,8 @@ All figures from `yarn run-stats --benchmark major-refine-d9952522`, medians wit
 Codex dollars are `cost_source: list_price` — the run's token split priced at OpenAI's
 standard-tier list price in `lib/prices.ts`, not what the operator was billed, and the
 >272K long-context surcharge is ignored. `turns` is null on codex. `n` is executions, so
-the three ungradeable runs are included here even though they carry no grade.
+the leaked quiz-001 old run is included here even though it carries no grade (its old-arm
+row is n=4 with the replacement run).
 
 | Task | Arm | n | duration | cost (list) | cost range | total tokens |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -95,7 +96,7 @@ the three ungradeable runs are included here even though they carry no grade.
 | `ship-goal-001` | old | 3 | 850s | $2.57 | $2.28–$3.87 | 2,031,669 |
 | `ship-goal-001` | new | 3 | 751s | $2.02 | $1.69–$2.32 | 1,603,358 |
 | `ship-quiz-001` | none | 3 | 104s | $0.27 | $0.24–$0.49 | 103,557 |
-| `ship-quiz-001` | old | 3 | 124s | $0.36 | $0.34–$0.47 | 186,243 |
+| `ship-quiz-001` | old | 4 | 134s | $0.39 | $0.34–$0.47 | 207,653 |
 | `ship-quiz-001` | new | 3 | 125s | $0.33 | $0.29–$0.37 | 157,414 |
 | `ship-quiz-002` | none | 3 | 64s | $0.18 | $0.17–$0.21 | 76,628 |
 | `ship-quiz-002` | old | 3 | 83s | $0.24 | $0.20–$0.25 | 108,017 |
@@ -110,7 +111,7 @@ the three ungradeable runs are included here even though they carry no grade.
 Both skill arms cost more than `none` on every task — the skill buys the goal task and pays
 for it on the saturated quizzes, which is the `ship-scope-token-overhead` pattern already on
 record for gpt-5.6-sol. New is cheaper than old on four of five (goal-001 $2.02 vs $2.57,
-quiz-001 $0.33 vs $0.36, quiz-002 $0.21 vs $0.24, quiz-004 $0.53 vs $0.83) and dearer on
+quiz-001 $0.33 vs $0.39, quiz-002 $0.21 vs $0.24, quiz-004 $0.53 vs $0.83) and dearer on
 quiz-003 ($0.60 vs $0.31, ranges $0.34–$0.92 against $0.27–$0.55 — overlapping at n=3, so
 read it as noise rather than a regression). On goal-001 the new text saves 21% of the tokens
 and 99s of wall clock while passing the same checks; part of that saving is simply not
@@ -119,15 +120,22 @@ fetching four other skills.
 ## Run incidents
 
 Three of 45 runs produced no grade when the benchmark first ran. Two of them (incident 2)
-were graded on 2026-09-24 and are counted above; one (incident 1) remains ungraded. None
-of the incidents is a model result.
+were graded on 2026-09-24 and are counted above; the third (incident 1) stays ungraded and
+was replaced by a fresh run the same day. None of the incidents is a model result.
 
 1. **`ship-quiz-001` old run 3** (`2026-09-21T202932Z-codex-with-skill-2f0adb01-3`) — judge
    blindness. The run fetched `ethskills.com/audit/SKILL.md` and the
    `austintgriffith/evm-audit-skills` repo, then wrote nine `evm-audit-*` namespace ids into
    `plan.md`. A `none` run has no path to those ids, so this is a genuine variant leak and
-   `lib/blindness.ts` says to record it as an incident rather than grade it. Not re-rolled:
-   re-running until a sample does not leak would bias the arm.
+   `lib/blindness.ts` says to record it as an incident rather than grade it. Not re-rolled at
+   benchmark time, to avoid re-sampling until a run does not leak.
+
+   **Resolution (2026-09-24, on PR review):** a replacement run 4
+   (`2026-09-24T134153Z-codex-with-skill-2f0adb01-4`) was drawn on the same stack and judge,
+   per the #167/#168 precedent — the refused run's record stays as this incident, and the
+   leak rate is reported separately in `ship-old-skill-pulls-the-bundle-gpt-5.5-high`
+   (old-arm 9/16: run 4 web-searched the same audit SKILL.md URL, could not reach it, and
+   graded clean, 3/3). The old-arm quiz-001 cell counts runs 1, 2 and 4.
 2. **`ship-goal-001` old run 3** (`2026-09-22T013242Z-codex-with-skill-2f0adb01-3`) and
 3. **`ship-goal-001` new run 3** (`2026-09-22T014656Z-codex-with-skill-d9952522-3`) —
    evidence too large for the judge, **since resolved**. Codex's sandbox blocks npm's default
@@ -168,7 +176,7 @@ their deliverable with `.npm-cache` omitted, which is exactly what the judge saw
 | `ship-goal-deployment-decision-gpt-5.5-high` | goal-001 expect_6 | 3/3 | 0/3 | 0/3 |
 | `ship-goal-readme-transition-audit-gpt-5.5-high` | goal-001 expect_5 | 1/3 | 0/3 | 0/3 |
 | `ship-state-transition-incentive-gpt-5.5-high` | quiz-003 expect_2 | 1/3 | 0/3 | 0/3 |
-| `ship-old-skill-pulls-the-bundle-gpt-5.5-high` | transcripts | 0/15 | 8/15 | 0/15 |
+| `ship-old-skill-pulls-the-bundle-gpt-5.5-high` | transcripts | 0/15 | 9/16 | 0/15 |
 
 These use `none`/`old`/`new` keys nested under a `codex/gpt-5.5-high` stack key. AGENTS.md
 prescribes per-stack keys for a mistake measured on more than one stack; the three-arm shape
@@ -180,10 +188,10 @@ does not fit the `no_skill`/`with_skill` pair, and this is the first three-arm r
 
 | Question | Answer |
 | --- | --- |
-| Did the skill improve pass rate? | **new vs none: `3/3 vs 0/3` on goal-001, `3/3 vs 2/3` on quiz-003, `3/3 vs 3/3` on the other three.** new vs old: identical everywhere both were graded — `3/3 vs 3/3` on goal-001 and three quizzes, `3/3 vs 2/2` on quiz-001. The refine changed no pass count on this stack. |
-| Did it reduce time/tokens? | Against `none`, no — it costs more on all five tasks (goal-001 $2.02 / 751s / 1.60M vs $1.22 / 451s / 664k). Against `old`, yes on four of five: goal-001 $2.02 / 751s / 1.60M vs $2.57 / 850s / 2.03M (−21% tokens), quiz-004 $0.53 vs $0.83, quiz-001 $0.33 vs $0.36, quiz-002 $0.21 vs $0.24; quiz-003 went up, $0.60 vs $0.31, on overlapping ranges at n=3. |
+| Did the skill improve pass rate? | **new vs none: `3/3 vs 0/3` on goal-001, `3/3 vs 2/3` on quiz-003, `3/3 vs 3/3` on the other three.** new vs old: identical everywhere — `3/3 vs 3/3` on every task. The refine changed no pass count on this stack. |
+| Did it reduce time/tokens? | Against `none`, no — it costs more on all five tasks (goal-001 $2.02 / 751s / 1.60M vs $1.22 / 451s / 664k). Against `old`, yes on four of five: goal-001 $2.02 / 751s / 1.60M vs $2.57 / 850s / 2.03M (−21% tokens), quiz-004 $0.53 vs $0.83, quiz-001 $0.33 vs $0.39, quiz-002 $0.21 vs $0.24; quiz-003 went up, $0.60 vs $0.31, on overlapping ranges at n=3. |
 | Did it create negative deltas? | One candidate: quiz-003 cost roughly doubled against `old` while staying 3/3. Ranges overlap at n=3, so it is not established. No pass-rate regression anywhere. |
 | What mistakes repeated without the skill? | `ship-goal-deployment-decision-gpt-5.5-high` (3/3), `ship-goal-readme-transition-audit-gpt-5.5-high` (1/3), `ship-state-transition-incentive-gpt-5.5-high` (1/3). |
-| What mistakes remained with the skill? | None of the graded ones — 0/3 on both skill texts. `ship-old-skill-pulls-the-bundle-gpt-5.5-high` was present in the old arm at 8/15 and is fixed in the new one. `ship-scope-token-overhead` persists in both arms as a cost, not a failed check. |
+| What mistakes remained with the skill? | None of the graded ones — 0/3 on both skill texts. `ship-old-skill-pulls-the-bundle-gpt-5.5-high` was present in the old arm at 9/16 and is fixed in the new one. `ship-scope-token-overhead` persists in both arms as a cost, not a failed check. |
 | What should change in the skill? | Nothing this run justifies. Both texts pass identically, and the refine already fixed the one behavioural defect measured (bundle-fetching) while cutting goal-001 tokens 21%. The open question is the cost the skill adds on saturated quizzes, which is a scoping question the existing `ship-scope-token-overhead-gpt-5.6-sol` record already states. |
 | What should change in the eval? | **goal-001's expects 1–4 are vacuously satisfiable.** All three `none` runs shipped no Solidity at all and passed every one of those four prohibitions; only expect_6 caught them. The task needs a positive check that USDC custody and settlement are actually enforced onchain — `ship-quiz-002` expect_4 already has exactly this shape and goal-001 lacks it. Without it, a run that builds no blockchain scores 4/6 and, on a slightly softer expect_6, would have scored 6/6. **Second, three of four quizzes are saturated** (9/9 across all arms; quiz-004 got the same chain from all nine runs) and measure nothing on this stack — retire or harden them. **Third**, `.npm-cache` belongs in `GENERATED_DIRS`, and `lib/judge.ts` should cap assembled evidence below the CLI's 10MB stdin limit rather than dying with `EPIPE` at the end of a paid run. |
