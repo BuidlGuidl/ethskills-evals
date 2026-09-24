@@ -1,0 +1,196 @@
+diff --git a/AUDIT-REPORT.md b/AUDIT-REPORT.md
+new file mode 100644
+index 0000000..2b689f7
+--- /dev/null
++++ b/AUDIT-REPORT.md
+@@ -0,0 +1,187 @@
++# ArbiLend Security Review
++
++Review date: 2026-09-24
++
++Scope: `src/LendingMarket.sol`, `src/CollateralVault.sol`, `src/PriceOracle.sol`, `src/MarketProxy.sol`, and interfaces, using `README.md` deployment context: Arbitrum One, USDC debt, wstETH launch collateral via stETH/USD feed, and planned weETH/ezETH/USDT/yield-bearing/rebasing collateral.
++
++Build status: `forge build` succeeds on Solidity 0.8.28. No tests were present.
++
++## Ranked Findings
++
++## [C-1] Anyone Can Upgrade The Market Implementation
++
++**Severity**: Critical
++
++**Contract / Function**: `LendingMarket.upgradeTo()` (`src/LendingMarket.sol:84`)
++
++**What an attacker gets**: Any address can call `upgradeTo()` through `MarketProxy` and overwrite the ERC-1967 implementation slot. A malicious implementation then executes in the proxy's storage context, can transfer all USDC held by the market, and can call `CollateralVault.seize()` as the trusted market address to steal user collateral.
++
++**Fix**: Add `onlyOwner` to `upgradeTo()`, require `newImplementation.code.length > 0`, and use a real ERC-1967/UUPS upgrade path with `proxiableUUID` compatibility checks. Put upgrades behind a multisig and timelock before launch.
++
++## [C-2] Anyone Can Replace The Oracle Or Risk Parameters
++
++**Severity**: Critical
++
++**Contract / Function**: `LendingMarket.setOracle()` and `LendingMarket.setLiquidationThreshold()` (`src/LendingMarket.sol:91`, `src/LendingMarket.sol:96`)
++
++**What an attacker gets**: Any address can point the market at a malicious oracle, inflate collateral prices or zero the USDC debt price, and borrow the market's seeded USDC with little or no real collateral. They can also set the liquidation threshold to `0` and liquidate otherwise healthy users for the liquidation bonus.
++
++**Fix**: Add `onlyOwner` to both functions. Validate nonzero/code addresses, bound `liquidationThreshold` to a safe range such as `0 < threshold <= BPS`, and require timelocked governance for oracle and risk-parameter changes.
++
++## [H-1] Health Factor Math Liquidates Healthy Positions
++
++**Severity**: High
++
++**Contract / Function**: `LendingMarket.healthFactor()` (`src/LendingMarket.sol:146`)
++
++**What an attacker or unlucky user gets**: The formula divides before multiplying:
++
++```solidity
++(collateralValueUsd(user) / debtUsd) * liquidationThreshold * WAD / BPS
++```
++
++With an 80% liquidation threshold, a user at 150% collateralization should have a health factor of `1.2e18`, but `150 / 100` truncates to `1`, returning `0.8e18`. Liquidators can therefore seize collateral from users who are healthy under the intended overcollateralized market design.
++
++**Fix**: Multiply before dividing and use full-precision `mulDiv` if available:
++
++```solidity
++return collateralValueUsd(user) * liquidationThreshold * WAD / (debtUsd * BPS);
++```
++
++Choose the rounding direction explicitly and add boundary tests around the liquidation threshold.
++
++## [H-2] Chainlink Prices Can Be Stale Or Invalid On Arbitrum
++
++**Severity**: High
++
++**Contract / Function**: `PriceOracle.getPrice()` (`src/PriceOracle.sol:39`)
++
++**What an attacker or unlucky user gets**: The oracle uses `latestAnswer()` only. It does not check `updatedAt`, `answeredInRound`, round initialization, per-feed heartbeat, or the Arbitrum sequencer uptime feed. After sequencer downtime, feed deprecation, or a delayed oracle update, borrowers can over-borrow against stale high collateral prices, while healthy users can be liquidated against stale low prices.
++
++**Fix**: Use `latestRoundData()` and require `answer > 0`, `updatedAt != 0`, `answeredInRound >= roundId`, and `block.timestamp - updatedAt <= heartbeat[token]`. On Arbitrum One, also check Chainlink's L2 sequencer uptime feed and enforce a post-recovery grace period before borrowing or liquidation.
++
++## [H-3] wstETH Is Priced As One stETH
++
++**Severity**: High
++
++**Contract / Function**: `LendingMarket.collateralValueUsd()` and `LendingMarket._liquidate()` (`src/LendingMarket.sol:132`, `src/LendingMarket.sol:209`), with the README feed configuration
++
++**What an unlucky user gets**: The README lists wstETH collateral with a stETH/USD feed. One wstETH represents an increasing amount of stETH, so treating one wstETH as exactly one stETH undervalues collateral. Borrowers receive too little credit and can be liquidated even when their actual wstETH redemption value is sufficient.
++
++**Fix**: Use collateral-specific pricing adapters. For wstETH, value collateral as `stETH/USD * wstETH.stEthPerToken()` with proper decimal normalization and oracle staleness/depeg checks. Do the same adapter review before listing weETH, ezETH, rebasing, or yield-bearing collateral.
++
++## [H-4] Withdrawals Check Health Against Stale Debt
++
++**Severity**: High
++
++**Contract / Function**: `CollateralVault.withdraw()` calling `LendingMarket.requireHealthy()` (`src/CollateralVault.sol:44`, `src/LendingMarket.sol:153`)
++
++**What an attacker gets**: `withdraw()` calls a `view` health check, so interest is not accrued first. A borrower can wait while interest accumulates, withdraw collateral against the stale `borrowIndex`, and leave the account undercollateralized once the next market action calls `accrueInterest()`.
++
++**Fix**: Make withdrawal validation accrue interest before checking health. For example, expose a non-view market hook such as `validateWithdraw(user)` that accrues and then checks, or make `debtOf()`/`healthFactor()` compute the pending current borrow index in view functions.
++
++## [H-5] Replayable Borrow Signatures Can Force Unwanted Debt
++
++**Severity**: High
++
++**Contract / Function**: `LendingMarket.borrowWithSig()` (`src/LendingMarket.sol:162`)
++
++**What an attacker gets**: The signed payload has no nonce, deadline, or relayer binding. Anyone who obtains one valid borrow signature can submit it repeatedly until the borrower's health check fails. The USDC is sent to the borrower, but the borrower is forced into unwanted debt and liquidation risk.
++
++**Fix**: Add per-borrower nonces and deadlines to the EIP-712 struct, increment the nonce during execution, and use OpenZeppelin `ECDSA` to reject malleable signatures and zero-address recovery. Consider including an intended caller/recipient if signatures are meant for a specific relayer flow.
++
++## [H-6] Full-Debt Liquidation Leaves Insolvent Positions Unliquidatable
++
++**Severity**: High
++
++**Contract / Function**: `LendingMarket._liquidate()` (`src/LendingMarket.sol:209`)
++
++**What an attacker or unlucky protocol gets**: Liquidators must repay the borrower's entire debt before receiving collateral. If wstETH, weETH, or ezETH drops fast enough that collateral plus bonus is worth less than the debt, rational liquidators lose money by liquidating. The bad debt remains in the system while the borrower keeps the borrowed USDC.
++
++**Fix**: Add partial liquidation with a close factor, cap the liquidation bonus to available collateral, and explicitly account for residual bad debt or insurance coverage. Add stress tests for large collateral price gaps and stale-oracle recovery.
++
++## [M-1] Vault Withdrawals Transfer Before Effects
++
++**Severity**: Medium
++
++**Contract / Function**: `CollateralVault.withdraw()` (`src/CollateralVault.sol:44`)
++
++**What an attacker gets**: `withdraw()` transfers collateral before reducing `balanceOf` and before the health check. If a future listed collateral has ERC777-style hooks, transfer callbacks, or malicious token behavior, a user can reenter while their recorded balance is unchanged and attempt to withdraw more than they own.
++
++**Fix**: Follow checks-effects-interactions: check balance, reduce `balanceOf`, run the health validation, then transfer. Add a reentrancy guard around deposit, withdraw, seize, borrow, repay, and liquidation paths that interact with tokens.
++
++## [M-2] ERC20 Accounting Assumes Perfect Token Behavior
++
++**Severity**: Medium
++
++**Contract / Function**: `CollateralVault.deposit()`, `CollateralVault.withdraw()`, `CollateralVault.seize()`, `LendingMarket.repay()`, `LendingMarket._borrow()`, `LendingMarket._liquidate()` (`src/CollateralVault.sol:35`, `src/LendingMarket.sol:170`, `src/LendingMarket.sol:197`, `src/LendingMarket.sol:209`)
++
++**What an attacker or unlucky user gets**: Raw `transfer`/`transferFrom` return values are ignored, and deposits credit the requested `amount` rather than the actual balance delta. Fee-on-transfer tokens create fake collateral credit, false-returning tokens can update accounting without moving assets, rebasing tokens drift away from stored balances, and denylisted or paused USDC/USDT-style tokens can block liquidations or withdrawals.
++
++**Fix**: Use `SafeERC20`, measure collateral received with balance-before/balance-after accounting, and require per-token adapters for fee-on-transfer, rebasing, yield-bearing, pausable, or denylistable assets. Do not list USDT or rebasing collateral through the current generic path.
++
++## [M-3] `liquidateAll()` Can Be Gas-DoSed
++
++**Severity**: Medium
++
++**Contract / Function**: `LendingMarket.liquidateAll()` and `LendingMarket._borrow()` (`src/LendingMarket.sol:190`, `src/LendingMarket.sol:197`)
++
++**What an attacker gets**: `_borrow()` pushes a borrower whenever `principalOf[borrower] == 0`, and `borrow(0)` can add entries without creating debt. The array is never cleaned up. On Arbitrum, cheaply bloating `borrowers` can make `liquidateAll()` exceed the gas limit during a price move, preventing keeper sweeps.
++
++**Fix**: Reject zero and dust borrows, track borrower membership separately, remove or mark borrowers inactive when debt is cleared or liquidated, and make sweeping paginated with `(start, limit)` bounds.
++
++## [M-4] Interest Accrual Uses Arbitrum L1 Block Numbers
++
++**Severity**: Medium
++
++**Contract / Function**: `LendingMarket.accrueInterest()` (`src/LendingMarket.sol:117`)
++
++**What an attacker or unlucky protocol gets**: On Arbitrum, `block.number` is L1-derived and many L2 transactions can share the same value. The market assumes `blocksElapsed * 12` seconds, so interest can be zero across many L2 transactions and can diverge from actual elapsed L2 time.
++
++**Fix**: Track `lastAccrualTimestamp` and compute elapsed time from `block.timestamp`, with a maximum delta guard for long pauses or sequencer recovery.
++
++## [M-5] Invalid Chainlink Answers Can Inflate Or Break Prices
++
++**Severity**: Medium
++
++**Contract / Function**: `PriceOracle.getPrice()` (`src/PriceOracle.sol:39`)
++
++**What an attacker or unlucky user gets**: `int256 answer` is cast directly to `uint256`. Negative answers become enormous prices, zero USDC price makes debt value zero and allows unlimited health, and feeds with more than 18 decimals revert because `18 - feed.decimals()` underflows.
++
++**Fix**: Require `answer > 0`, reject unsupported decimals, normalize both upward and downward decimal conversions safely, and add circuit breakers for min/max bounded Chainlink answers.
++
++## [M-6] Proxy Initialization Can Be Hijacked If Deployment Is Not Atomic
++
++**Severity**: Medium
++
++**Contract / Function**: `MarketProxy.constructor()` and `LendingMarket.initialize()` (`src/MarketProxy.sol:10`, `src/LendingMarket.sol:56`)
++
++**What an attacker gets**: If the proxy is deployed without `initData`, anyone can call `initialize()` first and choose the owner, oracle, vault, and debt asset. The implementation contract also remains directly initializable, which is unsafe once owner-gated upgrade logic is added.
++
++**Fix**: Require nonempty initialization data in the proxy constructor, validate all initializer addresses, and prevent direct implementation initialization with an implementation-side initialization lock or an OpenZeppelin-style `_disableInitializers()` pattern.
++
++## [L-1] Oracle Ownership Can Be Burned Accidentally
++
++**Severity**: Low
++
++**Contract / Function**: `PriceOracle.transferOwnership()` (`src/PriceOracle.sol:28`)
++
++**What an unlucky operator gets**: The oracle owner can be set to `address(0)`, permanently removing the ability to update feeds if a feed is deprecated or misconfigured.
++
++**Fix**: Reject `newOwner == address(0)` and use a two-step ownership transfer.
++
++## [L-2] Treasury Liquidity And Interest Have No Withdrawal Path
++
++**Severity**: Low
++
++**Contract / Function**: `LendingMarket` treasury/debt-asset custody
++
++**What an unlucky operator gets**: The README says the treasury seeds USDC directly and takes the interest, but the contracts provide no owner withdrawal or accounting path for idle liquidity or earned interest. Funds can only leave through borrower withdrawals or a future upgrade.
++
++**Fix**: Add an explicitly governed treasury withdrawal function for excess USDC, with solvency checks and events, or document that treasury recovery happens only through upgrades.
++
++## Positive Notes
++
++- `forge build` succeeds.
++- `CollateralVault.seize()` is restricted to the configured market address.
++- Borrow, repay, and liquidation entry points accrue interest before mutating debt; the stale-accrual issue is isolated to the vault withdrawal health check and view calculations.
+
+# Untracked files and status
+ A AUDIT-REPORT.md
