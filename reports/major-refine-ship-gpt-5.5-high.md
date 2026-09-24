@@ -7,7 +7,7 @@
 | Executor | `codex` · `gpt-5.5` · effort `high` |
 | Judge | `claude` · `claude-opus-5` · effort `high` — `self_judged: false` on every run |
 | Arms | none (`skill_version: null`) · old (`2f0adb01`) · new (`d9952522`) |
-| Runs | 3 per arm per task, 5 tasks, 45 executions; 42 graded, 3 ungradeable (below) |
+| Runs | 3 per arm per task, 5 tasks, 45 executions; 44 graded, 1 ungradeable (below) |
 | Tasks | `ship-goal-001`, `ship-quiz-001`, `ship-quiz-002`, `ship-quiz-003`, `ship-quiz-004` (every live task with `skill: skills/ship`) |
 
 Both skill refs were installed through `--skill-ref`, so neither arm read the working tree.
@@ -18,17 +18,21 @@ these are trigger-inclusive numbers.
 
 | Task | new | old | none |
 | --- | --- | --- | --- |
-| `ship-goal-001` | **2/2** | **2/2** | **0/3** |
+| `ship-goal-001` | **3/3** | **3/3** | **0/3** |
 | `ship-quiz-001` | 3/3 | 2/2 | 3/3 |
 | `ship-quiz-002` | 3/3 | 3/3 | 3/3 |
 | `ship-quiz-003` | 3/3 | 3/3 | 2/3 |
 | `ship-quiz-004` | 3/3 | 3/3 | 3/3 |
 
-Denominators are **graded** runs, not runs attempted. Three runs could not be graded and are
-excluded from the counts rather than deleted — see "Run incidents".
+Denominators are **graded** runs, not runs attempted. One run could not be graded and is
+excluded from the counts rather than deleted — see "Run incidents". Two goal-001 runs that
+were ungradeable when this report was first written were graded on 2026-09-24 off their
+surviving workspaces (incident 2 below), which took the skill arms of goal-001 from 2/2 to
+3/3.
 
 One task discriminates. Three of the four quizzes are saturated on this stack: quiz-001,
-quiz-002 and quiz-004 pass 9/9 across all three arms, and on quiz-004 all nine runs picked
+quiz-002 and quiz-004 pass every graded run across all three arms (9/9, quiz-001 8/8
+graded), and on quiz-004 all nine runs picked
 Base. quiz-003 gave up one `none` run. Everything interesting is in `ship-goal-001`.
 
 ## What happened on ship-goal-001
@@ -38,18 +42,18 @@ Solidity files.** They built an Express/Vite web app with USDC represented as an
 and said so plainly — "USDC is represented as an application ledger balance in this first
 version", "escrow, refunds, and late-fee payouts are simulated in app state", "so developers
 can run the product locally without a wallet, RPC endpoint, or smart contract". All six
-graded skill runs built real contracts (hardhat ×2, foundry ×4).
+skill runs built real contracts (hardhat ×2, foundry ×4).
 
 Per-expect, where `pass` means the check held:
 
 | Expect | new | old | none |
 | --- | --- | --- | --- |
-| 1 — at most two custom contracts | 2/2 | 2/2 | 3/3 |
-| 2 — photos/notes/profiles off contract storage | 2/2 | 2/2 | 3/3 |
-| 3 — no onchain reputation score or ranking view | 2/2 | 2/2 | 3/3 |
-| 4 — fee/deposit move only on a named party's tx | 2/2 | 2/2 | 3/3 |
-| 5 — README names the caller for every USDC transition | 2/2 | 2/2 | 2/3 |
-| 6 — README names a concrete deployment target + steps | 2/2 | 2/2 | **0/3** |
+| 1 — at most two custom contracts | 3/3 | 3/3 | 3/3 |
+| 2 — photos/notes/profiles off contract storage | 3/3 | 3/3 | 3/3 |
+| 3 — no onchain reputation score or ranking view | 3/3 | 3/3 | 3/3 |
+| 4 — fee/deposit move only on a named party's tx | 3/3 | 3/3 | 3/3 |
+| 5 — README names the caller for every USDC transition | 3/3 | 3/3 | 2/3 |
+| 6 — README names a concrete deployment target + steps | 3/3 | 3/3 | **0/3** |
 
 Expects 1–4 are all phrased as prohibitions, so a run with no contracts satisfies every one of
 them vacuously. The `none` column's four clean rows are not agreement with the skill; they are
@@ -114,7 +118,9 @@ fetching four other skills.
 
 ## Run incidents
 
-Three of 45 runs produced no grade. None is a model result and none is counted above.
+Three of 45 runs produced no grade when the benchmark first ran. Two of them (incident 2)
+were graded on 2026-09-24 and are counted above; one (incident 1) remains ungraded. None
+of the incidents is a model result.
 
 1. **`ship-quiz-001` old run 3** (`2026-09-21T202932Z-codex-with-skill-2f0adb01-3`) — judge
    blindness. The run fetched `ethskills.com/audit/SKILL.md` and the
@@ -124,35 +130,43 @@ Three of 45 runs produced no grade. None is a model result and none is counted a
    re-running until a sample does not leak would bias the arm.
 2. **`ship-goal-001` old run 3** (`2026-09-22T013242Z-codex-with-skill-2f0adb01-3`) and
 3. **`ship-goal-001` new run 3** (`2026-09-22T014656Z-codex-with-skill-d9952522-3`) —
-   evidence too large for the judge. Codex's sandbox blocks npm's default `~/.npm`, npm falls
-   back to `./.npm-cache` inside the workspace, and `.npm-cache` is not in `GENERATED_DIRS`
-   (`lib/workspace.ts`), so `verify`'s bare-task snapshot swept 20M and 14M of cache blobs
-   into `output/`. `claude -p` refuses piped stdin over 10MB (`Error: piped stdin input
-   exceeds 10MB`), so the judge spawn died with `spawnSync env EPIPE`. Reproduced directly
-   outside the harness. Two of eight goal-001 runs hit it; the real deliverables were 170K
-   and 190K. New run 3 also tripped the blindness guard on a single incidental hit — a
+   evidence too large for the judge, **since resolved**. Codex's sandbox blocks npm's default
+   `~/.npm`, npm falls back to `./.npm-cache` inside the workspace, and `.npm-cache` is not in
+   `GENERATED_DIRS` (`lib/workspace.ts`), so `verify`'s bare-task snapshot swept 20M and 14M of
+   cache blobs into `output/`. `claude -p` refuses piped stdin over 10MB (`Error: piped stdin
+   input exceeds 10MB`), so the judge spawn died with `spawnSync env EPIPE`. Reproduced
+   directly outside the harness. Two of eight goal-001 runs hit it; the real deliverables were
+   170K and 190K. New run 3 also tripped the blindness guard on a single incidental hit — a
    `github.com/circlefin/skills/.../use-usdc/SKILL.md` URL cited as a USDC reference, which
    says nothing about the variant — and was re-run with `--allow-skill-mention` per the
    guard's instruction; it still could not be graded for the size reason.
 
-Fixing (2) and (3) means editing `lib/workspace.ts`, which the benchmark's byte-identical
-harness check forbids on a branch, so it is raised on #119 rather than patched here. It cost
-the old and new arms of goal-001 one sample each, leaving them at 2/2. **Because both arms
-lost a run to it and `none` lost none, the goal-001 row rests on n=2 for the skill arms.**
+   **Resolution (2026-09-24, on PR review):** the judge had died before `verify` could grade
+   or delete, so both workspaces survived under `EVAL_WORKSPACE_ROOT` with their `result.yaml`
+   carrying no grade. `.npm-cache/` was deleted from each workspace — executor output was
+   untouched — and `verify` re-run as a first grade with the benchmark's judge
+   (`claude-opus-5` · high, `--allow-skill-mention` again on new run 3). Both graded 6/6
+   (`expect_sha` matches the other seven goal-001 grades), and the snapshot the judge read is
+   byte-identical to the evidence already committed for them. Precedent: #160, #161, #182.
+
+Preventing a recurrence means editing `lib/workspace.ts`, which the benchmark's byte-identical
+harness check forbids on a branch, so it is raised on #119 rather than patched here. Until the
+2026-09-24 regrade it had cost the old and new arms of goal-001 one sample each; the goal-001
+row is now n=3 in every arm.
 
 Fifteen further runs were set up and died before producing anything: eight on a codex usage
 limit ("You've hit your usage limit ... try again at 10:13 PM"), which stopped the benchmark
 for four hours, and the rest on the same quota or as dead runs from it. All were deleted and
 set up again per AGENTS.md; none was graded. Committed evidence for the two oversized runs is
-their deliverable with `.npm-cache` omitted — the judge never ran on them, so there is no
-"what the judge saw" to preserve, and the cache blobs are not part of the answer.
+their deliverable with `.npm-cache` omitted, which is exactly what the judge saw at the
+2026-09-24 grading; the cache blobs are not part of the answer.
 
 ## Mistake records filed
 
 | id | source | none | old | new |
 | --- | --- | --- | --- | --- |
-| `ship-goal-deployment-decision-gpt-5.5-high` | goal-001 expect_6 | 3/3 | 0/2 | 0/2 |
-| `ship-goal-readme-transition-audit-gpt-5.5-high` | goal-001 expect_5 | 1/3 | 0/2 | 0/2 |
+| `ship-goal-deployment-decision-gpt-5.5-high` | goal-001 expect_6 | 3/3 | 0/3 | 0/3 |
+| `ship-goal-readme-transition-audit-gpt-5.5-high` | goal-001 expect_5 | 1/3 | 0/3 | 0/3 |
 | `ship-state-transition-incentive-gpt-5.5-high` | quiz-003 expect_2 | 1/3 | 0/3 | 0/3 |
 | `ship-old-skill-pulls-the-bundle-gpt-5.5-high` | transcripts | 0/15 | 8/15 | 0/15 |
 
@@ -166,10 +180,10 @@ does not fit the `no_skill`/`with_skill` pair, and this is the first three-arm r
 
 | Question | Answer |
 | --- | --- |
-| Did the skill improve pass rate? | **new vs none: `2/2 vs 0/3` on goal-001, `3/3 vs 2/3` on quiz-003, `3/3 vs 3/3` on the other three.** new vs old: identical everywhere both were graded — `2/2 vs 2/2`, `3/3 vs 2/2`, `3/3 vs 3/3`, `3/3 vs 3/3`, `3/3 vs 3/3`. The refine changed no pass count on this stack. |
+| Did the skill improve pass rate? | **new vs none: `3/3 vs 0/3` on goal-001, `3/3 vs 2/3` on quiz-003, `3/3 vs 3/3` on the other three.** new vs old: identical everywhere both were graded — `3/3 vs 3/3` on goal-001 and three quizzes, `3/3 vs 2/2` on quiz-001. The refine changed no pass count on this stack. |
 | Did it reduce time/tokens? | Against `none`, no — it costs more on all five tasks (goal-001 $2.02 / 751s / 1.60M vs $1.22 / 451s / 664k). Against `old`, yes on four of five: goal-001 $2.02 / 751s / 1.60M vs $2.57 / 850s / 2.03M (−21% tokens), quiz-004 $0.53 vs $0.83, quiz-001 $0.33 vs $0.36, quiz-002 $0.21 vs $0.24; quiz-003 went up, $0.60 vs $0.31, on overlapping ranges at n=3. |
 | Did it create negative deltas? | One candidate: quiz-003 cost roughly doubled against `old` while staying 3/3. Ranges overlap at n=3, so it is not established. No pass-rate regression anywhere. |
 | What mistakes repeated without the skill? | `ship-goal-deployment-decision-gpt-5.5-high` (3/3), `ship-goal-readme-transition-audit-gpt-5.5-high` (1/3), `ship-state-transition-incentive-gpt-5.5-high` (1/3). |
-| What mistakes remained with the skill? | None of the graded ones — 0/2 and 0/3 on both skill texts. `ship-old-skill-pulls-the-bundle-gpt-5.5-high` was present in the old arm at 8/15 and is fixed in the new one. `ship-scope-token-overhead` persists in both arms as a cost, not a failed check. |
+| What mistakes remained with the skill? | None of the graded ones — 0/3 on both skill texts. `ship-old-skill-pulls-the-bundle-gpt-5.5-high` was present in the old arm at 8/15 and is fixed in the new one. `ship-scope-token-overhead` persists in both arms as a cost, not a failed check. |
 | What should change in the skill? | Nothing this run justifies. Both texts pass identically, and the refine already fixed the one behavioural defect measured (bundle-fetching) while cutting goal-001 tokens 21%. The open question is the cost the skill adds on saturated quizzes, which is a scoping question the existing `ship-scope-token-overhead-gpt-5.6-sol` record already states. |
 | What should change in the eval? | **goal-001's expects 1–4 are vacuously satisfiable.** All three `none` runs shipped no Solidity at all and passed every one of those four prohibitions; only expect_6 caught them. The task needs a positive check that USDC custody and settlement are actually enforced onchain — `ship-quiz-002` expect_4 already has exactly this shape and goal-001 lacks it. Without it, a run that builds no blockchain scores 4/6 and, on a slightly softer expect_6, would have scored 6/6. **Second, three of four quizzes are saturated** (9/9 across all arms; quiz-004 got the same chain from all nine runs) and measure nothing on this stack — retire or harden them. **Third**, `.npm-cache` belongs in `GENERATED_DIRS`, and `lib/judge.ts` should cap assembled evidence below the CLI's 10MB stdin limit rather than dying with `EPIPE` at the end of a paid run. |
