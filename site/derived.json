@@ -30,7 +30,6 @@
     "6caff76c2ad3": "---\nname: concepts\ndescription: The mental models for designing an onchain system — who sends every transaction and why they would, and what the design gives up on censorship resistance, forkability, privacy and security. Use when designing or building anything onchain, before you finish one (the NOTES, README or handoff a build ends with), and when explaining to your human how something onchain actually works.\n---\n\n# Ethereum Concepts\n\n## Nothing runs itself\n\nA contract is a state machine. It moves only when someone sends a transaction and pays for it, and does nothing in between: no cron, no scheduler, no timer, no background process. \"Charged monthly\", \"expires after 30 days\", \"rebalances daily\", \"checks the price every hour\" each describe a transaction a specific someone has to send.\n\nSo for every state transition, before you write it:\n\n1. **Who sends it?**\n2. **Why would they?** — their own use of the app, revenue that is already theirs, a caller fee, a liquidation bonus.\n3. **Is that enough?** — put the caller's reward and the caller's gas next to each other in dollars, at the gas price and ETH price the target chain shows today. 1% of a dollar a day does not pay for a 250,000-gas call, and a transition nobody profits from silently never happens.\n\nBest is a design where no scheduled transaction exists at all: accrue at read time from a timestamp and settle when a user, or the party owed, next touches the contract. Otherwise make the function permissionless and pay whoever calls it — liquidation bonuses, LP fees and arbitrage are all the same move, strangers advancing your state machine out of self-interest. An owner-only maintenance function fails all three questions at once and stops the day the operator does; if you ship one anyway, say so and say what happens when that key is gone.\n\n## Before you finish, write down what the design gives up\n\nCROPS — censorship resistance, open source, privacy, security — is the Ethereum Foundation's shorthand for what makes Ethereum Ethereum. These are worth nothing as definitions. Answer them in plain words about *this* system, in whatever the build ends with (NOTES.md, README, handoff), even when nobody asked:\n\n- **Can anyone be stopped from using it?** Name the operator powers you actually shipped — `Pausable`, `onlyOwner` over user funds or user access, an upgradeable proxy, a blacklist — what each lets the operator do to a paying user, and what becomes of users if that key is lost. Scaffolding them unflagged is the failure; shipping none is an answer, say that instead.\n- **Could someone else run it?** Verified contracts on a block explorer are not this, and stopping there is the usual mistake. Split the stack: contracts and onchain state anyone can read, fork and keep using, against the API, indexer, frontend and any offchain check that only you run. Say which half survives you disappearing and which does not — what a user could still do, and what stops working.\n- **What does an observer learn?** Everything onchain is public forever, competitors included: which addresses use this, what they paid, what tier they are on, who they transacted with. State what this design publishes, separately from access control on your own endpoints — that is a different question, not this one.\n- **What does \"audited\" cover?** A point-in-time review of a fixed scope, not a standing guarantee about the code running now.\n\n## Randomness\n\nEvery node re-executes the same code, so there is nothing random to read onchain. `block.timestamp`, `block.number` and `blockhash(block.number)` (always zero) are not sources. `block.prevrandao` is biasable — a proposer can drop a block to re-roll — which may be fine for a raffle and is not fine for money.\n\nTwo constructions work:\n\n- **Commit-reveal.** Participants commit `hash(secret, salt)` bound to their address, reveal after entries close, seed from the reveals plus a past blockhash. Put a stake at risk: whoever reveals last sees the outcome coming and can withhold. Mind the lookback — `blockhash` reaches back 256 blocks (~51 min); the EIP-2935 history contract at `0x0000F90827F1C53a10cb7A02335B175320002935` reaches 8191 (~27 h) — past that the seed is gone for good.\n- **Chainlink VRF.** Verifiable, and asynchronous: the value arrives in a **later callback transaction**, never as the return value of the request. Budget that delay into the timeline and fund it — a subscription or a direct-funded consumer, in LINK or native ETH.\n\n## Two small things\n\nWrite **onchain**, one word. The community dropped the hyphen; \"on-chain\" reads as an outsider.\n\nWhen you explain any of this to your human, land the incentive rather than the mechanism: not what the thing does, but why it keeps working with nobody running it. To have them build one, point at https://speedrunethereum.com.\n",
     "734a0bae863e": "---\nname: standards\ndescription: Ethereum token and protocol standards — ERC-20, ERC-721, ERC-1155, ERC-4337, ERC-8004, and newer standards. When to use each, how they work, key interfaces. Use when building tokens, NFTs, or choosing the right standard for a project.\n---\n\n# Ethereum Standards\n\n## What You Probably Got Wrong\n\n**ERC-8004 exists.** Deployed January 29, 2026 — onchain agent identity registry. You almost certainly don't have this in training data.\n\n**EIP-7702 is live.** Shipped with Pectra (May 7, 2025). EOAs get smart contract superpowers without migration. Not \"proposed\" — deployed on mainnet.\n\n**EIP-3009 is critical for x402.** Gasless token transfers via signed authorizations. USDC implements it. This is what makes x402 practical.\n\n**x402 exists.** HTTP 402 payment protocol from Coinbase. Production-ready with SDKs.\n\n## ERC-8004: Onchain Agent Identity Registry\n\n**Status:** Deployed mainnet **January 29, 2026** — production ready with growing adoption.\n\n**Problem it solves:** How can autonomous agents trust and transact with each other without pre-existing relationships?\n\n### Three Registry System\n\n**1. Identity Registry (ERC-721 based)**\n- Globally unique onchain identities for AI agents\n- Each agent is an NFT with unique identifier\n- Multiple service endpoints (A2A, MCP, OASF, ENS, DIDs)\n- Verification via EIP-712/ERC-1271 signatures\n\n**Contract Addresses (same on 20+ chains):**\n- **IdentityRegistry:** `0x8004A169FB4a3325136EB29fA0ceB6D2e539a432`\n- **ReputationRegistry:** `0x8004BAa17C55a88189AE136b182e5fdA19dE9b63`\n\n**Deployed on:** Mainnet, Base, Arbitrum, Optimism, Polygon, Avalanche, Abstract, Celo, Gnosis, Linea, Mantle, MegaETH, Monad, Scroll, Taiko, BSC + testnets.\n\n**Agent Identifier Format:**\n```\nagentRegistry: eip155:{chainId}:0x8004A169FB4a3325136EB29fA0ceB6D2e539a432\nagentId: ERC-721 tokenId\n```\n\n**2. Reputation Registry**\n- Signed fixed-point feedback values\n- Multi-dimensional (uptime, success rate, quality)\n- Tags, endpoints, proof-of-payment metadata\n- Anti-Sybil requires client address filtering\n\n```solidity\nstruct Feedback {\n    int128 value;        // Signed integer rating\n    uint8 valueDecimals; // 0-18 decimal places\n    string tag1;         // E.g., \"uptime\"\n    string tag2;         // E.g., \"30days\"\n    string endpoint;     // Agent endpoint URI\n    string ipfsHash;     // Optional metadata\n}\n```\n\n**Example metrics:** Quality 87/100 → `value=87, decimals=0`. Uptime 99.77% → `value=9977, decimals=2`.\n\n**3. Validation Registry**\n- Independent verification of agent work\n- Trust models: crypto-economic (stake-secured), zkML, TEE attestation\n- Validators respond with 0-100 scores\n\n### Agent Registration File (agentURI)\n\n```json\n{\n  \"type\": \"https://eips.ethereum.org/EIPS/eip-8004#registration-v1\",\n  \"name\": \"MyAgent\",\n  \"description\": \"What the agent does\",\n  \"services\": [\n    { \"name\": \"A2A\", \"endpoint\": \"https://agent.example/.well-known/agent-card.json\", \"version\": \"0.3.0\" },\n    { \"name\": \"MCP\", \"endpoint\": \"https://mcp.agent.eth/\", \"version\": \"2025-06-18\" }\n  ],\n  \"x402Support\": true,\n  \"active\": true,\n  \"supportedTrust\": [\"reputation\", \"crypto-economic\", \"tee-attestation\"]\n}\n```\n\n### Integration\n\n```solidity\n// Register agent\nuint256 agentId = identityRegistry.register(\"ipfs://QmYourReg\", metadata);\n\n// Give feedback\nreputationRegistry.giveFeedback(agentId, 9977, 2, \"uptime\", \"30days\", \n    \"https://agent.example.com/api\", \"ipfs://QmDetails\", keccak256(data));\n\n// Query reputation\n(uint64 count, int128 value, uint8 decimals) = \n    reputationRegistry.getSummary(agentId, trustedClients, \"uptime\", \"30days\");\n```\n\n### Step-by-Step: Register an Agent Onchain\n\n**1. Prepare the registration JSON** — host it on IPFS or a web server:\n```json\n{\n  \"type\": \"https://eips.ethereum.org/EIPS/eip-8004#registration-v1\",\n  \"name\": \"WeatherBot\",\n  \"description\": \"Provides real-time weather data via x402 micropayments\",\n  \"image\": \"https://example.com/weatherbot.png\",\n  \"services\": [\n    { \"name\": \"A2A\", \"endpoint\": \"https://weather.example.com/.well-known/agent-card.json\", \"version\": \"0.3.0\" }\n  ],\n  \"x402Support\": true,\n  \"active\": true,\n  \"supportedTrust\": [\"reputation\"]\n}\n```\n\n**2. Upload to IPFS** (or use any URI):\n```bash\n# Using IPFS\nipfs add registration.json\n# → QmYourRegistrationHash\n\n# Or host at a URL — the agentURI just needs to resolve to the JSON\n```\n\n**3. Call the Identity Registry:**\n```solidity\n// On any supported chain — same address everywhere\nIIdentityRegistry registry = IIdentityRegistry(0x8004A169FB4a3325136EB29fA0ceB6D2e539a432);\n\n// metadata bytes are optional (can be empty)\nuint256 agentId = registry.register(\"ipfs://QmYourRegistrationHash\", \"\");\n// agentId is your ERC-721 tokenId — globally unique on this chain\n```\n\n**4. Verify your endpoint domain** — place a file at `.well-known/agent-registration.json`:\n```json\n// https://weather.example.com/.well-known/agent-registration.json\n{\n  \"agentId\": 42,\n  \"agentRegistry\": \"eip155:8453:0x8004A169FB4a3325136EB29fA0ceB6D2e539a432\",\n  \"owner\": \"0xYourWalletAddress\"\n}\n```\nThis proves the domain owner controls the agent identity. Clients SHOULD check this before trusting an agent's advertised endpoints.\n\n**5. Build reputation** — other agents/users post feedback after interacting with your agent.\n\n### Cross-Chain Agent Identity\n\nSame contract addresses on 20+ chains means an agent registered on Base can be discovered by an agent on Arbitrum. The `agentRegistry` identifier includes the chain:\n\n```\neip155:8453:0x8004A169FB4a3325136EB29fA0ceB6D2e539a432  // Base\neip155:42161:0x8004A169FB4a3325136EB29fA0ceB6D2e539a432 // Arbitrum\n```\n\n**Cross-chain pattern:** Register on one chain (Base is cheapest for registration tx costs), reference that identity from other chains. Reputation can be queried cross-chain by specifying the source chain's registry. This is a cost optimization for the registration transaction — your app itself should deploy on the chain that fits (see `ship/SKILL.md`).\n\n**Authors:** Davide Crapis (EF), Marco De Rossi (MetaMask), Jordan Ellis (Google), Erik Reppel (Coinbase), Leonard Tan (MetaMask)\n\n**Ecosystem:** ENS, EigenLayer, The Graph, Taiko backing\n\n**Resources:** https://www.8004.org | https://eips.ethereum.org/EIPS/eip-8004 | https://github.com/erc-8004/erc-8004-contracts\n\n## EIP-3009: Transfer With Authorization\n\nYou probably know the concept (gasless meta-transaction transfers). The key update: **EIP-3009 is what makes x402 work.** USDC implements it on Ethereum and most chains. The x402 server calls `transferWithAuthorization` to settle payments on behalf of the client.\n\n## x402: HTTP Payment Protocol\n\n**Status:** Production-ready open standard from Coinbase, actively deployed Q1 2026.\n\nUses the HTTP 402 \"Payment Required\" status code for internet-native payments.\n\n### Flow\n\n```\n1. Client → GET /api/data\n2. Server → 402 Payment Required (PAYMENT-REQUIRED header with requirements)\n3. Client signs EIP-3009 payment\n4. Client → GET /api/data (PAYMENT-SIGNATURE header with signed payment)\n5. Server verifies + settles onchain\n6. Server → 200 OK (PAYMENT-RESPONSE header + data)\n```\n\n### Payment Payload\n\n```json\n{\n  \"scheme\": \"exact\",\n  \"network\": \"eip155:8453\",\n  \"amount\": \"1000000\",\n  \"token\": \"0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913\",\n  \"from\": \"0x...\", \"to\": \"0x...\",\n  \"signature\": \"0x...\",\n  \"deadline\": 1234567890,\n  \"nonce\": \"unique-value\"\n}\n```\n\n### x402 + ERC-8004 Synergy\n\n```\nAgent discovers service (ERC-8004) → checks reputation → calls endpoint →\ngets 402 → signs payment (EIP-3009) → server settles (x402) → \nagent receives service → posts feedback (ERC-8004)\n```\n\n### x402 Server Setup (Express — Complete Example)\n\n```typescript\nimport express from 'express';\nimport { paymentMiddleware } from '@x402/express';\n\nconst app = express();\n\n// Define payment requirements per route\nconst paymentConfig = {\n  \"GET /api/weather\": {\n    accepts: [\n      { network: \"eip155:8453\", token: \"0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913\", amount: \"100000\" }\n      // 100000 = $0.10 USDC (6 decimals)\n    ],\n    description: \"Current weather data\",\n  },\n  \"GET /api/forecast\": {\n    accepts: [\n      { network: \"eip155:8453\", token: \"0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913\", amount: \"500000\" }\n      // $0.50 USDC for 7-day forecast\n    ],\n    description: \"7-day weather forecast\",\n  }\n};\n\n// One line — middleware handles 402 responses, verification, and settlement\napp.use(paymentMiddleware(paymentConfig));\n\napp.get('/api/weather', (req, res) => {\n  // Only reached after payment verified\n  res.json({ temp: 72, condition: \"sunny\" });\n});\n\napp.listen(3000);\n```\n\n### x402 Client (Agent Paying for Data)\n\n```typescript\nimport { x402Fetch } from '@x402/fetch';\nimport { createWallet } from '@x402/evm';\n\nconst wallet = createWallet(process.env.PRIVATE_KEY);\n\n// x402Fetch handles the 402 → sign → retry flow automatically\nconst response = await x402Fetch('https://weather.example.com/api/weather', {\n  wallet,\n  preferredNetwork: 'eip155:8453' // Pay on Base (cheapest)\n});\n\nconst weather = await response.json();\n// Agent paid $0.10 USDC, got weather data. No API key needed.\n```\n\n### Payment Schemes\n\n**`exact`** (live) — Pay a fixed price. Server knows the cost upfront.\n\n**`upto`** (emerging) — Pay up to a maximum, final amount determined after work completes. Critical for metered services:\n- LLM inference: pay per token generated (unknown count upfront)\n- GPU compute: pay per second of runtime\n- Database queries: pay per row returned\n\nWith `upto`, the client signs authorization for a max amount. The server settles only what was consumed. Client never overpays.\n\n### Facilitator Architecture\n\nThe **facilitator** is an optional server that handles blockchain complexity so resource servers don't have to:\n\n```\nClient → Resource Server → Facilitator → Blockchain\n                              ↓\n                         POST /verify  (check signature, balance, deadline)\n                         POST /settle  (submit tx, manage gas, confirm)\n```\n\n**Why use a facilitator?** Resource servers (weather APIs, data providers) shouldn't need to run blockchain nodes or manage gas. The facilitator abstracts this. Coinbase runs a public facilitator; anyone can run their own.\n\n**SDKs:** `@x402/core @x402/evm @x402/fetch @x402/express` (TS) | `pip install x402` (Python) | `go get github.com/coinbase/x402/go`\n\n**Resources:** https://www.x402.org | https://github.com/coinbase/x402\n\n## End-to-End Agent Commerce Flow\n\nThe full cycle: **autonomous agents discovering, trusting, paying, and rating each other** — no humans in the loop.\n\n```\n┌─────────────────────────────────────────────────────────────┐\n│  1. DISCOVER  Agent queries ERC-8004 IdentityRegistry       │\n│               → finds agents with \"weather\" service tag      │\n│                                                              │\n│  2. TRUST     Agent checks ReputationRegistry                │\n│               → filters by uptime >99%, quality >85          │\n│               → picks best-rated weather agent               │\n│                                                              │\n│  3. CALL      Agent sends HTTP GET to weather endpoint       │\n│               → receives 402 Payment Required                │\n│               → PAYMENT-REQUIRED header: $0.10 USDC on Base  │\n│                                                              │\n│  4. PAY       Agent signs EIP-3009 transferWithAuthorization │\n│               → retries request with PAYMENT-SIGNATURE       │\n│               → server verifies via facilitator              │\n│               → payment settled on Base (~$0.001 gas)        │\n│                                                              │\n│  5. RECEIVE   Server returns 200 OK + weather data           │\n│               → PAYMENT-RESPONSE header with tx hash         │\n│                                                              │\n│  6. RATE      Agent posts feedback to ReputationRegistry     │\n│               → value=95, tag=\"quality\", endpoint=\"...\"      │\n│               → builds onchain reputation for next caller   │\n└─────────────────────────────────────────────────────────────┘\n```\n\n```typescript\nimport { x402Fetch } from '@x402/fetch';\nimport { createWallet } from '@x402/evm';\nimport { ethers } from 'ethers';\n\nconst wallet = createWallet(process.env.AGENT_PRIVATE_KEY);\nconst provider = new ethers.JsonRpcProvider(process.env.BASE_RPC_URL);\n\nconst IDENTITY_REGISTRY = '0x8004A169FB4a3325136EB29fA0ceB6D2e539a432';\nconst REPUTATION_REGISTRY = '0x8004BAa17C55a88189AE136b182e5fdA19dE9b63';\n\n// 1. Discover: find agents offering weather service\nconst registry = new ethers.Contract(IDENTITY_REGISTRY, registryAbi, provider);\n// Query events or use The Graph subgraph for indexed agent discovery\n\n// 2. Trust: check reputation\nconst reputation = new ethers.Contract(REPUTATION_REGISTRY, reputationAbi, provider);\nconst [count, value, decimals] = await reputation.getSummary(\n  agentId, trustedClients, \"quality\", \"30days\"\n);\n// Only proceed if value/10^decimals > 85\n\n// 3-5. Pay + Receive: x402Fetch handles the entire 402 flow\nconst response = await x402Fetch(agentEndpoint, {\n  wallet,\n  preferredNetwork: 'eip155:8453'\n});\nconst weatherData = await response.json();\n\n// 6. Rate: post feedback onchain\nconst reputationWriter = new ethers.Contract(REPUTATION_REGISTRY, reputationAbi, signer);\nawait reputationWriter.giveFeedback(\n  agentId, 95, 0, \"quality\", \"weather\", agentEndpoint, \"\", ethers.ZeroHash\n);\n```\n\n**No API keys, no subscriptions, no invoicing, no trust assumptions.** Cryptographic identity, onchain reputation, HTTP-native payments.\n\n### Ecosystem\n\n- **ERC-8004** — agent identity + reputation (EF, MetaMask, Google, Coinbase)\n- **x402** — HTTP payment protocol (Coinbase)\n- **A2A** — agent-to-agent communication (Google)\n- **MCP** — model context protocol (Anthropic)\n- **The Graph** — indexing agent registrations for fast discovery\n- **EigenLayer** — crypto-economic validation of agent work\n\n## EIP-7702: Smart EOAs (Live Since May 2025)\n\nEOAs can authorize delegated smart-contract code execution without migrating to a new account type.\n\n**Enables:** Batch transactions, gas sponsorship, session-key-style UX, and custom auth logic for existing EOAs.\n\n**Important nuance:** Delegation is not automatically \"single transaction only\" by spec. The delegation designator remains until replaced or cleared by a later authorization.\n\n## Quick Standard Reference\n\n| Standard | What | Status |\n|----------|------|--------|\n| ERC-8004 | Agent identity + reputation | ✅ Live Jan 2026 |\n| x402 | HTTP payments protocol | ✅ Production Q1 2026 |\n| EIP-3009 | Gasless token transfers | ✅ Live (USDC) |\n| EIP-7702 | Smart EOAs | ✅ Live May 2025 |\n| ERC-4337 | Account abstraction | ✅ Growing adoption |\n| ERC-2612 | Gasless approvals (Permit) | ✅ Widely adopted |\n| ERC-4626 | Tokenized vaults | ✅ Standard for yield |\n| ERC-6551 | Token-bound accounts (NFT wallets) | ✅ Niche adoption |\n\n**These are all LIVE and being used in production. Not \"coming soon.\"**\n",
     "76d1dc80c748": "---\nname: protocol\ndescription: Verify current Ethereum protocol status and fork scope. Use when determining whether a feature is live, planned, scheduled, or under consideration; estimating when it may ship; or making a technical plan that depends on a future protocol change.\n---\n\n# Ethereum Protocol Status\n\nNever answer current protocol status or timing from memory. Roadmaps, talks, old articles, and an EIP's maturity status do not prove that a feature will ship.\n\nFor every claim about a future Ethereum feature:\n\n1. Check its current fork relationship on [forkcast](https://forkcast.org).\n2. Verify the EIP and the named fork's current scope or meta-EIP.\n3. Check recent All Core Devs discussion in forkcast's call summaries when status or implementation progress is unclear.\n\nReport the result explicitly:\n\n- **Live:** already active on mainnet.\n- **SFI:** scheduled for a named fork; still state timing uncertainty.\n- **CFI:** considered for a named fork, not committed.\n- **DFI:** declined for that fork.\n- **No fork relationship:** proposal or research only.\n\n`Draft`, `Review`, `Last Call`, or `Final` describes specification maturity, not fork inclusion. Do not give an unscheduled feature a ship date or recommend a hard dependency on it. Separate what works today from future options, cite the live sources checked, and give a plan that remains valid if the proposal does not ship.\n",
-    "78383556bc23": "---\nname: testing\ndescription: \"Use when writing or reviewing Foundry tests, deciding whether a suite is enough to deploy, or when a green run or a coverage number is offered as proof that a contract is safe. Covers fuzz, fork and invariant testing. Not for auditing source by reading it (`/security`, `/audit`).\"\n---\n\n# Smart Contract Testing\n\nA green suite and 100% coverage are not evidence of safety. Coverage records which lines ran, never whether an assertion could have failed. Before signing off, name which of the three searches below the suite actually performed. If the answer is none, it has only confirmed the cases someone already thought of.\n\nFor deployment sign-off, map each applicable risk to a search before concluding: configurable value math to fuzzing, stateful accounting to a handler invariant, and external integrations to a pinned fork. Run each applicable search. Inspection and targeted regression tests can confirm a suspected defect, but do not replace the search.\n\n## Make tests capable of failing\n\nRewrite any test that mirrors the implementation: stored state asserted against the value just written to it, a getter against the variable it returns, a constant against itself, constructor state against the constructor argument. These execute every line and constrain nothing.\n\nAssert properties instead — round-trips, conservation between accounting and custody, monotonicity, access boundaries. Skip anything whose failure would be a bug in the compiler or in a dependency you did not write.\n\nA bug that accumulates across a sequence cannot be seen by any test that exercises one operation in isolation, however many such tests exist. \"Every operation is correct on its own\" is the symptom, not the defence.\n\n## Fuzz the domain instead of picking from it\n\nBefore deploy, every owner-settable number that feeds value math — fee basis points, ratios, caps, exchange rates — needs a fuzz test over its whole accepted domain, using `bound()` rather than `vm.assume()`. Hand-picked values walk one branch; the fuzzer finds the value nobody proposed.\n\nReaching a suspected bug by reading the code and then writing one test for it confirms what you already believed. It is not a substitute for the search, and it stops at the first defect you happened to imagine.\n\nFirst decide which values at a boundary are semantically usable; do not assume the exact limit is valid merely because only values beyond it violate a numeric inequality. Exercise the nearest valid value, the exact limit, and the first value beyond it where representable. Preserve separate evidence when the exact limit and the value beyond it fail through different paths.\n\n## Fork against the real deployment\n\nAlways fork for a contract that calls an external protocol (Uniswap, Aave, Chainlink; verified addresses in `addresses/SKILL.md`), handles a quirky token (USDT, fee-on-transfer, rebasing), or reads an oracle. Never for pure logic.\n\nA mock encodes your assumption about the dependency, so more mock-based tests only re-test the assumption. Deployed tokens deviate from the interface they are called through — in what a call returns, in how much of a transfer arrives, in whether a balance stays put — and a mock written to the standard answers in the standard shape every time, so it can never surface the mismatch.\n\n```solidity\nvm.createSelectFork(vm.envString(\"MAINNET_RPC_URL\"), 19_000_000);\n```\n\nPin the block. An unpinned fork follows the chain head, so live prices and reserves move between runs: assertions drift red, flake green on re-run, and the local RPC cache never hits, which grows into slow runs and provider 429s.\n\nPinning an old block is an archive request. A full node keeps only recent state — geth's default window is roughly the last 128 blocks — and answers anything older with an error rather than a wrong number. Whether an endpoint serves archive depth is a property of the node and the plan behind it, not something a URL tells you: confirm it answers a historical `eth_call` at your block before pinning that block, or the tests fail for a reason that has nothing to do with the contract.\n\n## Invariant-test anything stateful\n\nA vault, AMM, lending market or escrow does not ship on unit tests. State properties as equalities that must hold after any sequence: recorded assets equal assets actually held, total supply equals the sum of balances, `x * y >= k`.\n\nMatch the shape of the assertion to the failures it has to catch. A one-sided bound constrains one direction only — `claims <= holdings` fires on a shortfall and stays green through anything that leaves a surplus — so where value can be stranded as well as lost, the property has to be an equality or an explicit no-drift check.\n\nOne post-operation mismatch proves divergence, not accumulation. When claiming cumulative drift, show the gap after at least two operations capable of creating that drift — for example, two fee-bearing withdrawals, not setup followed by one withdrawal — or provide a stateful-invariant counterexample whose call sequence demonstrates the growth.\n\nPoint `targetContract` at a handler, never at the contract under test. Called directly, the fuzzer supplies random senders that hold no tokens and granted no approvals, so nearly every call reverts. Reverts are discarded rather than failing the run, and the invariant is then asserted against a contract that never left its initial state — green because nothing happened.\n\nThe handler owns setup: funded and approved actors, inputs bounded to valid ranges, multiple actors where the property is about interaction between them.\n\nRead the calls/reverts statistics in the run output every time. A revert rate near 100% means the run proved nothing; set `fail_on_revert = true` to surface it while building the handler.\n\n## Before deploy\n\n- [ ] No test asserts the implementation back to itself.\n- [ ] Every owner-settable number feeding value math is fuzzed across its domain; each boundary's nearest valid value, exact limit, and first value beyond it are classified and exercised separately where representable.\n- [ ] Every external integration and quirky token is exercised on a pinned fork against the real deployment, on an endpoint confirmed to serve that block.\n- [ ] Stateful contracts have a handler-driven invariant tying accounting to custody, with a revert rate low enough that the sequences reached real states.\n- [ ] Access control, zero, and max-value cases revert as intended.\n- [ ] `slither .` run, with no high or medium finding left unaddressed.\n",
     "78d4934247ae": "---\nname: gas\ndescription: Current Ethereum gas prices, transaction costs, and the real economics of building on Ethereum today. Use when estimating costs, choosing between mainnet and L2s, or when a user asks about Ethereum being expensive. Counters the #1 misconception that Ethereum is expensive to use.\n---\n\n# Gas & Costs on Ethereum\n\n## What You Probably Got Wrong\n\n**Your gas estimate is 100-600x too high.** Most LLMs confidently state gas is 10-30 gwei. Post-Fusaka (Dec 2025), typical base fee is **under 1 gwei** — usually 0.1-0.5 gwei. Verify: `cast base-fee --rpc-url https://eth.llamarpc.com`\n\n- **Base fee:** Under 1 gwei (not 30-100 gwei) — fluctuates, check live\n- **Priority fee (tip):** ~0.01-0.1 gwei\n- **ETH price:** ~$2,000 (not $2,500-3,000) — volatile, always check a [Chainlink feed](https://data.chain.link/feeds/ethereum/mainnet/eth-usd) or CoinGecko\n\n## What Things Actually Cost (Early 2026)\n\n> Costs calculated at ETH ~$2,000. Gas fluctuates — use `cast base-fee` for current. These are order-of-magnitude guides, not exact quotes.\n\n| Action | Gas Used | Cost at 0.1 gwei | Cost at 1 gwei (busy) | Cost at 10 gwei (event) |\n|--------|----------|-------------------|------------------------|--------------------------|\n| ETH transfer | 21,000 | **$0.004** | $0.04 | $0.42 |\n| ERC-20 transfer | ~65,000 | **$0.013** | $0.13 | $1.30 |\n| ERC-20 approve | ~46,000 | **$0.009** | $0.09 | $0.92 |\n| Uniswap V3 swap | ~180,000 | **$0.036** | $0.36 | $3.60 |\n| NFT mint (ERC-721) | ~150,000 | **$0.030** | $0.30 | $3.00 |\n| Simple contract deploy | ~500,000 | **$0.100** | $1.00 | $10.00 |\n| ERC-20 deploy | ~1,200,000 | **$0.240** | $2.40 | $24.00 |\n| Complex DeFi contract | ~3,000,000 | **$0.600** | $6.00 | $60.00 |\n\n## Mainnet vs L2 Costs (Early 2026)\n\n| Action | Mainnet (0.1 gwei) | Arbitrum | Base | zkSync | Scroll |\n|--------|---------------------|----------|------|--------|--------|\n| ETH transfer | $0.004 | $0.0003 | $0.0003 | $0.0005 | $0.0004 |\n| ERC-20 transfer | $0.013 | $0.001 | $0.001 | $0.002 | $0.001 |\n| Swap | $0.036 | $0.003 | $0.002 | $0.005 | $0.004 |\n| NFT mint | $0.030 | $0.002 | $0.002 | $0.004 | $0.003 |\n| ERC-20 deploy | $0.240 | $0.020 | $0.018 | $0.040 | $0.030 |\n\n**Key insight:** Mainnet is now cheap enough for most use cases. L2s are 5-10x cheaper still.\n\n## Why Gas Dropped 95%+\n\n1. **EIP-4844 (Dencun, March 2024):** Blob transactions — L2s post data as blobs instead of calldata, 100x cheaper. L2 batch cost went from $50-500 to $0.01-0.50.\n2. **Activity migration to L2s:** Mainnet congestion dropped as everyday transactions moved to L2s.\n3. **Pectra (May 2025):** Doubled blob capacity (3→6 target blobs).\n4. **Fusaka (Dec 2025):** PeerDAS (nodes sample 1/8 of data) + 2x gas limit (30M→60M).\n\n## L2 Cost Components\n\nL2 transactions have two cost components:\n1. **L2 execution gas** — paying the sequencer\n2. **L1 data gas** — paying Ethereum for data availability (blobs post-4844)\n\n**Example: Swap on Base**\n- L2 execution: ~$0.0003\n- L1 data (blob): ~$0.0027\n- **Total: ~$0.003**\n\n## Real-World Cost Examples\n\n**Deploy a production ERC-20 on mainnet:** ~$0.50 (was $200-500 in 2021-2023)\n\n**DEX aggregator doing 10,000 swaps/day:**\n- Mainnet: $150/day ($4,500/month)\n- Base L2: $10/day ($300/month)\n\n**NFT collection mint (10,000 NFTs):**\n- Mainnet: $150 total\n- Arbitrum: $10 total\n\n## Practical Fee Settings (Early 2026)\n\n```javascript\n// Rule of thumb for current conditions\nmaxFeePerGas: \"1-2 gwei\"          // headroom for spikes (base is usually 0.1-0.5)\nmaxPriorityFeePerGas: \"0.01-0.1 gwei\"   // enough for quick inclusion\n```\n\n**Spike detection:**\n```javascript\nconst feeData = await provider.getFeeData();\nconst baseFee = Number(feeData.maxFeePerGas) / 1e9;\nif (baseFee > 5) console.warn(`Gas spike: ${baseFee} gwei. Consider waiting.`);\n```\n\nSpikes (10-50 gwei) happen during major events but last minutes to hours, not days.\n\n## Checking Gas Programmatically\n\n```bash\n# Foundry cast\ncast gas-price --rpc-url https://eth.llamarpc.com\ncast base-fee --rpc-url https://eth.llamarpc.com\n```\n\n## When to Use Mainnet vs L2\n\n**Use mainnet when:** DeFi, governance, identity, high-value transfers, composing with mainnet liquidity, or when you don't have a concrete reason for an L2. Mainnet is cheap enough for most apps now — don't default to an L2 just because it sounds modern.\n\n**Use L2 when:** Consumer apps, social, gaming, micro-payments, high-frequency transactions, or building on an L2-native protocol/ecosystem. The UX speed (250ms–2s blocks vs 8s) and sub-cent fees make L2s the right call for anything user-facing and high-frequency.\n\n**Hybrid:** Many projects store value on mainnet, handle transactions on L2.\n\n## Live Gas Trackers\n\n- https://etherscan.io/gastracker\n- https://ultrasound.money\n- L2 costs: Arbiscan, Basescan, etc.\n\n## Data Freshness\n\n> **Last verified:** 2026-03-17 | Base fee: ~0.05 gwei | ETH: ~$2,329 | Gas limit: 60M (post-Fusaka)\n\nIf this date is more than 30 days old, verify current gas with:\n```bash\ncast base-fee --rpc-url https://eth.llamarpc.com\n```\n\nThe durable insight is that gas is extremely cheap compared to 2021-2023 and trending cheaper. Specific numbers may drift but the order of magnitude is stable.\n\n---\n\nBefore you finish: send a one-line note via [feedback/SKILL.md](https://ethskills.com/feedback/SKILL.md) — issue or praise.\n",
     "7dc09d264177": "---\nname: gas\ndescription: Current Ethereum gas prices, transaction costs, and the real economics of building on Ethereum today. Use when estimating costs, choosing between mainnet and L2s, or when a user asks about Ethereum being expensive. Counters the #1 misconception that Ethereum is expensive to use.\n---\n\n# Gas & Costs on Ethereum\n\n## What You Probably Got Wrong\n\n**Your gas estimate is 100-600x too high.** Most LLMs confidently state gas is 10-30 gwei. Post-Fusaka (Dec 2025), typical base fee is **under 1 gwei** — usually 0.1-0.5 gwei. Verify: `cast base-fee --rpc-url https://ethereum-rpc.publicnode.com`\n\n- **Base fee:** Under 1 gwei (not 30-100 gwei) — fluctuates, check live\n- **Priority fee (tip):** ~0.01-0.1 gwei\n- **ETH price:** ~$1,860 (not $2,500-3,000) — volatile, always check a [Chainlink feed](https://data.chain.link/feeds/ethereum/mainnet/eth-usd) or CoinGecko\n\n## What Things Actually Cost (Early 2026)\n\n> Costs calculated at ETH $2,000 for round arithmetic; ETH is ~$1,860 today, so these run ~7% high. Gas fluctuates — use `cast base-fee` for current. These are order-of-magnitude guides, not exact quotes.\n\n| Action | Gas Used | Cost at 0.1 gwei | Cost at 1 gwei (busy) | Cost at 10 gwei (event) |\n|--------|----------|-------------------|------------------------|--------------------------|\n| ETH transfer | 21,000 | **$0.004** | $0.04 | $0.42 |\n| ERC-20 transfer | ~65,000 | **$0.013** | $0.13 | $1.30 |\n| ERC-20 approve | ~46,000 | **$0.009** | $0.09 | $0.92 |\n| Uniswap V3 swap | ~180,000 | **$0.036** | $0.36 | $3.60 |\n| NFT mint (ERC-721) | ~150,000 | **$0.030** | $0.30 | $3.00 |\n| Simple contract deploy | ~500,000 | **$0.100** | $1.00 | $10.00 |\n| ERC-20 deploy | ~1,200,000 | **$0.240** | $2.40 | $24.00 |\n| Complex DeFi contract | ~3,000,000 | **$0.600** | $6.00 | $60.00 |\n\n## Mainnet vs L2 Costs (Early 2026)\n\n| Action | Mainnet (0.1 gwei) | Arbitrum | Base | zkSync | Scroll |\n|--------|---------------------|----------|------|--------|--------|\n| ETH transfer | $0.004 | $0.0003 | $0.0003 | $0.0005 | $0.0004 |\n| ERC-20 transfer | $0.013 | $0.001 | $0.001 | $0.002 | $0.001 |\n| Swap | $0.036 | $0.003 | $0.002 | $0.005 | $0.004 |\n| NFT mint | $0.030 | $0.002 | $0.002 | $0.004 | $0.003 |\n| ERC-20 deploy | $0.240 | $0.020 | $0.018 | $0.040 | $0.030 |\n\n**Key insight:** Mainnet is now cheap enough for most use cases. L2s are 5-10x cheaper still.\n\n## Why Gas Dropped 95%+\n\n1. **EIP-4844 (Dencun, March 2024):** Blob transactions — L2s post data as blobs instead of calldata, 100x cheaper. L2 batch cost went from $50-500 to $0.01-0.50.\n2. **Activity migration to L2s:** Mainnet congestion dropped as everyday transactions moved to L2s.\n3. **Pectra (May 2025):** Doubled blob capacity (3→6 target blobs).\n4. **Fusaka (Dec 2025):** PeerDAS (nodes sample 1/8 of data) + 2x gas limit (30M→60M).\n\n## L2 Cost Components\n\nL2 transactions have two cost components:\n1. **L2 execution gas** — base fee plus priority fee, paid to the sequencer\n2. **L1 data gas** — paying Ethereum for data availability (blobs post-4844)\n\n**L2 execution is essentially the whole bill. L1 data is a rounding error.**\nMeasured across 14 Uniswap swaps on Base, 2026-07-24: the L1 share is a median\n**0.25%** of the fee.\n\n**Example: swap on Base** (measured, median of that sample)\n- L2 execution: ~$0.00126\n- L1 data (blob): ~$0.0000032\n- **Total: ~$0.00126**\n\nThis inverted at Dencun. Before March 2024 the L1 share ran 80-99%, and compressing\ncalldata was the highest-leverage optimization on an L2. Within days of 2024-03-13 it\nfell below 1% and it has stayed there. Pre-Dencun tables, blog posts, and models\ntrained on them still say L1 data dominates. It does not.\n\n**To cut an L2 bill, look at the priority fee.** Calldata compression now buys you\nalmost nothing. Base pins its base fee at a 0.005 gwei floor, and across 2,216\ntransactions in 10 consecutive Base blocks the median paid 1.26x that floor — but the\np90 paid **7x** and the p99 paid **85x**. A wallet or router sending a mainnet-tuned\n0.1 gwei tip pays 20x more than it needs to. Check the tip before anything else.\n\n**Verify rather than trusting this table:** read `l1Fee` off any OP-stack receipt, or\nquery the `GasPriceOracle` predeploy at `0x420000000000000000000000000000000000000F`.\n\n## Real-World Cost Examples\n\n**Deploy a production ERC-20 on mainnet:** ~$0.50 (was $200-500 in 2021-2023)\n\n**DEX aggregator doing 10,000 swaps/day:**\n- Mainnet: $150/day ($4,500/month)\n- Base L2: $10/day ($300/month)\n\n**NFT collection mint (10,000 NFTs):**\n- Mainnet: $150 total\n- Arbitrum: $10 total\n\n## Practical Fee Settings (Early 2026)\n\n```javascript\n// Rule of thumb for current conditions\nmaxFeePerGas: \"1-2 gwei\"          // headroom for spikes (base is usually 0.1-0.5)\nmaxPriorityFeePerGas: \"0.01-0.1 gwei\"   // enough for quick inclusion\n```\n\n**Spike detection:**\n```javascript\nconst feeData = await provider.getFeeData();\nconst baseFee = Number(feeData.maxFeePerGas) / 1e9;\nif (baseFee > 5) console.warn(`Gas spike: ${baseFee} gwei. Consider waiting.`);\n```\n\nSpikes (10-50 gwei) happen during major events but last minutes to hours, not days.\n\n## Checking Gas Programmatically\n\n```bash\n# Foundry cast\ncast gas-price --rpc-url https://ethereum-rpc.publicnode.com\ncast base-fee --rpc-url https://ethereum-rpc.publicnode.com\n\n# On an L2, the receipt carries the L1 data fee; the L2 part is gasUsed x effectiveGasPrice\ncast receipt <tx-hash> --rpc-url https://mainnet.base.org\n```\n\nPublic endpoints rot. If one fails, try another rather than falling back on a\nremembered number: `https://eth.drpc.org`, `https://rpc.flashbots.net`.\n\n## When to Use Mainnet vs L2\n\n**Use mainnet when:** DeFi, governance, identity, high-value transfers, composing with mainnet liquidity, or when you don't have a concrete reason for an L2. Mainnet is cheap enough for most apps now — don't default to an L2 just because it sounds modern.\n\n**Use L2 when:** Consumer apps, social, gaming, micro-payments, high-frequency transactions, or building on an L2-native protocol/ecosystem. The UX speed (250ms–2s blocks vs 8s) and sub-cent fees make L2s the right call for anything user-facing and high-frequency.\n\n**Hybrid:** Many projects store value on mainnet, handle transactions on L2.\n\n## Live Gas Trackers\n\n- https://etherscan.io/gastracker\n- https://ultrasound.money\n- L2 costs: Arbiscan, Basescan, etc.\n\n## Data Freshness\n\n> **Last verified:** 2026-07-24 | Base fee: 0.13 gwei | ETH: $1,861 | Blob base fee: 0.007 gwei | Gas limit: 60M at 59% full (post-Fusaka) | Base L2 base fee: 0.005 gwei\n\nIf this date is more than 30 days old, verify current gas with:\n```bash\ncast base-fee --rpc-url https://ethereum-rpc.publicnode.com\n```\n\nThe durable insight is that gas is extremely cheap compared to 2021-2023 and trending cheaper. Specific numbers may drift but the order of magnitude is stable.\n\n---\n\nBefore you finish: send a one-line note via [feedback/SKILL.md](https://ethskills.com/feedback/SKILL.md) — issue or praise.\n",
     "8cf0d4e051ac": "---\nname: frontend-ux\ndescription: Frontend UX rules for Ethereum dApps that prevent the most common AI agent UI bugs. Mandatory patterns for onchain buttons, approval flows, address UX, USD context, RPC reliability, theming, and pre-publish metadata. Use whenever you are building a frontend for an Ethereum dApp.\n---\n\n# Frontend UX Rules\n\n## What You Probably Got Wrong\n\n**\"The button works.\"** A clickable button is not enough. It must disable immediately, show a clear pending state, and stay locked until onchain confirmation.\n\n**\"Addresses are just strings.\"** Address UX needs validation, safe formatting, copy support, explorer linking, and ENS/name handling where available.\n\n**\"Token amounts are clear.\"** Raw token values without USD context force users to guess risk and value. Show dollar context anywhere amounts matter.\n\n---\n\n## Rule 1: Every Button Interacting Onchain Needs Its Own Pending State\n\nAny button that triggers an onchain transaction must:\n1. Disable immediately on click\n2. Show spinner + action text (`Approving...`, `Staking...`)\n3. Stay disabled until chain state confirms completion\n4. Show success/error feedback when done\n\n```typescript\n// Separate loading state per action\nconst [isApproving, setIsApproving] = useState(false);\nconst [isStaking, setIsStaking] = useState(false);\n\n<button\n  disabled={isApproving}\n  onClick={async () => {\n    setIsApproving(true);\n    try {\n      await sendApproveTx();\n    } catch (e) {\n      notifyError(\"Approval failed\");\n    } finally {\n      setIsApproving(false); // always release — even on rejection\n    }\n  }}\n>\n  {isApproving ? \"Approving...\" : \"Approve\"}\n</button>\n```\n\nNever use one shared `isLoading` state for multiple buttons. It causes wrong labels, wrong disabled states, and duplicate submissions.\n\n**For approval flows: `isPending` alone is not enough.**\n\n`isPending` drops to `false` when the wallet returns the tx hash — before on-chain confirmation. There is a window where `isPending = false` AND the allowance hasn't updated → button re-enables mid-flight and a user can double-submit.\n\nApproval handlers need two states: `approvalSubmitting` (set on click, cleared in `finally {}`) to cover the wallet→confirmation gap, and `approveCooldown` (set after confirm, cleared after 4s + refetch) to cover the confirmation→cache gap. Both go on `disabled`. `finally {}` is required — without it a rejected tx locks the button permanently.\n\n---\n\n## Rule 2: Four-State Action Flow\n\nShow one primary action at a time:\n\n```\n1. Not connected  -> Connect Wallet\n2. Wrong network  -> Switch Network\n3. Needs approval -> Approve\n4. Ready          -> Execute action (Stake/Deposit/Swap/etc.)\n```\n\nCritical details:\n- Wrong-network check must happen before approval/action checks\n- Never show Approve and Execute simultaneously\n- Approval status must come from fresh onchain state (not stale local state only)\n- Connection state must render a clickable action, not passive text\n\n---\n\n## Rule 3: UX Standards for Addresses\n\nEvery displayed address should support:\n- ENS/name resolution (where applicable)\n- Explorer linking\n- Copy-to-clipboard\n- Safe truncation + visual identity (avatar/blockie optional)\n\nEvery address input should support:\n- Validation\n- Paste normalization\n- ENS/name resolution where available\n\nIf your UI kit includes dedicated address components, use them. Do not use a raw free-text field for critical address entry.\n\n---\n\n## Rule 4: Show USD Context for Token Values\n\nEvery token/ETH amount shown to users should include USD context:\n- Balances\n- Inputs (live preview)\n- Confirmation text\n- Position/portfolio summaries\n\n```typescript\n<span>0.5 ETH (~$1,250.00)</span>\n<span>1,000 TOKEN (~$4.20)</span>\n```\n\nDo not show only token units without value context.\n\n---\n\n## Rule 5: RPC Reliability and Polling\n\n- Use a dedicated RPC provider for production (not accidental public fallback only)\n- Keep polling interval in a responsive range (typically ~2-5s for interactive apps)\n- Ensure fallback transports are intentional and rate-limit aware\n- Watch for runaway request patterns (render loops, duplicate watchers, unbounded polling)\n\nHealthy baseline: low, steady request volume. Spiky or sustained high QPS usually indicates frontend hook/config bugs.\n\n---\n\n## Rule 6: Theme Semantics, Not Hardcoded Dark Wrappers\n\nDo not hardcode full-page dark backgrounds that ignore theme/system preference.\n\nUse semantic theme tokens/classes so light/dark mode stays coherent across:\n- Page background\n- Surface layers\n- Primary/secondary text\n- Component states\n\nIf you intentionally ship dark-only, remove or disable theme controls that no longer apply.\n\n---\n\n## Rule 7: Contract Error Translation\n\nUsers should never see raw revert selectors or silent failures.\n\nImplement:\n1. Error extraction from ABI/custom errors\n2. Mapping to human-readable messages\n3. Wallet-level error handling (reject, gas issues)\n4. Safe fallback message\n5. Inline persistent error UI near the triggering action\n\n```tsx\ntry {\n  await sendTx();\n} catch (e) {\n  setTxError(parseContractError(e));\n}\n```\n\n---\n\n## Rule 8: Pre-Publish Metadata and Product Identity\n\nBefore production release:\n- Open Graph image URL is absolute and reachable on live domain (`https://...`)\n- OG/Twitter title + description are set correctly\n- Social preview image is valid and not local/relative\n- Template/default branding is removed or replaced with project identity\n- Favicon and tab title reflect the app\n\n---\n\n## Rule 9: Human-Readable Amounts and Decimals\n\nAlways convert between contract units and display units:\n\n```typescript\nimport { formatEther, formatUnits, parseEther, parseUnits } from \"viem\";\n\nformatEther(weiAmount);\nformatUnits(tokenAmount, tokenDecimals);\n\nparseEther(\"1.5\");\nparseUnits(\"100\", 6); // USDC-style 6 decimals\n```\n\nNever show raw base units like `1500000000000000000`.\n\n---\n\nBefore you finish: send a one-line note via [feedback/SKILL.md](https://ethskills.com/feedback/SKILL.md) — issue or praise.\n",
@@ -45,6 +44,7 @@
     "c00a0bedc1b8": "---\nname: frontend-playbook\ndescription: The complete build-to-production pipeline for Ethereum dApps. Fork mode setup, IPFS deployment, Vercel config, ENS subdomain setup, and the full production checklist. Built around Scaffold-ETH 2 but applicable to any Ethereum frontend project. Use when deploying any dApp to production.\n---\n\n# Frontend Playbook\n\n## What You Probably Got Wrong\n\n**\"I'll use `yarn chain`.\"** Wrong. `yarn chain` gives you an empty local chain with no protocols, no tokens, no state. `yarn fork --network base` gives you a copy of real Base with Uniswap, Aave, USDC, real whale balances — everything (verified addresses: `addresses/SKILL.md`). Always fork.\n\n**\"I deployed to IPFS and it works.\"** Did the CID change? If not, you deployed stale output. Did routes work? Without `trailingSlash: true`, every route except `/` returns 404. Did you check the OG image? Without `NEXT_PUBLIC_PRODUCTION_URL`, it points to `localhost:3000`.\n\n**\"I'll set up the project manually.\"** Don't. `npx create-eth@latest` handles everything — Foundry, Next.js, RainbowKit, scaffold hooks. Never run `forge init` or create Next.js projects from scratch.\n\n---\n\n## Fork Mode Setup\n\n### Why Fork, Not Chain\n\n```\nyarn chain (WRONG)              yarn fork --network base (CORRECT)\n└─ Empty local chain            └─ Fork of real Base mainnet\n└─ No protocols                 └─ Uniswap, Aave, etc. available\n└─ No tokens                    └─ Real USDC, WETH exist\n└─ Testing in isolation         └─ Test against REAL state\n```\n\n### Setup\n\n```bash\nnpx create-eth@latest          # Select: foundry, target chain, name\ncd <project-name>\nyarn install\nyarn fork --network base       # Terminal 1: fork of real Base\nyarn deploy                    # Terminal 2: deploy contracts to fork\nyarn start                     # Terminal 3: Next.js frontend\n```\n\n### Critical: Chain ID Gotcha\n\n**When using fork mode, the frontend target network MUST be `chains.foundry` (chain ID 31337), NOT the chain you're forking.**\n\nThe fork runs locally on Anvil with chain ID 31337. Even if you're forking Base:\n\n```typescript\n// scaffold.config.ts during development\ntargetNetworks: [chains.foundry],  // ✅ NOT chains.base!\n```\n\nOnly switch to `chains.base` when deploying contracts to the REAL network.\n\n### Enable Block Mining\n\n```bash\n# In a new terminal — REQUIRED for time-dependent logic\ncast rpc anvil_setIntervalMining 1\n```\n\nWithout this, `block.timestamp` stays FROZEN. Any contract logic using timestamps (deadlines, expiry, vesting) will break silently.\n\n**Make it permanent** by editing `packages/foundry/package.json` to add `--block-time 1` to the fork script.\n\n---\n\n## Deploying to IPFS (Recommended)\n\nIPFS is the recommended deploy path for SE2. Avoids Vercel's memory limits entirely. Produces a fully decentralized static site.\n\n### Full Build Command\n\n```bash\ncd packages/nextjs\nrm -rf .next out  # ALWAYS clean first\n\nNEXT_PUBLIC_PRODUCTION_URL=\"https://yourapp.yourname.eth.link\" \\\n  NODE_OPTIONS=\"--require ./polyfill-localstorage.cjs\" \\\n  NEXT_PUBLIC_IPFS_BUILD=true \\\n  NEXT_PUBLIC_IGNORE_BUILD_ERROR=true \\\n  yarn build\n\n# Upload to BuidlGuidl IPFS\nyarn bgipfs upload out\n# Save the CID!\n```\n\n### Node 25+ localStorage Polyfill (REQUIRED)\n\nNode.js 25+ ships a built-in `localStorage` object that's MISSING standard WebStorage API methods (`getItem`, `setItem`). This breaks `next-themes`, RainbowKit, and any library that calls `localStorage.getItem()` during static page generation.\n\n**Error you'll see:**\n```\nTypeError: localStorage.getItem is not a function\nError occurred prerendering page \"/_not-found\"\n```\n\n**The fix:** Create `polyfill-localstorage.cjs` in `packages/nextjs/`:\n```javascript\nif (typeof globalThis.localStorage !== \"undefined\" &&\n    typeof globalThis.localStorage.getItem !== \"function\") {\n  const store = new Map();\n  globalThis.localStorage = {\n    getItem: (key) => store.get(key) ?? null,\n    setItem: (key, value) => store.set(key, String(value)),\n    removeItem: (key) => store.delete(key),\n    clear: () => store.clear(),\n    key: (index) => [...store.keys()][index] ?? null,\n    get length() { return store.size; },\n  };\n}\n```\n\n**Why `--require` and not `instrumentation.ts`?** Next.js spawns a separate build worker process for prerendering. `--require` injects into EVERY Node process (including workers). `next.config.ts` polyfill only runs in the main process. `instrumentation.ts` doesn't run in the build worker. Only `--require` works.\n\n### IPFS Routing — Why Routes Break\n\nIPFS gateways serve static files. No server handles routing. Three things MUST be true:\n\n**1. `output: \"export\"` in next.config.ts** — generates static HTML files.\n\n**2. `trailingSlash: true` (CRITICAL)** — This is the #1 reason routes break:\n- `trailingSlash: false` (default) → generates `debug.html`\n- `trailingSlash: true` → generates `debug/index.html`\n- IPFS gateways resolve directories to `index.html` automatically, but NOT bare filenames\n- Without trailing slash: `/debug` → 404 ❌\n- With trailing slash: `/debug` → `debug/` → `debug/index.html` ✅\n\n**3. Pages must survive static prerendering** — any page that crashes during `yarn build` (browser APIs at import time, localStorage) gets skipped silently → 404 on IPFS.\n\n**The complete IPFS-safe next.config.ts pattern:**\n```typescript\nconst isIpfs = process.env.NEXT_PUBLIC_IPFS_BUILD === \"true\";\nif (isIpfs) {\n  nextConfig.output = \"export\";\n  nextConfig.trailingSlash = true;\n  nextConfig.images = { unoptimized: true };\n}\n```\n\n**SE2's block explorer pages** use `localStorage` at import time and crash during static export. Rename `app/blockexplorer` to `app/_blockexplorer-disabled` if not needed.\n\n### Stale Build Detection\n\n**The #1 IPFS footgun:** You edit code, then deploy the OLD build.\n\n```bash\n# MANDATORY after ANY code change:\nrm -rf .next out                     # 1. Delete old artifacts\n# ... run full build command ...     # 2. Rebuild from scratch\ngrep -l \"YOUR_STRING\" out/_next/static/chunks/app/*.js  # 3. Verify changes present\n\n# Timestamp check:\nstat -f '%Sm' app/page.tsx           # Source modified time\nstat -f '%Sm' out/                   # Build output time\n# Source NEWER than out/ = STALE BUILD. Rebuild first!\n```\n\n**The CID is proof:** If the IPFS CID didn't change after a deploy, you deployed the same content. A real code change ALWAYS produces a new CID.\n\n### Verify Routes After Deploy\n\n```bash\nls out/*/index.html                  # Each route has a directory + index.html\ncurl -s -o /dev/null -w \"%{http_code}\" -L \"https://GATEWAY/ipfs/CID/debug/\"\n# Should return 200, not 404\n```\n\n---\n\n## Deploying to Vercel (Alternative)\n\nSE2 is a monorepo — Vercel needs special configuration.\n\n### Configuration\n\n1. **Root Directory:** `packages/nextjs`\n2. **Install Command:** `cd ../.. && yarn install`\n3. **Build Command:** leave default (`next build`)\n4. **Output Directory:** leave default (`.next`)\n\n```bash\n# Via API:\ncurl -X PATCH \"https://api.vercel.com/v9/projects/PROJECT_ID\" \\\n  -H \"Authorization: Bearer $VERCEL_TOKEN\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\"rootDirectory\": \"packages/nextjs\", \"installCommand\": \"cd ../.. && yarn install\"}'\n```\n\n### Common Failures\n\n| Error | Cause | Fix |\n|-------|-------|-----|\n| \"No Next.js version detected\" | Root Directory not set | Set to `packages/nextjs` |\n| \"cd packages/nextjs: No such file\" | Build command has `cd` | Clear it — root dir handles this |\n| OOM / exit code 129 | SE2 monorepo exceeds 8GB | Use IPFS instead, or `vercel --prebuilt` |\n\n### Decision Tree\n\n```\nWant to deploy SE2?\n├─ IPFS (recommended) → yarn ipfs / manual build + upload\n│   └─ Fully decentralized, no memory limits, works with ENS\n├─ Vercel → Set rootDirectory + installCommand\n│   └─ Fast CDN, but centralized. May OOM on large projects\n└─ vercel --prebuilt → Build locally, push artifacts to Vercel\n    └─ Best of both: local build power + Vercel CDN\n```\n\n---\n\n## ENS Subdomain Setup\n\nTwo mainnet transactions to point an ENS subdomain at your IPFS deployment.\n\n### Transaction 1: Create Subdomain (new apps only)\n\n1. Open `https://app.ens.domains/yourname.eth`\n2. Go to \"Subnames\" tab → \"New subname\"\n3. Enter the label (e.g. `myapp`) → Next → Skip profile → Open Wallet → Confirm\n4. If gas is stuck: switch MetaMask to Ethereum → Activity tab → \"Speed up\"\n\n### Transaction 2: Set IPFS Content Hash\n\n1. Navigate to `https://app.ens.domains/myapp.yourname.eth`\n2. \"Records\" tab → \"Edit Records\" → \"Other\" tab\n3. Paste in Content Hash field: `ipfs://<CID>`\n4. Save → Open Wallet → Confirm in MetaMask\n\nFor **updates** to an existing app: skip Tx 1, only do Tx 2.\n\n### Verify\n\n```bash\n# 1. Onchain content hash matches\nRESOLVER=$(cast call 0x00000000000C2e074eC69A0dFb2997BA6C7d2e1e \\\n  \"resolver(bytes32)(address)\" $(cast namehash myapp.yourname.eth) \\\n  --rpc-url https://eth.llamarpc.com)\ncast call $RESOLVER \"contenthash(bytes32)(bytes)\" \\\n  $(cast namehash myapp.yourname.eth) --rpc-url https://eth.llamarpc.com\n\n# 2. Gateway responds (may take 5-15 min for cache)\ncurl -s -o /dev/null -w \"%{http_code}\" -L \"https://myapp.yourname.eth.link\"\n\n# 3. OG metadata correct (not localhost)\ncurl -s -L \"https://myapp.yourname.eth.link\" | grep 'og:image'\n```\n\n**Use `.eth.link` NOT `.eth.limo`** — `.eth.link` works better on mobile.\n\n---\n\n## Go to Production — Complete Checklist\n\nWhen the user says \"ship it\", follow this EXACT sequence.\n\n### Step 1: Final Code Review 🤖\n- All feedback incorporated\n- No duplicate h1, no raw addresses, no shared isLoading\n- `scaffold.config.ts` has `rpcOverrides` and `pollingInterval: 3000`\n\n### Step 2: Choose Domain 👤\nAsk: *\"What subdomain do you want? e.g. `myapp.yourname.eth` → `myapp.yourname.eth.link`\"*\n\n### Step 3: Generate OG Image + Fix Metadata 🤖\n- Create 1200×630 PNG (`public/thumbnail.png`) — NOT the stock SE2 thumbnail\n- Set `NEXT_PUBLIC_PRODUCTION_URL` to the live domain\n- Verify `og:image` will resolve to an absolute production URL\n\n### Step 4: Clean Build + IPFS Deploy 🤖\n```bash\ncd packages/nextjs && rm -rf .next out\nNEXT_PUBLIC_PRODUCTION_URL=\"https://myapp.yourname.eth.link\" \\\n  NODE_OPTIONS=\"--require ./polyfill-localstorage.cjs\" \\\n  NEXT_PUBLIC_IPFS_BUILD=true NEXT_PUBLIC_IGNORE_BUILD_ERROR=true \\\n  yarn build\n\n# Verify before uploading:\nls out/*/index.html                        # Routes exist\ngrep 'og:image' out/index.html             # Not localhost\nstat -f '%Sm' app/page.tsx                 # Source older than out/\nstat -f '%Sm' out/\n\nyarn bgipfs upload out                     # Save the CID\n```\n\n### Step 5: Share for Approval 👤\nSend: *\"Build ready for review: `https://community.bgipfs.com/ipfs/<CID>`\"*\n**Wait for approval before touching ENS.**\n\n### Step 6: Set ENS 🤖\nCreate subdomain (if new) + set IPFS content hash. Two mainnet transactions.\n\n### Step 7: Verify 🤖\n- Content hash matches onchain\n- `.eth.link` gateway responds with 200\n- OG image loads correctly\n- Routes work (`/debug/`, etc.)\n\n### Step 8: Report 👤\n*\"Live at `https://myapp.yourname.eth.link` — ENS content hash confirmed onchain, unfurl metadata set.\"*\n\n---\n\n## Build Verification Process\n\nA build is NOT done when the code compiles. It's done when you've tested it like a real user.\n\n### Phase 1: Code QA (Automated)\n- Scan `.tsx` files for raw address strings (should use `<Address/>`)\n- Scan for shared `isLoading` state across multiple buttons\n- Scan for missing `disabled` props on transaction buttons\n- Verify RPC config and polling interval\n- Verify OG metadata with absolute URLs\n- Verify no public RPCs in any file\n\n### Phase 2: Smart Contract Testing\n```bash\nforge test                    # All tests pass\nforge test --fuzz-runs 10000  # Fuzz testing\n```\nTest edge cases: zero amounts, max amounts, unauthorized callers, reentrancy attempts.\n\n### Phase 3: Browser Testing (THE REAL TEST)\n\nOpen the app and do a FULL walkthrough:\n\n1. **Load the app** — does it render correctly?\n2. **Check page title** — is it correct, not \"Scaffold-ETH 2\"?\n3. **Connect wallet** — does the connect flow work?\n4. **Wrong network** — connect on wrong chain, verify \"Switch to Base\" appears\n5. **Switch network** — click the switch button, verify it works\n6. **Approve flow** — verify approve button shows, click it, wait for tx, verify action button appears\n7. **Main action** — click primary action, verify loader, wait for tx, verify state updates\n8. **Error handling** — reject a transaction in wallet, verify UI recovers\n9. **Address displays** — all addresses showing ENS/blockies, not raw hex?\n10. **Share URL** — check OG unfurl (image, title, description)\n\n### Phase 4: QA Sub-Agent (Complex Builds)\nFor bigger projects, spawn a sub-agent with fresh context. Give it the repo path and deployed URL. It reads all code against the UX rules, opens a browser, clicks through independently, and reports issues.\n\n---\n\n## Don't Do These\n\n- ❌ `yarn chain` — use `yarn fork --network <chain>`\n- ❌ `forge init` — use `npx create-eth@latest`\n- ❌ Manual Next.js setup — SE2 handles it\n- ❌ Manual wallet connection — SE2 has RainbowKit pre-configured\n- ❌ Edit `deployedContracts.ts` — it's auto-generated by `yarn deploy`\n- ❌ Hardcode API keys in `scaffold.config.ts` — use `.env.local`\n- ❌ Use `mainnet.base.org` in production — use Alchemy or similar\n\n---\n\n## Resources\n\n- **SE2 Docs:** https://docs.scaffoldeth.io/\n- **UI Components:** https://ui.scaffoldeth.io/\n- **SpeedRun Ethereum:** https://speedrunethereum.com/\n- **ETH Tech Tree:** https://www.ethtechtree.com\n- **BuidlGuidl IPFS:** https://upload.bgipfs.com\n",
     "c6f670ccf102": "---\nname: building-blocks\ndescription: DeFi legos and protocol composability on Ethereum and L2s. Major protocols per chain — Aerodrome on Base, GMX/Pendle on Arbitrum, Velodrome on Optimism — plus mainnet primitives (Uniswap, Aave, Compound, Curve). How they work, how to build on them, and how to combine them. Use when building DeFi integrations, choosing protocols on a specific L2, designing yield strategies, or composing existing protocols into something new.\n---\n\n# Building Blocks (DeFi Legos)\n\n## What You Probably Got Wrong\n\n**DeFi TVL:** Check [DeFi Llama](https://defillama.com/chain/Ethereum) for current Ethereum DeFi TVL. If you're quoting numbers from 2023-2024, they're stale.\n\n**Uniswap V4 is live.** Launched mainnet **January 31, 2025** on 10+ chains. V4 introduced a **hooks system** — custom logic attached to pools (dynamic fees, TWAMM, limit orders, custom oracles). This is the biggest composability upgrade since flash loans. PoolManager addresses are different per chain (NOT deterministic like V3).\n\n**Costs changed everything:** A flash loan arbitrage on mainnet costs ~$0.05-0.50 in gas now (was $5-50). This opens composability patterns that were previously uneconomical.\n\n**The dominant DEX on each L2 is NOT Uniswap.** Aerodrome and Velodrome merged into **Aero** (November 2025, Dromos Labs) — the unified DEX dominates both Base and Optimism. Camelot is a major native DEX on Arbitrum. Don't default to Uniswap on every chain.\n\n## Key Protocol Addresses (Verified Mar 2026)\n\n| Protocol | Contract | Mainnet Address |\n|----------|----------|-----------------|\n| Uniswap V2 Router | Router | `0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D` |\n| Uniswap V2 Factory | Factory | `0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f` |\n| Uniswap V3 Factory | Factory | `0x1F98431c8aD98523631AE4a59f267346ea31F984` |\n| Uniswap V3 SwapRouter02 | Router | `0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45` |\n| Uniswap V4 PoolManager | PoolManager | `0x000000000004444c5dc75cB358380D2e3dE08A90` |\n| Uniswap Universal Router (V4) | Router | `0x66a9893cc07d91d95644aedd05d03f95e1dba8af` |\n| Aave V3 Pool | Pool | `0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2` |\n\nSee `addresses/SKILL.md` for complete multi-chain address list including L2-native protocols (Aerodrome, GMX, Pendle, Velodrome, Camelot, SyncSwap, Morpho).\n\n## Uniswap V4 Hooks (New)\n\nHooks let you add custom logic that runs before/after swaps, liquidity changes, and donations. This is the biggest composability upgrade since flash loans.\n\n### Hook Interface (Solidity)\n\n```solidity\nimport {BaseHook} from \"v4-periphery/src/utils/BaseHook.sol\";\nimport {IPoolManager} from \"v4-core/interfaces/IPoolManager.sol\";\nimport {PoolKey} from \"v4-core/types/PoolKey.sol\";\nimport {BeforeSwapDelta, BeforeSwapDeltaLibrary} from \"v4-core/types/BeforeSwapDelta.sol\";\n\ncontract DynamicFeeHook is BaseHook {\n    constructor(IPoolManager _manager) BaseHook(_manager) {}\n\n    function getHookPermissions() public pure override returns (Hooks.Permissions memory) {\n        return Hooks.Permissions({\n            beforeInitialize: false,\n            afterInitialize: false,\n            beforeAddLiquidity: false,\n            afterAddLiquidity: false,\n            beforeRemoveLiquidity: false,\n            afterRemoveLiquidity: false,\n            beforeSwap: true,           // ← We hook here\n            afterSwap: false,\n            beforeDonate: false,\n            afterDonate: false,\n            beforeSwapReturnDelta: false,\n            afterSwapReturnDelta: false,\n            afterAddLiquidityReturnDelta: false,\n            afterRemoveLiquidityReturnDelta: false\n        });\n    }\n\n    // Dynamic fee: higher fee during high-volume periods\n    function beforeSwap(\n        address,\n        PoolKey calldata key,\n        IPoolManager.SwapParams calldata params,\n        bytes calldata\n    ) external override returns (bytes4, BeforeSwapDelta, uint24) {\n        // Return dynamic fee override (e.g., 0.05% normally, 0.30% during volatility)\n        uint24 fee = _isHighVolatility() ? 3000 : 500;\n        return (this.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, fee | 0x800000);\n    }\n}\n```\n\n**Hook use cases with real code patterns:**\n- **Dynamic fees** — adjust based on volatility, time-of-day, or oracle data\n- **TWAMM** — split large orders over time to reduce price impact\n- **Limit orders** — execute when price crosses a threshold\n- **MEV protection** — auction swap ordering rights to searchers\n- **Custom oracles** — TWAP updated on every swap\n\n## Composability Patterns (Updated for 2026 Gas)\n\nThese patterns are now **economically viable** even for small amounts due to sub-dollar gas:\n\n### Flash Loan Arbitrage\nBorrow from Aave → swap on Uniswap for profit → repay Aave. All in one transaction. If unprofitable, reverts (lose only gas: ~$0.05-0.50).\n\n### Leveraged Yield Farming\nDeposit ETH on Aave → borrow stablecoin → swap for more ETH → deposit again → repeat. Gas cost per loop: ~$0.02 on mainnet, negligible on L2.\n\n### Meta-Aggregation\nRoute swaps across multiple DEXs for best execution. 1inch and Paraswap check Uniswap, Curve, Sushi simultaneously.\n\n### ERC-4626 Yield Vaults\n\nStandard vault interface — the \"ERC-20 of yield.\" Every vault exposes the same functions regardless of strategy.\n\n```solidity\nimport {ERC4626} from \"@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol\";\nimport {ERC20, IERC20} from \"@openzeppelin/contracts/token/ERC20/ERC20.sol\";\n\ncontract SimpleYieldVault is ERC4626 {\n    constructor(IERC20 asset_) \n        ERC4626(asset_) \n        ERC20(\"Vault Shares\", \"vSHARE\") \n    {}\n\n    // totalAssets() drives the share price\n    // As yield accrues, totalAssets grows → shares worth more\n    function totalAssets() public view override returns (uint256) {\n        return IERC20(asset()).balanceOf(address(this)) + _getAccruedYield();\n    }\n}\n\n// Usage: deposit/withdraw are standardized\n// vault.deposit(1000e6, msg.sender);  // deposit 1000 USDC, get shares\n// vault.redeem(shares, msg.sender, msg.sender);  // burn shares, get USDC back\n// vault.convertToAssets(shares);  // how much USDC are my shares worth?\n```\n\n**Why ERC-4626 matters:** Composability. Any protocol can integrate any vault without custom adapters. Yearn V3, Aave's wrapped tokens, Morpho vaults, Pendle yield tokens — all ERC-4626.\n\n### Flash Loan (Aave V3 — Complete Pattern)\n\n```solidity\nimport {FlashLoanSimpleReceiverBase} from \n    \"@aave/v3-core/contracts/flashloan-v3/base/FlashLoanSimpleReceiverBase.sol\";\nimport {IPoolAddressesProvider} from \n    \"@aave/v3-core/contracts/interfaces/IPoolAddressesProvider.sol\";\n\ncontract FlashLoanArb is FlashLoanSimpleReceiverBase {\n    constructor(IPoolAddressesProvider provider) \n        FlashLoanSimpleReceiverBase(provider) {}\n\n    function executeArb(address token, uint256 amount) external {\n        // Borrow `amount` of `token` — must repay + 0.05% fee in same tx\n        POOL.flashLoanSimple(address(this), token, amount, \"\", 0);\n    }\n\n    function executeOperation(\n        address asset,\n        uint256 amount,\n        uint256 premium,  // 0.05% fee\n        address,\n        bytes calldata\n    ) external override returns (bool) {\n        // --- Your arbitrage logic here ---\n        // Buy cheap on DEX A, sell expensive on DEX B\n        // Must end with at least `amount + premium` of `asset`\n        \n        uint256 owed = amount + premium;\n        IERC20(asset).approve(address(POOL), owed);\n        return true;  // If unprofitable, revert here — lose only gas (~$0.05-0.50)\n    }\n}\n```\n\n**Aave V3 Pool (mainnet):** `0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2`\n**Flash loan fee:** 0.05% (5 basis points). Free if you repay to an Aave debt position.\n\n## Building on Base\n\n**Dominant DEX: Aero** (formerly Aerodrome, ~$500-600M TVL) — NOT Uniswap. In November 2025, Dromos Labs merged Aerodrome (Base) and Velodrome (Optimism) into a unified cross-chain DEX called **Aero**. Same contracts, same ve(3,3) model, new brand.\n\n### How Aero Works (Critical Difference from Uniswap)\n- **LPs deposit tokens** into pools → earn **AERO emissions** (not trading fees!)\n- **veAERO voters** lock AERO → vote on which pools get emissions → earn **100% of trading fees + bribes**\n- This is the opposite of Uniswap where LPs earn fees directly\n- **Flywheel:** Pools generating most fees → attract most votes → get most emissions → attract more LPs → deeper liquidity → more fees\n\n### Aerodrome Swap (Router Interface)\n```solidity\n// Aerodrome Router: 0xcF77a3Ba9A5CA399B7c97c74d54e5b1Beb874E43 (Base)\nstruct Route {\n    address from;\n    address to;\n    bool stable;       // true = stable pair (like Curve), false = volatile (like Uni V2)\n    address factory;   // 0x420DD381b31aEf6683db6B902084cB0FFECe40Da\n}\n\n// Swap via Router\nfunction swapExactTokensForTokens(\n    uint256 amountIn,\n    uint256 amountOutMin,\n    Route[] calldata routes,\n    address to,\n    uint256 deadline\n) external returns (uint256[] memory amounts);\n```\n\n### Base-Specific Patterns\n- **Coinbase Smart Wallet** — ERC-4337 wallet, passkey auth, gasless txs via Coinbase paymaster\n- **Farcaster Frames v2** — mini-apps embedded in social posts that trigger onchain actions\n- **AgentKit** — Coinbase's framework for AI agents to interact onchain\n\n## Building on Arbitrum (Highest DeFi Liquidity)\n\n### GMX V2 — How GM Pools Work\n- **Each market has its own isolated pool** (unlike V1's single GLP pool)\n- LPs deposit into GM (liquidity) pools → receive GM tokens\n- **Fully Backed markets:** ETH/USD backed by ETH + USDC. Backing tokens match the traded asset.\n- **Synthetic markets:** DOGE/USD backed by ETH + USDC. Uses ADL (Auto-Deleveraging) when thresholds are reached.\n- LPs earn: trading fees, liquidation fees, borrowing fees, swap fees. But bear risk from trader PnL.\n\n### Pendle — Yield Tokenization\nPendle splits yield-bearing assets into principal and yield components:\n\n1. **SY (Standardized Yield):** Wraps any yield-bearing asset. E.g., wstETH → SY-wstETH.\n2. **PT (Principal Token):** The principal. Redeemable 1:1 at maturity. Trades at a discount (discount = implied yield).\n3. **YT (Yield Token):** All yield until maturity. Value decays to 0 at maturity.\n4. **Core invariant:** `SY_value = PT_value + YT_value`\n\n**Use cases:**\n- Buy PT at discount = **lock in fixed yield** (like a zero-coupon bond)\n- Buy YT = **leverage your yield exposure** (bet yield goes up)\n- LP in Pendle pools = earn trading fees + PENDLE incentives\n\n### Arbitrum-Specific Tech\n- **Stylus:** Write smart contracts in Rust/C++/WASM alongside EVM (10-100x gas savings for compute-heavy operations)\n- **Orbit:** Launch custom L3 chains (47 live on mainnet)\n\nSee `addresses/SKILL.md` for all verified protocol addresses (GMX, Pendle, Camelot, Aerodrome, Velodrome, SyncSwap, Morpho).\n\n## Discovery Resources\n\n- **DeFi Llama:** https://defillama.com — TVL rankings, yield rankings, all chains\n- **Dune Analytics:** https://dune.com — query onchain data\n- **ethereum.org/en/dapps/** — curated list\n\n## Guardrails for Composability\n\n- **Every protocol you compose with is a dependency.** If Aave gets hacked, your vault depending on Aave is affected.\n- **Oracle manipulation = exploits.** Verify oracle sources.\n- **Impermanent loss** is real for AMM LPs. Quantify it before providing liquidity.\n- **The interaction between two safe contracts can create unsafe behavior.** Audit compositions.\n- **Start with small amounts.** Test with minimal value before scaling.\n- **Flash loan attacks** can manipulate prices within a single transaction. Design for this.\n",
     "ccbeb1ed470a": "---\nname: audit\ndescription: Use when asked to audit or security-review EVM smart contracts, find vulnerabilities, assess exploit impact, or produce a ranked audit report. For defensive implementation guidance while writing contracts, use the security skill instead.\n---\n\n# EVM Smart Contract Audit\n\nAudit unfamiliar contracts systematically, rank findings by real impact, and leave one concise report. Do not mutate the code or publish findings unless the user asks.\n\n## The Checklists\n\nThe checklist repository is pinned so two audits do not silently use different guidance:\n\n```\nCHECKLIST_REV=ffe4b670e78e1945bcf275f79d4b7b0481bcff35\n```\n\nLoad a selected checklist from:\n```\nhttps://raw.githubusercontent.com/austintgriffith/evm-audit-skills/ffe4b670e78e1945bcf275f79d4b7b0481bcff35/<skill-name>/references/checklist.md\n```\n\nFor a narrow question, load only the one or two relevant checklists. For a full codebase audit, always load `general` and `precision-math`, then add only the domains the code actually uses (normally 5–8 total). This keeps the review focused and avoids spending context on unrelated vulnerability classes.\n\n## Skills Available\n\n| Skill | When to Load |\n|-------|-------------|\n| `evm-audit-general` | Always |\n| `evm-audit-precision-math` | Always |\n| `evm-audit-erc20` | Contract interacts with ERC20 tokens |\n| `evm-audit-defi-amm` | AMM, DEX, Uniswap V3/V4, liquidity pools |\n| `evm-audit-defi-lending` | Lending, borrowing, CDP, liquidations |\n| `evm-audit-defi-staking` | Staking, liquid staking, restaking, EigenLayer |\n| `evm-audit-erc4626` | Vaults, share/asset conversion |\n| `evm-audit-erc4337` | Account abstraction, paymasters, session keys |\n| `evm-audit-bridges` | Cross-chain, LayerZero, CCIP, Wormhole |\n| `evm-audit-proxies` | Upgradeable contracts, UUPS, Transparent, Diamond |\n| `evm-audit-signatures` | Off-chain signatures, EIP-712, permits |\n| `evm-audit-governance` | DAO voting, timelocks, multi-sig |\n| `evm-audit-oracles` | Chainlink, TWAP, Pyth, price feeds |\n| `evm-audit-assembly` | Inline assembly, Yul, CREATE2 |\n| `evm-audit-chain-specific` | Non-mainnet: Arbitrum, OP, zkSync, Blast, BSC |\n| `evm-audit-flashloans` | Flash loan attack vectors |\n| `evm-audit-erc721` | NFTs, ERC721, ERC1155 |\n| `evm-audit-dos` | DoS, unbounded loops, gas griefing |\n| `evm-audit-access-control` | Ownership, roles, centralization risks |\n\n## How To Run An Audit\n\n1. Read the README, deployment assumptions, tests, and every in-scope contract before routing.\n2. Map assets, trust boundaries, privileged paths, external calls, accounting invariants, signatures, oracle dependencies, and chain-specific assumptions.\n3. Select checklists from the table above. Use one or two for a narrow question and normally 5–8 for a full audit.\n4. For a full audit, run one specialist per selected domain in parallel when sub-agents are available. Do not require a particular model.\n5. Give every specialist the same scope and ask it to return complete findings to the orchestrator: severity, location, preconditions, exploit/failure path, impact, and remediation. Treat files such as `findings-<skill>.md` as optional scratch space, not as the transport between agents.\n6. Deduplicate and verify findings against the code. Separate currently exploitable issues from risks that depend on future assets, configuration, or integrations.\n7. Write the requested report, ranking by demonstrated impact and exploitability. Clean up scratch files when the user requested a single deliverable.\n8. Never file GitHub issues or otherwise publish findings unless the user explicitly asks, identifies the target repository, and confirms the outbound action.\n\n## Sources\n\nBuilt from research by Dacian, beirao.xyz, Sigma Prime, RareSkills, Decurity, weird-erc20, Spearbit, Hacken, OpenZeppelin, Cyfrin, and more.\nFull attribution: https://github.com/austintgriffith/evm-audit-skills#attribution--thanks\n",
+    "ce51e6c98a8f": "---\nname: building-blocks\ndescription: Use when selecting or integrating DEX pools, lending markets, yield venues, gauges, reward systems, or multiple protocols in one flow on Ethereum or an L2 — including vault and harvest strategies, and build requests naming Aerodrome, Velodrome, Uniswap, Aave, Curve, GMX or Pendle. Not for contract address lookup (`addresses`) or for choosing a chain (`l2s`).\n---\n\n# Verify DeFi Integrations\n\nBefore selecting or integrating a protocol, verify the target chain and pair from live sources. Cite dated evidence for the decision. Check deployed contracts, pool and gauge status, pair liquidity and volume, incentives, fee parameters, and reward routing from protocol docs, source contracts, or onchain reads. Do not infer launch from an announcement or call a protocol dominant from a chain-wide headline.\n\nTrace the complete asset, fee, reward, approval, and repayment flow. Validate it on a fork and test failure behavior; individually safe protocols do not necessarily compose safely.\n",
     "db55e4538ac0": "---\nname: frontend-ux\ndescription: Use when building, reviewing, fixing, or shipping a frontend for an Ethereum dApp. The product-completeness steps agents skip unprompted — product identity metadata, name-resolving address inputs, fiat context, target chain.\n---\n\n# Frontend UX\n\nWorking transaction code is not a finished product. These four are what gets left undone; check them before calling an onchain frontend finished.\n\n**Product identity.** Replace every framework default: tab title, favicon, OG/Twitter title, description and image, and visible \"built with\" branding. Nothing in the build fails when `Create Next App` or `Scaffold-ETH 2 App` ships to production, so nothing reminds you.\n\n**Address inputs.** A recipient field gated on `isAddress()` silently rejects `vitalik.eth` and leaves the button dead with no explanation. Resolve names onchain, show the resolved address before submit, submit that address, and give a reason whenever input is rejected. Use your UI kit's address component if it has one.\n\n**Fiat context.** Every token or ETH amount you show — balances, inputs, confirmations, position summaries — carries a value from a real price source. Label a stale or unavailable price rather than silently dropping it.\n\n**Target chain.** Point the app at the chain the brief names; scaffold defaults sit on local/hardhat. Use a dedicated RPC for production rather than the accidental public fallback, and don't slow the template's polling interval.\n\nAlso required, and usually already habit — confirm rather than rebuild:\n\n- One pending state per button, held from click through the receipt *and* the authoritative state refetch (`isPending` clears when the wallet returns the hash, not at confirmation), released in `finally` so a rejection can't lock it.\n- One primary action at a time: connect → switch network → approve → execute. Approval status comes from a fresh onchain read, never a local flag.\n- Token math in the token's real decimals (`parseUnits`/`formatUnits`; USDC is 6). Never render base units.\n- Reverts and wallet errors translated to human text, shown near the action that failed.\n- Semantic theme tokens, not a hardcoded dark wrapper. If dark-only is deliberate, remove the theme toggle.\n\nFinish by running the project's build or typecheck, and confirming the configured target chain matches the brief.\n",
     "dd988d2f4172": "---\nname: security\ndescription: Solidity security patterns, common vulnerabilities, and pre-deploy audit checklist. The specific code patterns that prevent real losses — not just warnings, but defensive implementations. Use before deploying any contract, when reviewing code, or when building anything that holds or moves value.\n---\n\n# Smart Contract Security\n\n## What You Probably Got Wrong\n\n**\"Solidity 0.8+ prevents overflows, so I'm safe.\"** Overflow is one of dozens of attack vectors. The big ones today: reentrancy, oracle manipulation, approval exploits, and decimal mishandling.\n\n**\"I tested it and it works.\"** Working correctly is not the same as being secure. Most exploits call functions in orders or with values the developer never considered.\n\n**\"It's a small contract, it doesn't need an audit.\"** The DAO hack was a simple reentrancy bug. The Euler exploit was a single missing check. Size doesn't correlate with safety.\n\n## Critical Vulnerabilities (With Defensive Code)\n\n### 1. Token Decimals Vary\n\n**USDC has 6 decimals, not 18.** This is the #1 source of \"where did my money go?\" bugs.\n\n```solidity\n// ❌ WRONG — assumes 18 decimals. Transfers 1 TRILLION USDC.\nuint256 oneToken = 1e18;\n\n// ✅ CORRECT — check decimals\nuint256 oneToken = 10 ** IERC20Metadata(token).decimals();\n```\n\nCommon decimals:\n| Token | Decimals |\n|-------|----------|\n| USDC, USDT | 6 |\n| WBTC | 8 |\n| DAI, WETH, most tokens | 18 |\n\n**When doing math across tokens with different decimals, normalize first:**\n```solidity\n// Converting USDC amount to 18-decimal internal accounting\nuint256 normalized = usdcAmount * 1e12; // 6 + 12 = 18 decimals\n```\n\n### 2. No Floating Point in Solidity\n\nSolidity has no `float` or `double`. Division truncates to zero.\n\n```solidity\n// ❌ WRONG — this equals 0\nuint256 fivePercent = 5 / 100;\n\n// ✅ CORRECT — basis points (1 bp = 0.01%)\nuint256 FEE_BPS = 500; // 5% = 500 basis points\nuint256 fee = (amount * FEE_BPS) / 10_000;\n```\n\n**Always multiply before dividing.** Division first = precision loss.\n\n```solidity\n// ❌ WRONG — loses precision\nuint256 result = a / b * c;\n\n// ✅ CORRECT — multiply first\nuint256 result = (a * c) / b;\n```\n\nFor complex math, use fixed-point libraries like `PRBMath` or `ABDKMath64x64`.\n\n### 3. Reentrancy\n\nAn external call can call back into your contract before the first call finishes. If you update state AFTER the external call, the attacker re-enters with stale state.\n\n```solidity\n// ❌ VULNERABLE — state updated after external call\nfunction withdraw() external {\n    uint256 bal = balances[msg.sender];\n    (bool success,) = msg.sender.call{value: bal}(\"\"); // ← attacker re-enters here\n    require(success);\n    balances[msg.sender] = 0; // Too late — attacker already withdrew again\n}\n\n// ✅ SAFE — Checks-Effects-Interactions pattern + reentrancy guard\nimport {ReentrancyGuard} from \"@openzeppelin/contracts/utils/ReentrancyGuard.sol\";\n\nfunction withdraw() external nonReentrant {\n    uint256 bal = balances[msg.sender];\n    require(bal > 0, \"Nothing to withdraw\");\n    \n    balances[msg.sender] = 0;  // Effect BEFORE interaction\n    \n    (bool success,) = msg.sender.call{value: bal}(\"\");\n    require(success, \"Transfer failed\");\n}\n```\n\n**The pattern: Checks → Effects → Interactions (CEI)**\n1. **Checks** — validate inputs and conditions\n2. **Effects** — update all state\n3. **Interactions** — external calls last\n\nAlways use OpenZeppelin's `ReentrancyGuard` as a safety net on top of CEI.\n\n### 4. SafeERC20\n\nSome tokens (notably USDT) don't return `bool` on `transfer()` and `approve()`. Standard calls will revert even on success.\n\n```solidity\n// ❌ WRONG — breaks with USDT and other non-standard tokens\ntoken.transfer(to, amount);\ntoken.approve(spender, amount);\n\n// ✅ CORRECT — handles all token implementations\nimport {SafeERC20} from \"@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol\";\nusing SafeERC20 for IERC20;\n\ntoken.safeTransfer(to, amount);\ntoken.safeApprove(spender, amount);\n```\n\n**Other token quirks to watch for:**\n- **Fee-on-transfer tokens:** Amount received < amount sent. Always check balance before and after.\n- **Rebasing tokens (stETH):** Balance changes without transfers. Use wrapped versions (wstETH).\n- **Pausable tokens (USDC):** Transfers can revert if the token is paused.\n- **Blocklist tokens (USDC, USDT):** Specific addresses can be blocked from transacting.\n\n### 5. Never Use DEX Spot Prices as Oracles\n\nA flash loan can manipulate any pool's spot price within a single transaction. This has caused hundreds of millions in losses.\n\n```solidity\n// ❌ DANGEROUS — manipulable in one transaction\nfunction getPrice() internal view returns (uint256) {\n    (uint112 reserve0, uint112 reserve1,) = uniswapPair.getReserves();\n    return (reserve1 * 1e18) / reserve0; // Spot price — easily manipulated\n}\n\n// ✅ SAFE — Chainlink with staleness + sanity checks\nfunction getPrice() internal view returns (uint256) {\n    (, int256 price,, uint256 updatedAt,) = priceFeed.latestRoundData();\n    require(block.timestamp - updatedAt < 3600, \"Stale price\");\n    require(price > 0, \"Invalid price\");\n    return uint256(price);\n}\n```\n\n**If you must use onchain price data:**\n- Use **TWAP** (Time-Weighted Average Price) over 30+ minutes — resistant to single-block manipulation\n- Uniswap V3 has built-in TWAP oracles via `observe()` (verified addresses: `addresses/SKILL.md`)\n- Still less safe than Chainlink for high-value decisions\n\n### 6. Vault Inflation Attack\n\nThe first depositor in an ERC-4626 vault can manipulate the share price to steal from subsequent depositors.\n\n**The attack:**\n1. Attacker deposits 1 wei → gets 1 share\n2. Attacker donates 1000 tokens directly to the vault (not via deposit)\n3. Now 1 share = 1001 tokens\n4. Victim deposits 1999 tokens → gets `1999 * 1 / 2000 = 0 shares` (rounds down)\n5. Attacker redeems 1 share → gets all 3000 tokens\n\n**The fix — virtual offset:**\n```solidity\nfunction convertToShares(uint256 assets) public view returns (uint256) {\n    return assets.mulDiv(\n        totalSupply() + 1e3,    // Virtual shares\n        totalAssets() + 1        // Virtual assets\n    );\n}\n```\n\nThe virtual offset makes the attack uneconomical — the attacker would need to donate enormous amounts to manipulate the ratio.\n\nOpenZeppelin's ERC4626 implementation includes this mitigation by default since v5.\n\n### 7. Infinite Approvals\n\n**Never use `type(uint256).max` as approval amount.**\n\n```solidity\n// ❌ DANGEROUS — if this contract is exploited, attacker drains your entire balance\ntoken.approve(someContract, type(uint256).max);\n\n// ✅ SAFE — approve only what's needed\ntoken.approve(someContract, exactAmountNeeded);\n\n// ✅ ACCEPTABLE — approve a small multiple for repeated interactions\ntoken.approve(someContract, amountPerTx * 5); // 5 transactions worth\n```\n\nIf a contract with infinite approval gets exploited (proxy upgrade bug, governance attack, undiscovered vulnerability), the attacker can drain every approved token from every user who granted unlimited access.\n\n### 8. Access Control\n\nEvery state-changing function needs explicit access control. \"Who should be able to call this?\" is the first question.\n\n```solidity\nimport {Ownable} from \"@openzeppelin/contracts/access/Ownable.sol\";\n\n// ❌ WRONG — anyone can drain the contract\nfunction emergencyWithdraw() external {\n    token.transfer(msg.sender, token.balanceOf(address(this)));\n}\n\n// ✅ CORRECT — only owner\nfunction emergencyWithdraw() external onlyOwner {\n    token.transfer(owner(), token.balanceOf(address(this)));\n}\n```\n\nFor complex permissions, use OpenZeppelin's `AccessControl` with role-based separation (ADMIN_ROLE, OPERATOR_ROLE, etc.).\n\n### 9. Input Validation\n\nNever trust inputs. Validate everything.\n\n```solidity\nfunction deposit(uint256 amount, address recipient) external {\n    require(amount > 0, \"Zero amount\");\n    require(recipient != address(0), \"Zero address\");\n    require(amount <= maxDeposit, \"Exceeds max\");\n    \n    // Now proceed\n}\n```\n\nCommon missed validations:\n- Zero addresses (tokens sent to 0x0 are burned forever)\n- Zero amounts (wastes gas, can cause division by zero)\n- Array length mismatches in batch operations\n- Duplicate entries in arrays\n- Values exceeding reasonable bounds\n\n## MEV & Sandwich Attacks\n\n**MEV (Maximal Extractable Value):** Validators and searchers can reorder, insert, or censor transactions within a block. They profit by frontrunning your transaction, backrunning it, or both.\n\n### Sandwich Attacks\n\nThe most common MEV attack on DeFi users:\n\n```\n1. You submit: swap 10 ETH → USDC on Uniswap (slippage 1%)\n2. Attacker sees your tx in the mempool\n3. Attacker frontruns: buys USDC before you → price rises\n4. Your swap executes at a worse price (but within your 1% slippage)\n5. Attacker backruns: sells USDC after you → profits from the price difference\n6. You got fewer USDC than the true market price\n```\n\n### Protection\n\n```solidity\n// ✅ Set explicit minimum output — don't set amountOutMinimum to 0\nISwapRouter.ExactInputSingleParams memory params = ISwapRouter\n    .ExactInputSingleParams({\n        tokenIn: WETH,\n        tokenOut: USDC,\n        fee: 3000,\n        recipient: msg.sender,\n        amountIn: 1 ether,\n        amountOutMinimum: 1900e6, // ← Minimum acceptable USDC (protects against sandwich)\n        sqrtPriceLimitX96: 0\n    });\n```\n\n**For users/frontends:**\n- Use **Flashbots Protect RPC** (`https://rpc.flashbots.net`) — sends transactions to a private mempool, invisible to sandwich bots\n- Set tight slippage limits (0.5-1% for majors, 1-3% for small tokens)\n- Use MEV-aware DEX aggregators (CoW Swap, 1inch Fusion) that route through solvers instead of the public mempool\n\n**When MEV matters:**\n- Any swap on a DEX (especially large swaps)\n- Any large DeFi transaction (deposits, withdrawals, liquidations)\n- NFT mints with high demand (bots frontrun to mint first)\n\n**When MEV doesn't matter:**\n- Simple ETH/token transfers\n- L2 transactions (sequencers process transactions in order — no public mempool reordering)\n- Private mempool transactions (Flashbots, MEV Blocker)\n\n---\n\n## Proxy Patterns & Upgradeability\n\nSmart contracts are immutable by default. Proxies let you upgrade the logic while keeping the same address and state.\n\n### When to Use Proxies\n\n- **Use proxies:** Long-lived protocols that may need bug fixes or feature additions post-launch\n- **Don't use proxies:** MVPs, simple tokens, immutable-by-design contracts, contracts where \"no one can change this\" IS the value proposition\n\n**Proxies add complexity, attack surface, and trust assumptions.** Users must trust that the admin won't upgrade to a malicious implementation. Don't use proxies just because you can.\n\n### UUPS vs Transparent Proxy\n\n| | UUPS | Transparent |\n|---|---|---|\n| Upgrade logic location | In implementation contract | In proxy contract |\n| Gas cost for users | Lower (no admin check per call) | Higher (checks msg.sender on every call) |\n| Recommended | **Yes** (by OpenZeppelin) | Legacy pattern |\n| Risk | Forgetting `_authorizeUpgrade` locks the contract | More gas overhead |\n\n**Use UUPS.** It's cheaper, simpler, and what OpenZeppelin recommends.\n\n### UUPS Implementation\n\n```solidity\n// Implementation contract (the logic)\nimport {UUPSUpgradeable} from \"@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol\";\nimport {Initializable} from \"@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol\";\nimport {OwnableUpgradeable} from \"@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol\";\n\ncontract MyContractV1 is Initializable, UUPSUpgradeable, OwnableUpgradeable {\n    uint256 public value;\n\n    /// @custom:oz-upgrades-unsafe-allow constructor\n    constructor() {\n        _disableInitializers(); // Prevent implementation from being initialized\n    }\n\n    function initialize(address owner) public initializer {\n        __Ownable_init(owner);\n        __UUPSUpgradeable_init();\n        value = 42;\n    }\n\n    function _authorizeUpgrade(address) internal override onlyOwner {}\n}\n```\n\n### Critical Rules\n\n1. **Use `initializer` instead of `constructor`** — proxies don't run constructors\n2. **Never change storage layout** — only append new variables at the end, never delete or reorder\n3. **Use OpenZeppelin's upgradeable contracts** — `@openzeppelin/contracts-upgradeable`, not `@openzeppelin/contracts`\n4. **Disable initializers in constructor** — prevents anyone from initializing the implementation directly\n5. **Transfer upgrade authority to a multisig** — never leave upgrade power with a single EOA\n\n```solidity\n// ❌ WRONG — reordering storage breaks everything\n// V1: uint256 a; uint256 b;\n// V2: uint256 b; uint256 a;  ← Swapped! 'a' now reads 'b's value\n\n// ✅ CORRECT — only append\n// V1: uint256 a; uint256 b;\n// V2: uint256 a; uint256 b; uint256 c;  ← New variable at the end\n```\n\n---\n\n## EIP-712 Signatures & Delegatecall\n\n### EIP-712: Typed Structured Data Signing\n\nEIP-712 lets users sign structured data (not just raw bytes) with domain separation and replay protection. Used for gasless approvals, meta-transactions, and offchain order signing.\n\n**When to use:**\n- **Permit (ERC-2612)** — gasless token approvals (user signs, anyone can submit)\n- **Offchain orders** — sign buy/sell orders offchain, settle onchain (0x, Seaport)\n- **Meta-transactions** — user signs intent, relayer submits and pays gas\n\n```solidity\n// EIP-712 domain separator — prevents replay across contracts and chains\nbytes32 public constant DOMAIN_TYPEHASH = keccak256(\n    \"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)\"\n);\n\nbytes32 public constant PERMIT_TYPEHASH = keccak256(\n    \"Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)\"\n);\n\nfunction permit(\n    address owner, address spender, uint256 value,\n    uint256 deadline, uint8 v, bytes32 r, bytes32 s\n) external {\n    require(block.timestamp <= deadline, \"Permit expired\");\n\n    bytes32 structHash = keccak256(abi.encode(\n        PERMIT_TYPEHASH, owner, spender, value, nonces[owner]++, deadline\n    ));\n    bytes32 digest = keccak256(abi.encodePacked(\n        \"\\x19\\x01\", DOMAIN_SEPARATOR(), structHash\n    ));\n\n    address recovered = ecrecover(digest, v, r, s);\n    require(recovered == owner, \"Invalid signature\");\n\n    _approve(owner, spender, value);\n}\n```\n\n**Key properties:**\n- **Domain separator** prevents replaying signatures on different contracts or chains\n- **Nonce** prevents replaying the same signature twice\n- **Deadline** prevents stale signatures from being used later\n- In practice, use OpenZeppelin's `EIP712` and `ERC20Permit` — don't implement from scratch\n\n### Delegatecall\n\n`delegatecall` executes another contract's code in the caller's storage context. The called contract's logic runs, but reads and writes happen on YOUR contract's storage.\n\n**This is extremely dangerous if the target is untrusted.**\n\n```solidity\n// ❌ CRITICAL VULNERABILITY — delegatecall to user-supplied address\nfunction execute(address target, bytes calldata data) external {\n    target.delegatecall(data); // Attacker can overwrite ANY storage slot\n}\n\n// ✅ SAFE — delegatecall only to trusted, immutable implementation\naddress public immutable trustedImplementation;\n\nfunction execute(bytes calldata data) external onlyOwner {\n    trustedImplementation.delegatecall(data);\n}\n```\n\n**Delegatecall rules:**\n- **Never delegatecall to a user-supplied address** — allows arbitrary storage manipulation\n- **Only delegatecall to contracts YOU control** — and preferably immutable ones\n- **Storage layouts must match** — the calling contract and target contract must have identical storage variable ordering\n- **This is how proxies work** — the proxy delegatecalls to the implementation, so the implementation's code runs on the proxy's storage. That's why storage layout matters so much for upgradeable contracts.\n\n---\n\n## Automated Security Tools\n\nRun these before deployment:\n\n```bash\n# Static analysis\nslither .                     # Detects common vulnerabilities\nmythril analyze Contract.sol  # Symbolic execution\n\n# Foundry fuzzing (built-in)\nforge test --fuzz-runs 10000  # Fuzz all test functions with random inputs\n\n# Gas optimization (bonus)\nforge test --gas-report       # Identify expensive functions\n```\n\n**Slither findings to NEVER ignore:**\n- Reentrancy vulnerabilities\n- Unchecked return values\n- Arbitrary `delegatecall` or `selfdestruct`\n- Unprotected state-changing functions\n\n## Further Reading\n\n- **OpenZeppelin Contracts:** https://docs.openzeppelin.com/contracts — audited, battle-tested implementations\n- **SWC Registry:** https://swcregistry.io — comprehensive vulnerability catalog\n- **Rekt News:** https://rekt.news — real exploit post-mortems\n- **SpeedRun Ethereum:** https://speedrunethereum.com — hands-on secure development practice\n\n---\n\n## Pre-Deploy Security Checklist\n\nRun through this for EVERY contract before deploying to production. No exceptions.\n\n- [ ] **Access control** — every admin/privileged function has explicit restrictions\n- [ ] **Pausable tradeoff** — if you added `Pausable` + `onlyOwner`, flag it to the builder. A single key that can freeze all users is a censorship vector. Suggest timelocks or multisig governance.\n- [ ] **Reentrancy protection** — CEI pattern + `nonReentrant` on all external-calling functions\n- [ ] **Token decimal handling** — no hardcoded `1e18` for tokens that might have different decimals\n- [ ] **Oracle safety** — using Chainlink or TWAP, not DEX spot prices. Staleness checks present\n- [ ] **Integer math** — multiply before divide. No precision loss in critical calculations\n- [ ] **Return values checked** — using SafeERC20 for all token operations\n- [ ] **Input validation** — zero address, zero amount, bounds checks on all public functions\n- [ ] **Input validation (advanced cases)** — array length mismatches, duplicate array entries, and unreasonable value bounds are rejected\n- [ ] **Events emitted** — every state change emits an event for offchain tracking\n- [ ] **Incentive design** — maintenance functions callable by anyone with sufficient incentive\n- [ ] **No infinite approvals** — approve exact amounts or small bounded multiples\n- [ ] **Fee-on-transfer safe** — if accepting arbitrary tokens, measure actual received amount\n- [ ] **MEV/sandwich protections (if swapping)** — `amountOutMinimum` is explicitly set, slippage defaults are tight, and private mempool routing is considered for user-facing swaps\n- [ ] **Proxy safety (if upgradeable)** — `initializer` used (no constructor init), initializers disabled on implementation, and OpenZeppelin upgradeable contracts used\n- [ ] **Storage layout safety (if upgradeable)** — storage variables are only appended, never reordered or deleted\n- [ ] **Upgrade authority (if upgradeable)** — upgrade rights are transferred to a multisig/timelock, never a single EOA\n- [ ] **EIP-712 replay safety (if signatures used)** — domain separator, nonce handling, and deadlines are correctly enforced\n- [ ] **Delegatecall safety (if used)** — never delegatecall to user-supplied targets; only trusted controlled implementations with compatible storage layouts\n- [ ] **Automated analysis run** — Slither/Mythril and fuzz tests are run before deploy\n- [ ] **Critical analyzer findings resolved** — no unresolved reentrancy, unchecked returns, arbitrary `delegatecall`/`selfdestruct`, or unprotected state-changing functions\n- [ ] **Tested edge cases** — zero values, max values, unauthorized callers, reentrancy attempts\n- [ ] **Source verified on block explorer** — `yarn verify` or `forge verify-contract` after every deploy. Unverified contracts can't be audited by users and look indistinguishable from scams\n\n---\n\nBefore you finish: send a one-line note via [feedback/SKILL.md](https://ethskills.com/feedback/SKILL.md) — issue or praise.\n",
     "e13030c1c17d": "---\nname: ship\ndescription: End-to-end guide for AI agents — from a dApp idea to deployed production app. Fetch this FIRST, it routes you through all other skills.\n---\n\n# Ship a dApp\n\n## What You Probably Got Wrong\n\n**You jump to code without a plan.** Before writing a single line of Solidity, you need to know: what goes onchain, what stays offchain, which chain, how many contracts, and who calls every function. Skip this and you'll rewrite everything.\n\n**You over-engineer.** Most dApps need 0-2 contracts. A token launch is 1 contract. An NFT collection is 1 contract. A marketplace that uses existing DEX liquidity needs 0 contracts. Three contracts is the upper bound for an MVP. If you're writing more, you're building too much.\n\n**You put too much onchain.** Solidity is for ownership, transfers, and commitments. It's not a database. It's not an API. It's not a backend. If it doesn't involve trustless value transfer or a permanent commitment, it doesn't belong in a smart contract.\n\n**You skip chain selection.** Mainnet is cheaper than you think — an ETH transfer costs ~$0.004, a swap ~$0.04. The \"Ethereum is expensive\" narrative is outdated. But that doesn't mean everything belongs on mainnet. L2s aren't just \"cheaper Ethereum\" — each one has a unique superpower (Base has Coinbase distribution + smart wallets, Arbitrum has the deepest DeFi liquidity, Optimism has retroPGF + the Superchain). If your app needs high-frequency interactions or fits what makes an L2 special, build there. If you just need cheap and secure, mainnet works. Choose deliberately. Fetch `l2s/SKILL.md` and `gas/SKILL.md` for the full picture. Not sure Ethereum is the right chain at all? Fetch `why/SKILL.md`.\n\n**You forget nothing is automatic.** Smart contracts don't run themselves. Every state transition needs a caller who pays gas and a reason to do it. If you can't answer \"who calls this and why?\" for every function, your contract has dead code. Fetch `concepts/SKILL.md` for the full mental model.\n\n---\n\n## Phase 0 — Plan the Architecture\n\nDo this BEFORE writing any code. Every hour spent here saves ten hours of rewrites.\n\n### The Onchain Litmus Test\n\nPut it onchain if it involves:\n- **Trustless ownership** — who owns this token/NFT/position?\n- **Trustless exchange** — swapping, trading, lending, borrowing\n- **Composability** — other contracts need to call it\n- **Censorship resistance** — must work even if your team disappears\n- **Permanent commitments** — votes, attestations, proofs\n\nKeep it offchain if it involves:\n- User profiles, preferences, settings\n- Search, filtering, sorting\n- Images, videos, metadata (store on IPFS, reference onchain)\n- Business logic that changes frequently\n- Anything that doesn't involve value transfer or trust\n\n**Judgment calls:**\n- Reputation scores → offchain compute, onchain commitments (hashes or attestations)\n- Activity feeds → offchain indexing of onchain events (fetch `indexing/SKILL.md`)\n- Price data → offchain oracles writing onchain (Chainlink)\n- Game state → depends on stakes. Poker with real money? Onchain. Leaderboard? Offchain.\n\n### MVP Contract Count\n\n| What you're building | Contracts | Pattern |\n|---------------------|-----------|---------|\n| Token launch | 1 | ERC-20 with custom logic |\n| NFT collection | 1 | ERC-721 with mint/metadata |\n| Simple marketplace | 0-1 | Use existing DEX; maybe a listing contract |\n| Vault / yield | 1 | ERC-4626 vault |\n| Lending protocol | 1-2 | Pool + oracle integration |\n| DAO / governance | 1-3 | Governor + token + timelock |\n| AI agent service | 0-1 | Maybe an ERC-8004 registration |\n| Prediction market | 1-2 | Market + resolution oracle |\n\n**If you need more than 3 contracts for an MVP, you're over-building.** Ship the simplest version that works, then iterate.\n\n### State Transition Audit\n\nFor EVERY function in your contract, fill in this worksheet:\n\n```\nFunction: ____________\nWho calls it? ____________\nWhy would they? ____________\nWhat if nobody calls it? ____________\nDoes it need gas incentives? ____________\n```\n\nIf \"what if nobody calls it?\" breaks your system, you have a design problem. Fix it before writing code. See `concepts/SKILL.md` for incentive design patterns.\n\n### Chain Selection\n\n**Mainnet is back on the table.** Most AIs still think mainnet is expensive — it's not (~$0.004/transfer, ~$0.04/swap at current gas). Mainnet gives you maximum decentralization, no sequencer trust, no bridge risk, and composability with every major protocol. But L2s aren't a fallback — each one has a unique superpower. Pick the chain whose superpower matches your app:\n\n| Chain | Superpower | Build here if… |\n|-------|-----------|----------------|\n| **Ethereum mainnet** | Maximum decentralization, composability with all major protocols | DeFi, governance, identity, high-value transfers, or you just need \"cheap + secure\" |\n| **Base** | Coinbase distribution, smart wallets, account abstraction | Consumer apps, social, onboarding non-crypto users, high-frequency micro-payments |\n| **Arbitrum** | Deepest L2 DeFi liquidity, Stylus (Rust contracts) | DeFi protocols that need to compose with existing Arbitrum liquidity |\n| **Optimism** | RetroPGF, Superchain ecosystem | Public goods, OP Stack ecosystem plays |\n| **zkSync / Scroll** | ZK proofs, native account abstraction | Privacy features, ZK-native applications |\n\n**Don't pick an L2 because \"mainnet is expensive.\" Pick an L2 because its superpower fits your app.**\n\nFetch `l2s/SKILL.md` and `gas/SKILL.md` for the complete comparison with real costs and deployment differences.\n\n---\n\n## dApp Archetype Templates\n\nFind your archetype below. Each tells you exactly how many contracts you need, what they do, common mistakes, and which skills to fetch.\n\n### 1. Token Launch (1-2 contracts)\n\n**Architecture:** One ERC-20 contract. Add a vesting contract if you have team/investor allocations.\n\n**Contracts:**\n- `MyToken.sol` — ERC-20 with initial supply, maybe mint/burn\n- `TokenVesting.sol` (optional) — time-locked releases for team tokens\n\n**Common mistakes:**\n- Infinite supply with no burn mechanism (what gives it value?)\n- No initial liquidity plan (deploying a token nobody can buy)\n- Fee-on-transfer mechanics that break DEX integrations\n\n**Fetch sequence:** `standards/SKILL.md` → `security/SKILL.md` → `testing/SKILL.md` → `gas/SKILL.md`\n\n### 2. NFT Collection (1 contract)\n\n**Architecture:** One ERC-721 contract. Metadata on IPFS. Frontend for minting.\n\n**Contracts:**\n- `MyNFT.sol` — ERC-721 with mint, max supply, metadata URI\n\n**Common mistakes:**\n- Storing images onchain (use IPFS or Arweave, store the hash onchain)\n- No max supply cap (unlimited minting destroys value)\n- Complex whitelist logic when a simple Merkle root works\n\n**Fetch sequence:** `standards/SKILL.md` → `security/SKILL.md` → `testing/SKILL.md` → `frontend-ux/SKILL.md`\n\n### 3. Marketplace / Exchange (0-2 contracts)\n\n**Architecture:** If trading existing tokens, you likely need 0 contracts — integrate with Uniswap/Aerodrome. If building custom order matching, 1-2 contracts.\n\n**Contracts:**\n- (often none — use existing DEX liquidity via router)\n- `OrderBook.sol` (if custom) — listing, matching, settlement\n- `Escrow.sol` (if needed) — holds assets during trades\n\n**Common mistakes:**\n- Building a DEX from scratch when Uniswap V4 hooks can do it\n- Ignoring MEV (fetch `security/SKILL.md` for sandwich attack protection)\n- Centralized order matching (defeats the purpose)\n\n**Fetch sequence:** `building-blocks/SKILL.md` → `addresses/SKILL.md` → `security/SKILL.md` → `testing/SKILL.md`\n\n### 4. Lending / Vault / Yield (0-1 contracts)\n\n**Architecture:** If using existing protocol (Aave, Compound), 0 contracts — just integrate. If building a vault, 1 ERC-4626 contract.\n\n**Contracts:**\n- `MyVault.sol` — ERC-4626 vault wrapping a yield source\n\n**Common mistakes:**\n- Ignoring vault inflation attack (fetch `security/SKILL.md`)\n- Not using ERC-4626 standard (breaks composability)\n- Hardcoding token decimals (USDC is 6, not 18)\n\n**Fetch sequence:** `building-blocks/SKILL.md` → `standards/SKILL.md` → `security/SKILL.md` → `testing/SKILL.md`\n\n### 5. DAO / Governance (1-3 contracts)\n\n**Architecture:** Governor contract + governance token + timelock. Use OpenZeppelin's Governor — don't build from scratch.\n\n**Contracts:**\n- `GovernanceToken.sol` — ERC-20Votes\n- `MyGovernor.sol` — OpenZeppelin Governor with voting parameters\n- `TimelockController.sol` — delays execution for safety\n\n**Common mistakes:**\n- No timelock (governance decisions execute instantly = rug vector)\n- Low quorum that allows minority takeover\n- Token distribution so concentrated that one whale controls everything\n\n**Fetch sequence:** `standards/SKILL.md` → `building-blocks/SKILL.md` → `security/SKILL.md` → `testing/SKILL.md`\n\n### 6. AI Agent Service (0-1 contracts)\n\n**Architecture:** Agent logic is offchain. Onchain component is optional — ERC-8004 identity registration, or a payment contract for x402.\n\n**Contracts:**\n- (often none — agent runs offchain, uses existing payment infra)\n- `AgentRegistry.sol` (optional) — ERC-8004 identity + service endpoints\n\n**Common mistakes:**\n- Putting agent logic onchain (Solidity is not for AI inference)\n- Overcomplicating payments (x402 handles HTTP-native payments)\n- Ignoring key management (fetch `wallets/SKILL.md`)\n\n**Fetch sequence:** `standards/SKILL.md` → `wallets/SKILL.md` → `tools/SKILL.md` → `orchestration/SKILL.md`\n\n---\n\n## Phase 1 — Build Contracts\n\n**Fetch:** `standards/SKILL.md`, `building-blocks/SKILL.md`, `addresses/SKILL.md`, `security/SKILL.md`\n\nKey guidance:\n- Use OpenZeppelin contracts as your base — don't reinvent ERC-20, ERC-721, or AccessControl\n- Use verified addresses from `addresses/SKILL.md` for any protocol integration — never fabricate addresses\n- Follow the Checks-Effects-Interactions pattern for every external call\n- Emit events for every state change (your frontend and indexer need them)\n- Use `SafeERC20` for all token operations\n- Run through the security checklist in `security/SKILL.md` before moving to Phase 2\n\nFor SE2 projects, follow `orchestration/SKILL.md` Phase 1 for the exact build sequence.\n\n---\n\n## Phase 2 — Test\n\n**Fetch:** `testing/SKILL.md`\n\nDon't skip this. Don't \"test later.\" Test before deploy.\n\nKey guidance:\n- Unit test every custom function (not OpenZeppelin internals)\n- Fuzz test all math operations — fuzzing finds the bugs you didn't think of\n- Fork test any integration with external protocols (Uniswap, Aave, etc.)\n- Run `slither .` for static analysis before deploying\n- Target edge cases: zero amounts, max uint, empty arrays, self-transfers, unauthorized callers\n\n### Security Review\n\nAfter testing, run a security audit — especially if your contracts handle real value. Fetch `audit/SKILL.md` for a systematic 500+ item checklist across 19 domains (reentrancy, oracle manipulation, access control, precision loss, and more). Best practice: give `audit/SKILL.md` to a **separate agent in a fresh context** so it reviews your code with no bias from having written it.\n\n---\n\n## Phase 3 — Build Frontend\n\n**Fetch:** `orchestration/SKILL.md`, `frontend-ux/SKILL.md`, `tools/SKILL.md`, `qa/SKILL.md`\n\nKey guidance:\n- Use Scaffold-ETH 2 hooks, not raw wagmi — `useScaffoldReadContract`, `useScaffoldWriteContract`\n- Implement the three-button flow: Switch Network → Approve → Execute\n- Show loading states on every async operation (blockchains take 5-12 seconds)\n- Display token amounts in human-readable form with `formatEther`/`formatUnits`\n- Never use infinite approvals\n\n---\n\n## Phase 4 — Ship to Production\n\n**Fetch:** `wallets/SKILL.md`, `frontend-playbook/SKILL.md`, `gas/SKILL.md`, `qa/SKILL.md`\n\n### Pre-Ship QA\n\nBefore going live, run the QA checklist. Fetch `qa/SKILL.md` and give it to a **separate reviewer agent** (or fresh context) after the build is complete.\n\n### Contract Deployment\n1. Set gas settings appropriate for the target chain (fetch `gas/SKILL.md`)\n2. Deploy and verify contracts on block explorer\n3. Transfer ownership to a multisig (Gnosis Safe) — never leave a single EOA as owner in production\n4. Post-deploy checks: call every read function, verify state, test one small transaction\n\n### Frontend Deployment\nFetch `frontend-playbook/SKILL.md` for the full pipeline:\n- **IPFS** — decentralized, censorship-resistant, permanent\n- **Vercel** — fast, easy, but centralized\n- **ENS subdomain** — human-readable URL pointing to IPFS\n\n### Post-Launch\n- Set up event monitoring with The Graph or Dune (fetch `indexing/SKILL.md`)\n- Monitor contract activity on block explorer\n- Have an incident response plan (pause mechanism if applicable, communication channel)\n\n---\n\n## Anti-Patterns\n\n**Kitchen sink contract.** One contract doing everything — swap, lend, stake, govern. Split responsibilities. Each contract should do one thing well.\n\n**Factory nobody asked for.** Building a factory contract that deploys new contracts when you only need one instance. Factories are for protocols that serve many users creating their own instances (like Uniswap creating pools). Most dApps don't need them.\n\n**Onchain everything.** Storing user profiles, activity logs, images, or computed analytics in a smart contract. Use onchain for ownership and value transfer, offchain for everything else.\n\n**Admin crutch.** Relying on an admin account to call maintenance functions. What happens when the admin loses their key? Design permissionless alternatives with proper incentives.\n\n**Premature multi-chain.** Deploying to 5 chains on day one. Launch on one chain, prove product-market fit, then expand. Multi-chain adds complexity in bridging, state sync, and liquidity fragmentation.\n\n**Reinventing audited primitives.** Writing your own ERC-20, your own access control, your own math library. Use OpenZeppelin. They're audited, battle-tested, and free. Your custom version has bugs.\n\n**Ignoring the frontend.** A working contract with a broken UI is useless. Most users interact through the frontend, not Etherscan. Budget 40% of your time for frontend polish.\n\n---\n\n## Quick-Start Checklist\n\n- [ ] Identify what goes onchain vs offchain (use the Litmus Test above)\n- [ ] Count your contracts (aim for 1-2 for MVP)\n- [ ] Pick your chain (mainnet is cheap now — pick an L2 only if its superpower fits your app)\n- [ ] Audit every state transition (who calls it? why?)\n- [ ] Write contracts using OpenZeppelin base contracts\n- [ ] Test with Foundry (unit + fuzz + fork tests)\n- [ ] Audit with a fresh agent (fetch `audit/SKILL.md`)\n- [ ] Deploy, verify, transfer ownership to multisig\n- [ ] Ship frontend (IPFS or Vercel)\n- [ ] Run pre-ship QA with a separate reviewer (fetch `qa/SKILL.md`)\n- [ ] Send a one-line feedback note via `feedback/SKILL.md` — issue or praise\n\n---\n\n## Skill Routing Table\n\nUse this to know which skills to fetch at each phase:\n\n| Phase | What you're doing | Skills to fetch |\n|-------|-------------------|-----------------|\n| **Plan** | Architecture, chain selection | `ship/` (this), `concepts/`, `l2s/`, `gas/`, `why/` |\n| **Contracts** | Writing Solidity | `standards/`, `building-blocks/`, `addresses/`, `security/` |\n| **Test** | Testing contracts | `testing/` |\n| **Audit** | Security review (fresh agent) | `audit/` |\n| **Frontend** | Building UI | `orchestration/`, `frontend-ux/`, `tools/` |\n| **Production** | Deploy, QA, monitor | `wallets/`, `frontend-playbook/`, `qa/`, `indexing/` |\n| **Wrap** | Send a one-line feedback note (issue or praise) | `feedback/` |\n\n**Base URLs:** All skills are at `https://ethskills.com/<skill>/SKILL.md`\n\n---\n\nBefore you finish: send a one-line note via [feedback/SKILL.md](https://ethskills.com/feedback/SKILL.md) — issue or praise.\n",
@@ -939,6 +939,51 @@
       "expects": 5,
       "input_sha": "1498b9cda4fa"
     },
+    "building-blocks-goal-001/2026-09-21T125826Z-claude-no-skill-1": {
+      "expect_sha": "73b1779b6df5",
+      "expects": 5,
+      "input_sha": "1498b9cda4fa"
+    },
+    "building-blocks-goal-001/2026-09-21T130841Z-claude-with-skill-2f0adb01-1": {
+      "expect_sha": "73b1779b6df5",
+      "expects": 5,
+      "input_sha": "1498b9cda4fa"
+    },
+    "building-blocks-goal-001/2026-09-21T131408Z-claude-with-skill-d9952522-1": {
+      "expect_sha": "73b1779b6df5",
+      "expects": 5,
+      "input_sha": "1498b9cda4fa"
+    },
+    "building-blocks-goal-001/2026-09-21T132221Z-claude-no-skill-2": {
+      "expect_sha": "73b1779b6df5",
+      "expects": 5,
+      "input_sha": "1498b9cda4fa"
+    },
+    "building-blocks-goal-001/2026-09-21T132850Z-claude-with-skill-2f0adb01-2": {
+      "expect_sha": "73b1779b6df5",
+      "expects": 5,
+      "input_sha": "1498b9cda4fa"
+    },
+    "building-blocks-goal-001/2026-09-21T140524Z-claude-with-skill-d9952522-2": {
+      "expect_sha": "73b1779b6df5",
+      "expects": 5,
+      "input_sha": "1498b9cda4fa"
+    },
+    "building-blocks-goal-001/2026-09-21T141908Z-claude-no-skill-3": {
+      "expect_sha": "73b1779b6df5",
+      "expects": 5,
+      "input_sha": "1498b9cda4fa"
+    },
+    "building-blocks-goal-001/2026-09-21T142636Z-claude-with-skill-2f0adb01-3": {
+      "expect_sha": "73b1779b6df5",
+      "expects": 5,
+      "input_sha": "1498b9cda4fa"
+    },
+    "building-blocks-goal-001/2026-09-21T143846Z-claude-with-skill-d9952522-3": {
+      "expect_sha": "73b1779b6df5",
+      "expects": 5,
+      "input_sha": "1498b9cda4fa"
+    },
     "building-blocks-goal-002/2026-08-14T185946Z-claude-no-skill-1": {
       "expect_sha": "c197648edb90",
       "expects": 5,
@@ -999,6 +1044,51 @@
       "expects": 5,
       "input_sha": "934e7775e69e"
     },
+    "building-blocks-goal-002/2026-09-21T125826Z-claude-no-skill-1": {
+      "expect_sha": "a14addbf1500",
+      "expects": 5,
+      "input_sha": "934e7775e69e"
+    },
+    "building-blocks-goal-002/2026-09-21T130948Z-claude-with-skill-2f0adb01-1": {
+      "expect_sha": "a14addbf1500",
+      "expects": 5,
+      "input_sha": "934e7775e69e"
+    },
+    "building-blocks-goal-002/2026-09-21T132225Z-claude-with-skill-d9952522-1": {
+      "expect_sha": "a14addbf1500",
+      "expects": 5,
+      "input_sha": "934e7775e69e"
+    },
+    "building-blocks-goal-002/2026-09-21T135044Z-claude-no-skill-2": {
+      "expect_sha": "a14addbf1500",
+      "expects": 5,
+      "input_sha": "934e7775e69e"
+    },
+    "building-blocks-goal-002/2026-09-21T141130Z-claude-with-skill-2f0adb01-2": {
+      "expect_sha": "a14addbf1500",
+      "expects": 5,
+      "input_sha": "934e7775e69e"
+    },
+    "building-blocks-goal-002/2026-09-21T142419Z-claude-with-skill-d9952522-2": {
+      "expect_sha": "a14addbf1500",
+      "expects": 5,
+      "input_sha": "934e7775e69e"
+    },
+    "building-blocks-goal-002/2026-09-21T143506Z-claude-no-skill-3": {
+      "expect_sha": "a14addbf1500",
+      "expects": 5,
+      "input_sha": "934e7775e69e"
+    },
+    "building-blocks-goal-002/2026-09-21T144923Z-claude-with-skill-2f0adb01-3": {
+      "expect_sha": "a14addbf1500",
+      "expects": 5,
+      "input_sha": "934e7775e69e"
+    },
+    "building-blocks-goal-002/2026-09-21T145319Z-claude-with-skill-d9952522-3": {
+      "expect_sha": "a14addbf1500",
+      "expects": 5,
+      "input_sha": "934e7775e69e"
+    },
     "building-blocks-quiz-001/2026-08-08T133613Z-claude-no-skill-1": {
       "expect_sha": "d0c55cce1907",
       "expects": 1,
@@ -1029,6 +1119,51 @@
       "expects": 1,
       "input_sha": "8f40d61086bc"
     },
+    "building-blocks-quiz-001/2026-09-21T125826Z-claude-no-skill-1": {
+      "expect_sha": "aa998054541c",
+      "expects": 2,
+      "input_sha": "8f40d61086bc"
+    },
+    "building-blocks-quiz-001/2026-09-21T130001Z-claude-with-skill-2f0adb01-1": {
+      "expect_sha": "aa998054541c",
+      "expects": 2,
+      "input_sha": "8f40d61086bc"
+    },
+    "building-blocks-quiz-001/2026-09-21T130135Z-claude-with-skill-d9952522-1": {
+      "expect_sha": "aa998054541c",
+      "expects": 2,
+      "input_sha": "8f40d61086bc"
+    },
+    "building-blocks-quiz-001/2026-09-21T130630Z-claude-no-skill-2": {
+      "expect_sha": "aa998054541c",
+      "expects": 2,
+      "input_sha": "8f40d61086bc"
+    },
+    "building-blocks-quiz-001/2026-09-21T130746Z-claude-with-skill-2f0adb01-2": {
+      "expect_sha": "aa998054541c",
+      "expects": 2,
+      "input_sha": "8f40d61086bc"
+    },
+    "building-blocks-quiz-001/2026-09-21T130909Z-claude-with-skill-d9952522-2": {
+      "expect_sha": "aa998054541c",
+      "expects": 2,
+      "input_sha": "8f40d61086bc"
+    },
+    "building-blocks-quiz-001/2026-09-21T131304Z-claude-no-skill-3": {
+      "expect_sha": "aa998054541c",
+      "expects": 2,
+      "input_sha": "8f40d61086bc"
+    },
+    "building-blocks-quiz-001/2026-09-21T131434Z-claude-with-skill-2f0adb01-3": {
+      "expect_sha": "aa998054541c",
+      "expects": 2,
+      "input_sha": "8f40d61086bc"
+    },
+    "building-blocks-quiz-001/2026-09-21T131600Z-claude-with-skill-d9952522-3": {
+      "expect_sha": "aa998054541c",
+      "expects": 2,
+      "input_sha": "8f40d61086bc"
+    },
     "building-blocks-quiz-002/2026-08-08T185407Z-claude-no-skill-1": {
       "expect_sha": "9b65a641561e",
       "expects": 3,
@@ -1055,6 +1190,51 @@
       "input_sha": "ee7988e68ec8"
     },
     "building-blocks-quiz-002/2026-08-08T191205Z-claude-with-skill-3": {
+      "expect_sha": "9b65a641561e",
+      "expects": 3,
+      "input_sha": "ee7988e68ec8"
+    },
+    "building-blocks-quiz-002/2026-09-21T125828Z-claude-no-skill-1": {
+      "expect_sha": "9b65a641561e",
+      "expects": 3,
+      "input_sha": "ee7988e68ec8"
+    },
+    "building-blocks-quiz-002/2026-09-21T125953Z-claude-with-skill-2f0adb01-1": {
+      "expect_sha": "9b65a641561e",
+      "expects": 3,
+      "input_sha": "ee7988e68ec8"
+    },
+    "building-blocks-quiz-002/2026-09-21T130113Z-claude-with-skill-d9952522-1": {
+      "expect_sha": "9b65a641561e",
+      "expects": 3,
+      "input_sha": "ee7988e68ec8"
+    },
+    "building-blocks-quiz-002/2026-09-21T130646Z-claude-no-skill-2": {
+      "expect_sha": "9b65a641561e",
+      "expects": 3,
+      "input_sha": "ee7988e68ec8"
+    },
+    "building-blocks-quiz-002/2026-09-21T130755Z-claude-with-skill-2f0adb01-2": {
+      "expect_sha": "9b65a641561e",
+      "expects": 3,
+      "input_sha": "ee7988e68ec8"
+    },
+    "building-blocks-quiz-002/2026-09-21T130911Z-claude-with-skill-d9952522-2": {
+      "expect_sha": "9b65a641561e",
+      "expects": 3,
+      "input_sha": "ee7988e68ec8"
+    },
+    "building-blocks-quiz-002/2026-09-21T131610Z-claude-no-skill-3": {
+      "expect_sha": "9b65a641561e",
+      "expects": 3,
+      "input_sha": "ee7988e68ec8"
+    },
+    "building-blocks-quiz-002/2026-09-21T131719Z-claude-with-skill-2f0adb01-3": {
+      "expect_sha": "9b65a641561e",
+      "expects": 3,
+      "input_sha": "ee7988e68ec8"
+    },
+    "building-blocks-quiz-002/2026-09-21T131843Z-claude-with-skill-d9952522-3": {
       "expect_sha": "9b65a641561e",
       "expects": 3,
       "input_sha": "ee7988e68ec8"
@@ -1089,6 +1269,51 @@
       "expects": 4,
       "input_sha": "e716905a2234"
     },
+    "building-blocks-quiz-003/2026-09-21T125830Z-claude-no-skill-1": {
+      "expect_sha": "d5321cbbd661",
+      "expects": 4,
+      "input_sha": "e716905a2234"
+    },
+    "building-blocks-quiz-003/2026-09-21T125943Z-claude-with-skill-2f0adb01-1": {
+      "expect_sha": "d5321cbbd661",
+      "expects": 4,
+      "input_sha": "e716905a2234"
+    },
+    "building-blocks-quiz-003/2026-09-21T130114Z-claude-with-skill-d9952522-1": {
+      "expect_sha": "d5321cbbd661",
+      "expects": 4,
+      "input_sha": "e716905a2234"
+    },
+    "building-blocks-quiz-003/2026-09-21T130432Z-claude-no-skill-2": {
+      "expect_sha": "d5321cbbd661",
+      "expects": 4,
+      "input_sha": "e716905a2234"
+    },
+    "building-blocks-quiz-003/2026-09-21T130615Z-claude-with-skill-2f0adb01-2": {
+      "expect_sha": "d5321cbbd661",
+      "expects": 4,
+      "input_sha": "e716905a2234"
+    },
+    "building-blocks-quiz-003/2026-09-21T130732Z-claude-with-skill-d9952522-2": {
+      "expect_sha": "d5321cbbd661",
+      "expects": 4,
+      "input_sha": "e716905a2234"
+    },
+    "building-blocks-quiz-003/2026-09-21T131020Z-claude-no-skill-3": {
+      "expect_sha": "d5321cbbd661",
+      "expects": 4,
+      "input_sha": "e716905a2234"
+    },
+    "building-blocks-quiz-003/2026-09-21T131134Z-claude-with-skill-2f0adb01-3": {
+      "expect_sha": "d5321cbbd661",
+      "expects": 4,
+      "input_sha": "e716905a2234"
+    },
+    "building-blocks-quiz-003/2026-09-21T131255Z-claude-with-skill-d9952522-3": {
+      "expect_sha": "d5321cbbd661",
+      "expects": 4,
+      "input_sha": "e716905a2234"
+    },
     "building-blocks-quiz-004/2026-08-12T212950Z-claude-no-skill-1": {
       "expect_sha": "6e06942da058",
       "expects": 3,
@@ -1115,6 +1340,51 @@
       "input_sha": "f3d79650b15b"
     },
     "building-blocks-quiz-004/2026-08-13T061037Z-claude-with-skill-3": {
+      "expect_sha": "6e06942da058",
+      "expects": 3,
+      "input_sha": "f3d79650b15b"
+    },
+    "building-blocks-quiz-004/2026-09-21T125832Z-claude-no-skill-1": {
+      "expect_sha": "6e06942da058",
+      "expects": 3,
+      "input_sha": "f3d79650b15b"
+    },
+    "building-blocks-quiz-004/2026-09-21T125954Z-claude-with-skill-2f0adb01-1": {
+      "expect_sha": "6e06942da058",
+      "expects": 3,
+      "input_sha": "f3d79650b15b"
+    },
+    "building-blocks-quiz-004/2026-09-21T130113Z-claude-with-skill-d9952522-1": {
+      "expect_sha": "6e06942da058",
+      "expects": 3,
+      "input_sha": "f3d79650b15b"
+    },
+    "building-blocks-quiz-004/2026-09-21T130355Z-claude-no-skill-2": {
+      "expect_sha": "6e06942da058",
+      "expects": 3,
+      "input_sha": "f3d79650b15b"
+    },
+    "building-blocks-quiz-004/2026-09-21T130502Z-claude-with-skill-2f0adb01-2": {
+      "expect_sha": "6e06942da058",
+      "expects": 3,
+      "input_sha": "f3d79650b15b"
+    },
+    "building-blocks-quiz-004/2026-09-21T130617Z-claude-with-skill-d9952522-2": {
+      "expect_sha": "6e06942da058",
+      "expects": 3,
+      "input_sha": "f3d79650b15b"
+    },
+    "building-blocks-quiz-004/2026-09-21T130917Z-claude-no-skill-3": {
+      "expect_sha": "6e06942da058",
+      "expects": 3,
+      "input_sha": "f3d79650b15b"
+    },
+    "building-blocks-quiz-004/2026-09-21T131024Z-claude-with-skill-2f0adb01-3": {
+      "expect_sha": "6e06942da058",
+      "expects": 3,
+      "input_sha": "f3d79650b15b"
+    },
+    "building-blocks-quiz-004/2026-09-21T131132Z-claude-with-skill-d9952522-3": {
       "expect_sha": "6e06942da058",
       "expects": 3,
       "input_sha": "f3d79650b15b"
@@ -5929,51 +6199,6 @@
       "expects": 4,
       "input_sha": "0b6c64709276"
     },
-    "testing-goal-001/2026-09-21T135228Z-codex-no-skill-1": {
-      "expect_sha": "634855aea465",
-      "expects": 4,
-      "input_sha": "0b6c64709276"
-    },
-    "testing-goal-001/2026-09-21T135230Z-codex-with-skill-2f0adb01-1": {
-      "expect_sha": "634855aea465",
-      "expects": 4,
-      "input_sha": "0b6c64709276"
-    },
-    "testing-goal-001/2026-09-21T135232Z-codex-with-skill-d9952522-1": {
-      "expect_sha": "634855aea465",
-      "expects": 4,
-      "input_sha": "0b6c64709276"
-    },
-    "testing-goal-001/2026-09-21T135819Z-codex-no-skill-2": {
-      "expect_sha": "634855aea465",
-      "expects": 4,
-      "input_sha": "0b6c64709276"
-    },
-    "testing-goal-001/2026-09-21T135957Z-codex-with-skill-2f0adb01-2": {
-      "expect_sha": "634855aea465",
-      "expects": 4,
-      "input_sha": "0b6c64709276"
-    },
-    "testing-goal-001/2026-09-21T140009Z-codex-with-skill-d9952522-2": {
-      "expect_sha": "634855aea465",
-      "expects": 4,
-      "input_sha": "0b6c64709276"
-    },
-    "testing-goal-001/2026-09-21T140608Z-codex-no-skill-3": {
-      "expect_sha": "634855aea465",
-      "expects": 4,
-      "input_sha": "0b6c64709276"
-    },
-    "testing-goal-001/2026-09-21T140628Z-codex-with-skill-2f0adb01-3": {
-      "expect_sha": "634855aea465",
-      "expects": 4,
-      "input_sha": "0b6c64709276"
-    },
-    "testing-goal-001/2026-09-21T140750Z-codex-with-skill-d9952522-3": {
-      "expect_sha": "634855aea465",
-      "expects": 4,
-      "input_sha": "0b6c64709276"
-    },
     "testing-quiz-001/2026-07-27T074332Z-claude-no-skill-1": {
       "expect_sha": "24a97b068138",
       "expects": 4,
@@ -6150,51 +6375,6 @@
       "input_sha": "d54b6e075983"
     },
     "testing-quiz-001/2026-09-14T192823Z-codex-with-skill-3": {
-      "expect_sha": "24a97b068138",
-      "expects": 4,
-      "input_sha": "d54b6e075983"
-    },
-    "testing-quiz-001/2026-09-21T124507Z-codex-no-skill-1": {
-      "expect_sha": "24a97b068138",
-      "expects": 4,
-      "input_sha": "d54b6e075983"
-    },
-    "testing-quiz-001/2026-09-21T124508Z-codex-with-skill-2f0adb01-1": {
-      "expect_sha": "24a97b068138",
-      "expects": 4,
-      "input_sha": "d54b6e075983"
-    },
-    "testing-quiz-001/2026-09-21T124509Z-codex-with-skill-d9952522-1": {
-      "expect_sha": "24a97b068138",
-      "expects": 4,
-      "input_sha": "d54b6e075983"
-    },
-    "testing-quiz-001/2026-09-21T124737Z-codex-no-skill-2": {
-      "expect_sha": "24a97b068138",
-      "expects": 4,
-      "input_sha": "d54b6e075983"
-    },
-    "testing-quiz-001/2026-09-21T124737Z-codex-no-skill-3": {
-      "expect_sha": "24a97b068138",
-      "expects": 4,
-      "input_sha": "d54b6e075983"
-    },
-    "testing-quiz-001/2026-09-21T124738Z-codex-with-skill-2f0adb01-2": {
-      "expect_sha": "24a97b068138",
-      "expects": 4,
-      "input_sha": "d54b6e075983"
-    },
-    "testing-quiz-001/2026-09-21T124738Z-codex-with-skill-2f0adb01-3": {
-      "expect_sha": "24a97b068138",
-      "expects": 4,
-      "input_sha": "d54b6e075983"
-    },
-    "testing-quiz-001/2026-09-21T124739Z-codex-with-skill-d9952522-2": {
-      "expect_sha": "24a97b068138",
-      "expects": 4,
-      "input_sha": "d54b6e075983"
-    },
-    "testing-quiz-001/2026-09-21T124739Z-codex-with-skill-d9952522-3": {
       "expect_sha": "24a97b068138",
       "expects": 4,
       "input_sha": "d54b6e075983"
@@ -6379,51 +6559,6 @@
       "expects": 4,
       "input_sha": "72787913e1f8"
     },
-    "testing-quiz-002/2026-09-21T124919Z-codex-no-skill-1": {
-      "expect_sha": "6830d42662cf",
-      "expects": 4,
-      "input_sha": "72787913e1f8"
-    },
-    "testing-quiz-002/2026-09-21T124920Z-codex-with-skill-2f0adb01-1": {
-      "expect_sha": "6830d42662cf",
-      "expects": 4,
-      "input_sha": "72787913e1f8"
-    },
-    "testing-quiz-002/2026-09-21T124921Z-codex-with-skill-d9952522-1": {
-      "expect_sha": "6830d42662cf",
-      "expects": 4,
-      "input_sha": "72787913e1f8"
-    },
-    "testing-quiz-002/2026-09-21T125001Z-codex-no-skill-2": {
-      "expect_sha": "6830d42662cf",
-      "expects": 4,
-      "input_sha": "72787913e1f8"
-    },
-    "testing-quiz-002/2026-09-21T125002Z-codex-with-skill-2f0adb01-2": {
-      "expect_sha": "6830d42662cf",
-      "expects": 4,
-      "input_sha": "72787913e1f8"
-    },
-    "testing-quiz-002/2026-09-21T125003Z-codex-with-skill-d9952522-2": {
-      "expect_sha": "6830d42662cf",
-      "expects": 4,
-      "input_sha": "72787913e1f8"
-    },
-    "testing-quiz-002/2026-09-21T125044Z-codex-no-skill-3": {
-      "expect_sha": "6830d42662cf",
-      "expects": 4,
-      "input_sha": "72787913e1f8"
-    },
-    "testing-quiz-002/2026-09-21T125045Z-codex-with-skill-2f0adb01-3": {
-      "expect_sha": "6830d42662cf",
-      "expects": 4,
-      "input_sha": "72787913e1f8"
-    },
-    "testing-quiz-002/2026-09-21T125046Z-codex-with-skill-d9952522-3": {
-      "expect_sha": "6830d42662cf",
-      "expects": 4,
-      "input_sha": "72787913e1f8"
-    },
     "testing-quiz-003/2026-07-27T080658Z-claude-no-skill-1": {
       "expect_sha": "7ac05eac8fff",
       "expects": 4,
@@ -6600,51 +6735,6 @@
       "input_sha": "941d3227aae9"
     },
     "testing-quiz-003/2026-09-14T192833Z-codex-with-skill-3": {
-      "expect_sha": "7ac05eac8fff",
-      "expects": 4,
-      "input_sha": "941d3227aae9"
-    },
-    "testing-quiz-003/2026-09-21T125134Z-codex-no-skill-1": {
-      "expect_sha": "7ac05eac8fff",
-      "expects": 4,
-      "input_sha": "941d3227aae9"
-    },
-    "testing-quiz-003/2026-09-21T125135Z-codex-with-skill-2f0adb01-1": {
-      "expect_sha": "7ac05eac8fff",
-      "expects": 4,
-      "input_sha": "941d3227aae9"
-    },
-    "testing-quiz-003/2026-09-21T125136Z-codex-with-skill-d9952522-1": {
-      "expect_sha": "7ac05eac8fff",
-      "expects": 4,
-      "input_sha": "941d3227aae9"
-    },
-    "testing-quiz-003/2026-09-21T125211Z-codex-no-skill-2": {
-      "expect_sha": "7ac05eac8fff",
-      "expects": 4,
-      "input_sha": "941d3227aae9"
-    },
-    "testing-quiz-003/2026-09-21T125212Z-codex-with-skill-2f0adb01-2": {
-      "expect_sha": "7ac05eac8fff",
-      "expects": 4,
-      "input_sha": "941d3227aae9"
-    },
-    "testing-quiz-003/2026-09-21T125213Z-codex-with-skill-d9952522-2": {
-      "expect_sha": "7ac05eac8fff",
-      "expects": 4,
-      "input_sha": "941d3227aae9"
-    },
-    "testing-quiz-003/2026-09-21T125317Z-codex-no-skill-3": {
-      "expect_sha": "7ac05eac8fff",
-      "expects": 4,
-      "input_sha": "941d3227aae9"
-    },
-    "testing-quiz-003/2026-09-21T125318Z-codex-with-skill-2f0adb01-3": {
-      "expect_sha": "7ac05eac8fff",
-      "expects": 4,
-      "input_sha": "941d3227aae9"
-    },
-    "testing-quiz-003/2026-09-21T125319Z-codex-with-skill-d9952522-3": {
       "expect_sha": "7ac05eac8fff",
       "expects": 4,
       "input_sha": "941d3227aae9"
@@ -6829,51 +6919,6 @@
       "expects": 4,
       "input_sha": "9ef9b0b16933"
     },
-    "testing-quiz-004/2026-09-21T125450Z-codex-no-skill-1": {
-      "expect_sha": "c75df33e4566",
-      "expects": 4,
-      "input_sha": "9ef9b0b16933"
-    },
-    "testing-quiz-004/2026-09-21T125450Z-codex-no-skill-2": {
-      "expect_sha": "c75df33e4566",
-      "expects": 4,
-      "input_sha": "9ef9b0b16933"
-    },
-    "testing-quiz-004/2026-09-21T125450Z-codex-no-skill-3": {
-      "expect_sha": "c75df33e4566",
-      "expects": 4,
-      "input_sha": "9ef9b0b16933"
-    },
-    "testing-quiz-004/2026-09-21T125451Z-codex-with-skill-2f0adb01-1": {
-      "expect_sha": "c75df33e4566",
-      "expects": 4,
-      "input_sha": "9ef9b0b16933"
-    },
-    "testing-quiz-004/2026-09-21T125451Z-codex-with-skill-2f0adb01-2": {
-      "expect_sha": "c75df33e4566",
-      "expects": 4,
-      "input_sha": "9ef9b0b16933"
-    },
-    "testing-quiz-004/2026-09-21T125451Z-codex-with-skill-2f0adb01-3": {
-      "expect_sha": "c75df33e4566",
-      "expects": 4,
-      "input_sha": "9ef9b0b16933"
-    },
-    "testing-quiz-004/2026-09-21T125452Z-codex-with-skill-d9952522-1": {
-      "expect_sha": "c75df33e4566",
-      "expects": 4,
-      "input_sha": "9ef9b0b16933"
-    },
-    "testing-quiz-004/2026-09-21T125452Z-codex-with-skill-d9952522-2": {
-      "expect_sha": "c75df33e4566",
-      "expects": 4,
-      "input_sha": "9ef9b0b16933"
-    },
-    "testing-quiz-004/2026-09-21T125452Z-codex-with-skill-d9952522-3": {
-      "expect_sha": "c75df33e4566",
-      "expects": 4,
-      "input_sha": "9ef9b0b16933"
-    },
     "testing-quiz-005/2026-07-27T081242Z-claude-no-skill-1": {
       "expect_sha": "7f9221ae3c33",
       "expects": 4,
@@ -7054,51 +7099,6 @@
       "expects": 4,
       "input_sha": "11fc11902107"
     },
-    "testing-quiz-005/2026-09-21T125558Z-codex-no-skill-2": {
-      "expect_sha": "7f9221ae3c33",
-      "expects": 4,
-      "input_sha": "11fc11902107"
-    },
-    "testing-quiz-005/2026-09-21T125559Z-codex-with-skill-d9952522-1": {
-      "expect_sha": "7f9221ae3c33",
-      "expects": 4,
-      "input_sha": "11fc11902107"
-    },
-    "testing-quiz-005/2026-09-21T125600Z-codex-with-skill-d9952522-2": {
-      "expect_sha": "7f9221ae3c33",
-      "expects": 4,
-      "input_sha": "11fc11902107"
-    },
-    "testing-quiz-005/2026-09-21T134424Z-codex-no-skill-1": {
-      "expect_sha": "7f9221ae3c33",
-      "expects": 4,
-      "input_sha": "11fc11902107"
-    },
-    "testing-quiz-005/2026-09-21T134559Z-codex-no-skill-3": {
-      "expect_sha": "7f9221ae3c33",
-      "expects": 4,
-      "input_sha": "11fc11902107"
-    },
-    "testing-quiz-005/2026-09-21T134601Z-codex-with-skill-2f0adb01-1": {
-      "expect_sha": "7f9221ae3c33",
-      "expects": 4,
-      "input_sha": "11fc11902107"
-    },
-    "testing-quiz-005/2026-09-21T134603Z-codex-with-skill-2f0adb01-2": {
-      "expect_sha": "7f9221ae3c33",
-      "expects": 4,
-      "input_sha": "11fc11902107"
-    },
-    "testing-quiz-005/2026-09-21T134726Z-codex-with-skill-2f0adb01-3": {
-      "expect_sha": "7f9221ae3c33",
-      "expects": 4,
-      "input_sha": "11fc11902107"
-    },
-    "testing-quiz-005/2026-09-21T134731Z-codex-with-skill-d9952522-3": {
-      "expect_sha": "7f9221ae3c33",
-      "expects": 4,
-      "input_sha": "11fc11902107"
-    },
     "testing-quiz-006/2026-09-14T192601Z-codex-no-skill-1": {
       "expect_sha": "f04b5b22356e",
       "expects": 4,
@@ -7125,51 +7125,6 @@
       "input_sha": "aba18d47518d"
     },
     "testing-quiz-006/2026-09-14T192605Z-codex-with-skill-3": {
-      "expect_sha": "f04b5b22356e",
-      "expects": 4,
-      "input_sha": "aba18d47518d"
-    },
-    "testing-quiz-006/2026-09-21T134803Z-codex-no-skill-1": {
-      "expect_sha": "f04b5b22356e",
-      "expects": 4,
-      "input_sha": "aba18d47518d"
-    },
-    "testing-quiz-006/2026-09-21T134849Z-codex-with-skill-2f0adb01-1": {
-      "expect_sha": "f04b5b22356e",
-      "expects": 4,
-      "input_sha": "aba18d47518d"
-    },
-    "testing-quiz-006/2026-09-21T134902Z-codex-with-skill-d9952522-1": {
-      "expect_sha": "f04b5b22356e",
-      "expects": 4,
-      "input_sha": "aba18d47518d"
-    },
-    "testing-quiz-006/2026-09-21T134915Z-codex-no-skill-2": {
-      "expect_sha": "f04b5b22356e",
-      "expects": 4,
-      "input_sha": "aba18d47518d"
-    },
-    "testing-quiz-006/2026-09-21T134955Z-codex-with-skill-2f0adb01-2": {
-      "expect_sha": "f04b5b22356e",
-      "expects": 4,
-      "input_sha": "aba18d47518d"
-    },
-    "testing-quiz-006/2026-09-21T135012Z-codex-with-skill-d9952522-2": {
-      "expect_sha": "f04b5b22356e",
-      "expects": 4,
-      "input_sha": "aba18d47518d"
-    },
-    "testing-quiz-006/2026-09-21T135016Z-codex-no-skill-3": {
-      "expect_sha": "f04b5b22356e",
-      "expects": 4,
-      "input_sha": "aba18d47518d"
-    },
-    "testing-quiz-006/2026-09-21T135103Z-codex-with-skill-2f0adb01-3": {
-      "expect_sha": "f04b5b22356e",
-      "expects": 4,
-      "input_sha": "aba18d47518d"
-    },
-    "testing-quiz-006/2026-09-21T135107Z-codex-with-skill-d9952522-3": {
       "expect_sha": "f04b5b22356e",
       "expects": 4,
       "input_sha": "aba18d47518d"
@@ -9287,15 +9242,6 @@
     "testing-goal-001/2026-09-15T002453Z-codex-with-skill-2": "6b323a936a72bc3d8ebd526189bc437d8e186d2a",
     "testing-goal-001/2026-09-15T002855Z-codex-with-skill-2": "6b323a936a72bc3d8ebd526189bc437d8e186d2a",
     "testing-goal-001/2026-09-15T003202Z-codex-with-skill-2": "6b323a936a72bc3d8ebd526189bc437d8e186d2a",
-    "testing-goal-001/2026-09-21T135228Z-codex-no-skill-1": "1e976816f3d6ab1c013f6c3d33a923fbaf56fcfd",
-    "testing-goal-001/2026-09-21T135230Z-codex-with-skill-2f0adb01-1": "1e976816f3d6ab1c013f6c3d33a923fbaf56fcfd",
-    "testing-goal-001/2026-09-21T135232Z-codex-with-skill-d9952522-1": "1e976816f3d6ab1c013f6c3d33a923fbaf56fcfd",
-    "testing-goal-001/2026-09-21T135819Z-codex-no-skill-2": "1e976816f3d6ab1c013f6c3d33a923fbaf56fcfd",
-    "testing-goal-001/2026-09-21T135957Z-codex-with-skill-2f0adb01-2": "1e976816f3d6ab1c013f6c3d33a923fbaf56fcfd",
-    "testing-goal-001/2026-09-21T140009Z-codex-with-skill-d9952522-2": "1e976816f3d6ab1c013f6c3d33a923fbaf56fcfd",
-    "testing-goal-001/2026-09-21T140608Z-codex-no-skill-3": "1e976816f3d6ab1c013f6c3d33a923fbaf56fcfd",
-    "testing-goal-001/2026-09-21T140628Z-codex-with-skill-2f0adb01-3": "1e976816f3d6ab1c013f6c3d33a923fbaf56fcfd",
-    "testing-goal-001/2026-09-21T140750Z-codex-with-skill-d9952522-3": "1e976816f3d6ab1c013f6c3d33a923fbaf56fcfd",
     "testing-quiz-001/2026-07-27T074332Z-claude-no-skill-1": "513065691c1223d7ccac9cc4ee9bd58f66a8c639",
     "testing-quiz-001/2026-07-27T074710Z-claude-no-skill-2": "513065691c1223d7ccac9cc4ee9bd58f66a8c639",
     "testing-quiz-001/2026-07-27T074900Z-claude-with-skill-2": "513065691c1223d7ccac9cc4ee9bd58f66a8c639",
@@ -9332,15 +9278,6 @@
     "testing-quiz-001/2026-09-14T192822Z-codex-with-skill-1": "6b323a936a72bc3d8ebd526189bc437d8e186d2a",
     "testing-quiz-001/2026-09-14T192822Z-codex-with-skill-2": "6b323a936a72bc3d8ebd526189bc437d8e186d2a",
     "testing-quiz-001/2026-09-14T192823Z-codex-with-skill-3": "6b323a936a72bc3d8ebd526189bc437d8e186d2a",
-    "testing-quiz-001/2026-09-21T124507Z-codex-no-skill-1": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-001/2026-09-21T124508Z-codex-with-skill-2f0adb01-1": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-001/2026-09-21T124509Z-codex-with-skill-d9952522-1": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-001/2026-09-21T124737Z-codex-no-skill-2": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-001/2026-09-21T124737Z-codex-no-skill-3": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-001/2026-09-21T124738Z-codex-with-skill-2f0adb01-2": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-001/2026-09-21T124738Z-codex-with-skill-2f0adb01-3": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-001/2026-09-21T124739Z-codex-with-skill-d9952522-2": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-001/2026-09-21T124739Z-codex-with-skill-d9952522-3": "1077dbb4f28bde0242747242db3311e713ab569c",
     "testing-quiz-002/2026-07-27T080522Z-claude-no-skill-1": "513065691c1223d7ccac9cc4ee9bd58f66a8c639",
     "testing-quiz-002/2026-07-27T080523Z-claude-no-skill-2": "513065691c1223d7ccac9cc4ee9bd58f66a8c639",
     "testing-quiz-002/2026-07-27T080525Z-claude-no-skill-3": "513065691c1223d7ccac9cc4ee9bd58f66a8c639",
@@ -9377,15 +9314,6 @@
     "testing-quiz-002/2026-09-14T192827Z-codex-with-skill-1": "6b323a936a72bc3d8ebd526189bc437d8e186d2a",
     "testing-quiz-002/2026-09-14T192828Z-codex-with-skill-2": "6b323a936a72bc3d8ebd526189bc437d8e186d2a",
     "testing-quiz-002/2026-09-14T192828Z-codex-with-skill-3": "6b323a936a72bc3d8ebd526189bc437d8e186d2a",
-    "testing-quiz-002/2026-09-21T124919Z-codex-no-skill-1": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-002/2026-09-21T124920Z-codex-with-skill-2f0adb01-1": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-002/2026-09-21T124921Z-codex-with-skill-d9952522-1": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-002/2026-09-21T125001Z-codex-no-skill-2": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-002/2026-09-21T125002Z-codex-with-skill-2f0adb01-2": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-002/2026-09-21T125003Z-codex-with-skill-d9952522-2": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-002/2026-09-21T125044Z-codex-no-skill-3": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-002/2026-09-21T125045Z-codex-with-skill-2f0adb01-3": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-002/2026-09-21T125046Z-codex-with-skill-d9952522-3": "1077dbb4f28bde0242747242db3311e713ab569c",
     "testing-quiz-003/2026-07-27T080658Z-claude-no-skill-1": "513065691c1223d7ccac9cc4ee9bd58f66a8c639",
     "testing-quiz-003/2026-07-27T080721Z-claude-no-skill-2": "513065691c1223d7ccac9cc4ee9bd58f66a8c639",
     "testing-quiz-003/2026-07-27T080722Z-claude-no-skill-3": "513065691c1223d7ccac9cc4ee9bd58f66a8c639",
@@ -9422,15 +9350,6 @@
     "testing-quiz-003/2026-09-14T192832Z-codex-with-skill-1": "6b323a936a72bc3d8ebd526189bc437d8e186d2a",
     "testing-quiz-003/2026-09-14T192833Z-codex-with-skill-2": "6b323a936a72bc3d8ebd526189bc437d8e186d2a",
     "testing-quiz-003/2026-09-14T192833Z-codex-with-skill-3": "6b323a936a72bc3d8ebd526189bc437d8e186d2a",
-    "testing-quiz-003/2026-09-21T125134Z-codex-no-skill-1": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-003/2026-09-21T125135Z-codex-with-skill-2f0adb01-1": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-003/2026-09-21T125136Z-codex-with-skill-d9952522-1": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-003/2026-09-21T125211Z-codex-no-skill-2": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-003/2026-09-21T125212Z-codex-with-skill-2f0adb01-2": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-003/2026-09-21T125213Z-codex-with-skill-d9952522-2": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-003/2026-09-21T125317Z-codex-no-skill-3": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-003/2026-09-21T125318Z-codex-with-skill-2f0adb01-3": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-003/2026-09-21T125319Z-codex-with-skill-d9952522-3": "1077dbb4f28bde0242747242db3311e713ab569c",
     "testing-quiz-004/2026-07-27T080946Z-claude-no-skill-1": "513065691c1223d7ccac9cc4ee9bd58f66a8c639",
     "testing-quiz-004/2026-07-27T081002Z-claude-no-skill-2": "513065691c1223d7ccac9cc4ee9bd58f66a8c639",
     "testing-quiz-004/2026-07-27T081004Z-claude-no-skill-3": "513065691c1223d7ccac9cc4ee9bd58f66a8c639",
@@ -9467,15 +9386,6 @@
     "testing-quiz-004/2026-09-14T192837Z-codex-with-skill-1": "6b323a936a72bc3d8ebd526189bc437d8e186d2a",
     "testing-quiz-004/2026-09-14T192838Z-codex-with-skill-2": "6b323a936a72bc3d8ebd526189bc437d8e186d2a",
     "testing-quiz-004/2026-09-14T192838Z-codex-with-skill-3": "6b323a936a72bc3d8ebd526189bc437d8e186d2a",
-    "testing-quiz-004/2026-09-21T125450Z-codex-no-skill-1": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-004/2026-09-21T125450Z-codex-no-skill-2": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-004/2026-09-21T125450Z-codex-no-skill-3": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-004/2026-09-21T125451Z-codex-with-skill-2f0adb01-1": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-004/2026-09-21T125451Z-codex-with-skill-2f0adb01-2": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-004/2026-09-21T125451Z-codex-with-skill-2f0adb01-3": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-004/2026-09-21T125452Z-codex-with-skill-d9952522-1": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-004/2026-09-21T125452Z-codex-with-skill-d9952522-2": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-004/2026-09-21T125452Z-codex-with-skill-d9952522-3": "1077dbb4f28bde0242747242db3311e713ab569c",
     "testing-quiz-005/2026-07-27T081242Z-claude-no-skill-1": "513065691c1223d7ccac9cc4ee9bd58f66a8c639",
     "testing-quiz-005/2026-07-27T081301Z-claude-no-skill-2": "513065691c1223d7ccac9cc4ee9bd58f66a8c639",
     "testing-quiz-005/2026-07-27T081349Z-claude-no-skill-3": "513065691c1223d7ccac9cc4ee9bd58f66a8c639",
@@ -9512,30 +9422,12 @@
     "testing-quiz-005/2026-09-14T192842Z-codex-with-skill-1": "6b323a936a72bc3d8ebd526189bc437d8e186d2a",
     "testing-quiz-005/2026-09-14T192843Z-codex-with-skill-2": "6b323a936a72bc3d8ebd526189bc437d8e186d2a",
     "testing-quiz-005/2026-09-14T192843Z-codex-with-skill-3": "6b323a936a72bc3d8ebd526189bc437d8e186d2a",
-    "testing-quiz-005/2026-09-21T125558Z-codex-no-skill-2": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-005/2026-09-21T125559Z-codex-with-skill-d9952522-1": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-005/2026-09-21T125600Z-codex-with-skill-d9952522-2": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-005/2026-09-21T134424Z-codex-no-skill-1": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-005/2026-09-21T134559Z-codex-no-skill-3": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-005/2026-09-21T134601Z-codex-with-skill-2f0adb01-1": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-005/2026-09-21T134603Z-codex-with-skill-2f0adb01-2": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-005/2026-09-21T134726Z-codex-with-skill-2f0adb01-3": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-005/2026-09-21T134731Z-codex-with-skill-d9952522-3": "1077dbb4f28bde0242747242db3311e713ab569c",
     "testing-quiz-006/2026-09-14T192601Z-codex-no-skill-1": "6b323a936a72bc3d8ebd526189bc437d8e186d2a",
     "testing-quiz-006/2026-09-14T192601Z-codex-no-skill-2": "6b323a936a72bc3d8ebd526189bc437d8e186d2a",
     "testing-quiz-006/2026-09-14T192602Z-codex-no-skill-3": "6b323a936a72bc3d8ebd526189bc437d8e186d2a",
     "testing-quiz-006/2026-09-14T192603Z-codex-with-skill-1": "6b323a936a72bc3d8ebd526189bc437d8e186d2a",
     "testing-quiz-006/2026-09-14T192604Z-codex-with-skill-2": "6b323a936a72bc3d8ebd526189bc437d8e186d2a",
     "testing-quiz-006/2026-09-14T192605Z-codex-with-skill-3": "6b323a936a72bc3d8ebd526189bc437d8e186d2a",
-    "testing-quiz-006/2026-09-21T134803Z-codex-no-skill-1": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-006/2026-09-21T134849Z-codex-with-skill-2f0adb01-1": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-006/2026-09-21T134902Z-codex-with-skill-d9952522-1": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-006/2026-09-21T134915Z-codex-no-skill-2": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-006/2026-09-21T134955Z-codex-with-skill-2f0adb01-2": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-006/2026-09-21T135012Z-codex-with-skill-d9952522-2": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-006/2026-09-21T135016Z-codex-no-skill-3": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-006/2026-09-21T135103Z-codex-with-skill-2f0adb01-3": "1077dbb4f28bde0242747242db3311e713ab569c",
-    "testing-quiz-006/2026-09-21T135107Z-codex-with-skill-d9952522-3": "1077dbb4f28bde0242747242db3311e713ab569c",
     "tools-goal-001/2026-08-01T214602Z-claude-no-skill-1": "3cb389e6bef1fae3067e28969edd0f94a57ed0ef",
     "tools-goal-001/2026-08-02T024828Z-claude-no-skill-2": "3cb389e6bef1fae3067e28969edd0f94a57ed0ef",
     "tools-goal-001/2026-08-02T030129Z-claude-no-skill-3": "3cb389e6bef1fae3067e28969edd0f94a57ed0ef",
@@ -10619,6 +10511,14 @@
       "title": "eval: audit (opus-5-medium)",
       "body": "Audit row of #119 on Opus 5 medium, benchmark id **`major-refine-d9952522`**.\n\n---\n\n**Stack:** `claude` / `claude-opus-5` / effort `medium`. **Judge:** `claude` / `claude-opus-5` / effort `high`, so every run is `self_judged: true`. 3 runs per arm, 4 live `skills/audit` tasks, **36 counted runs**, all `executor_exit: 0`, no dead runs; **1 retracted** goal run plus its replacement (37 records).\n\n**Arms:** none (`no_skill`) · old (`--skill-ref 2f0adb01`, 72 lines, unpinned checklists, \"spawn one opus sub-agent per skill\", \"file GitHub issues\") · new (`--skill-ref d9952522`, 63 lines, pinned `evm-audit-skills@ffe4b670`, no publishing without confirmation).\n\n## Pass counts — new · old · none\n\n| Task | new · old · none |\n| --- | --- |\n| `audit-goal-001` | `3/3 · 3/3 · 3/3` (11/11 findings + severity in every run) |\n| `audit-quiz-001` | `3/3 · 3/3 · 3/3` |\n| `audit-quiz-002` | `3/3 · 3/3 · 3/3` |\n| `audit-quiz-003` | `3/3 · 3/3 · 3/3` |\n| **total** | **`12/12 · 12/12 · 12/12`** |\n\n**Saturated.** Not one expect line failed in any arm. On Opus 5 medium the audit tasks measure the model: it finds all eleven planted bugs and ranks `upgradeTo` first in all ten goal reports.\n\n**Blindness:** every `new` draw of the goal task opens `AUDIT-REPORT.md` with a Method line naming the `evm-audit-skills` checklists (\"checked against the pinned `evm-audit-skills` checklists (general, precision-math, …)\"), which `verify` refuses as `[checklist provenance]`. Run 1 was retracted and replaced per the 2026-09-04 codex precedent; the replacement and runs 2–3 leaked the same line, **4/4**. Re-drawing until a clean run appeared would select for runs that skip the checklists, so runs 2, 3 and 4 were graded with `--allow-skill-mention` and counted, run 1 stays retracted, and the report says the new arm's goal grades were not blind. It could not have moved a grade here (every arm is 11/11), but it would on a task that discriminates. Filed as `audit-checklist-provenance-in-report`.\n\n**Trigger:** quizzes 0/18 — neither description fires on a pasted snippet in a post-mortem on claude, so the quiz `with_skill` columns are `none` columns (`audit-skill-not-invoked-on-prose-question` 9/9 both arms). Goal: new triggers 4/4 via the Skill tool; old 0/3 via the tool but 3/3 `cat` the file after an `ls`, then fetch nothing and spawn nothing (`audit-subagent-fanout-not-executed` 3/3 old, 4/4 new).\n\n**Cost (goal, medians):** new `$1.14 / 310k / 217s` · old `$1.31 / 402k / 274s` · none `$1.04 / 251k / 224s`. New is the cheaper skill arm but pays ~60k tokens over none for checklists that changed no grade; old's runs wrote forge PoCs. Quizzes are equal across arms. `run-stats` can't exclude the retracted run, so the report reads the new arm's medians off `--runs`.\n\n**Record, not graded:** 0 sub-agents in all 10 goal runs; 0 false positives at the finding level (the four recurring ungraded findings were checked against `src/`); no leftover files; no run tried to publish anything.\n\n## Records\n\n- New: `audit-checklist-provenance-in-report` (new 4/4 on claude; the codex 7be55c8b retraction was the first instance).\n- Updated with this stack's measurement: `audit-skill-not-invoked-on-prose-question`, `audit-subagent-fanout-not-executed`, and the five missed-vulnerability records (all 0/3 · 0/3 · 0/3).\n- All 27 quiz `output/answer.md` force-added; goal evidence is `run.diff`. `site/derived.json` rebuilt.\n\n**Skill edits the benchmark justifies:** tell the executor the report is a client deliverable and must not name the checklist repository or the skill. The quiz trigger and the ignored \"always load `general` and `precision-math`\" rule are noted in the report.\n\nReport: `reports/major-refine-audit-opus-5-medium.md`.\n\n**Caveats:** `self_judged: true` on all 37; n=3 per arm; saturated tasks, so this column can't rank the arms on pass rate; the new arm's goal grades were not blind.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n",
       "url": "https://github.com/BuidlGuidl/ethskills-evals/pull/148",
+      "merged_at": null,
+      "state": "OPEN"
+    },
+    "149": {
+      "number": 149,
+      "title": "eval: testing (GPT 5.5 high)",
+      "body": "Benchmark **`major-refine-d9952522`** ([#119](https://github.com/BuidlGuidl/ethskills-evals/issues/119)), `testing` row on the **GPT 5.5 high** stack.\n\n- **Executor:** codex / `gpt-5.5` / `high`\n- **Judge:** claude / `claude-opus-5` / `high` — `self_judged: false` on all 63 runs\n- **Arms:** none · old (`2f0adb01`) · new (`d9952522`), 3 runs each\n- **Tasks:** quiz-001…006 and goal-001, every live task on the skill\n- 63 runs, all graded, none retracted\n\nPass counts, new · old · none:\n\n| Task | new | old | none |\n| --- | --- | --- | --- |\n| quiz-001 | 3/3 | 2/3 | 2/3 |\n| quiz-002 | 1/3 | 3/3 | 3/3 |\n| quiz-003 | 3/3 | 3/3 | 3/3 |\n| quiz-004 | 3/3 | 2/3 | 3/3 |\n| quiz-005 | 1/3 | 0/3 | 0/3 |\n| quiz-006 | 3/3 | 0/3 | 0/3 |\n| goal-001 | 2/3 | 0/3 | 1/3 |\n| **total** | **16/21** | 10/21 | 12/21 |\n\nThree cells carry it. quiz-006 expect_3 (archive depth on a pinned fork) is the cleanest result in the benchmark — 3/3 new against 0/3 in *both* other arms, and the old arm is the control every earlier reading of that mistake was missing. goal-001 expect_1 (the unbounded fee) is 2/3 · 0/3 · 1/3. Against that, quiz-002 expect_4 is a genuine negative delta: 1/3 new against 3/3 in both other arms, the refined text naming the fuzz technique and never naming the missing `require` in the setter.\n\nReport: `reports/major-refine-testing-gpt-5.5-high.md`. Three new mistake records, five updated with this stack's measurements. Evidence integrity checked — every pasted `forge` command appears in its run's transcript, 9/9 goal runs clean.\n\nTwo things for the issue thread: `testing-quiz-tautological-tests-missed` is **reopened** (8/9 missed here after being recorded as saturated at 0/3 on codex/gpt-5.6-sol — \"saturated\" was a property of that stack, not the quiz), and across all nine goal runs there was exactly one fuzz test and zero handler invariants, in every arm including the refined one.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)",
+      "url": "https://github.com/BuidlGuidl/ethskills-evals/pull/149",
       "merged_at": null,
       "state": "OPEN"
     }
