@@ -141,7 +141,7 @@ Five records are built on PR #154's versions (the Opus row, still open), with a 
 
 ## Harness notes
 
-1. **Cross-run reads** (above). Layout cannot close this, as AGENTS.md says. A per-run `HOME`/root the executor cannot list, or running codex runs of one row one at a time, would. Raised on #119.
+1. **Cross-run reads** (above). Layout cannot close this, as AGENTS.md says. A per-run `HOME`/root the executor cannot list, or running codex runs of one row one at a time, would. To raise on #119 (not yet posted).
 2. **`.npm-cache/` in the snapshot.** codex's sandbox cannot write `~/.npm`, so npm cached into the workspace (up to 84 MB). The snapshot kept 1.8–2.4 MB of it after the 256 KB per-file cap, and the judge exited non-zero with empty stderr on 6 goal-001 runs (5 originals + new-4). With the operator's OK, only `.npm-cache/` was deleted from those workspaces and `output/`s, and `verify` re-run. Same gap as #160/#161; `.npm-cache` belongs in `GENERATED_DIRS`.
 3. **The new arm's verifier never reached the judge.** The new text says "Build it optimized or it exceeds the 24KB limit". All three new runs pass `--optimized` to `bb write_solidity_verifier`, which produces a 332 KB `Verifier.sol` against 104 KB without the flag (checked on new-1's circuit on this toolchain). `verify` drops files over 256 KB from `output/` silently, so the new arm's expect_3 was graded without the verifier. expect_3 grades the app contract (verify before mutate, nullifier recorded), which the judge had, so the runs are kept. The file cap should say what it dropped.
 4. **Node 18 under codex.** `/bin/zsh -lc` → `path_helper` puts `/usr/local/bin/node` v18 ahead of the driver's v22. bb.js 5.1.0 ran on it without error in every run.
