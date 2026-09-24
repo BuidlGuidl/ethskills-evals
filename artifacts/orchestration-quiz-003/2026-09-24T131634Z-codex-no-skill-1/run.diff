@@ -1,0 +1,242 @@
+diff --git a/packages/nextjs/app/greetings/page.tsx b/packages/nextjs/app/greetings/page.tsx
+new file mode 100644
+index 0000000..51f7c99
+--- /dev/null
++++ b/packages/nextjs/app/greetings/page.tsx
+@@ -0,0 +1,181 @@
++"use client";
++
++import { FormEvent, useMemo, useState } from "react";
++import { Address } from "@scaffold-ui/components";
++import type { NextPage } from "next";
++import { useAccount } from "wagmi";
++import {
++  useDeployedContractInfo,
++  useScaffoldEventHistory,
++  useScaffoldReadContract,
++  useScaffoldWriteContract,
++  useTargetNetwork,
++} from "~~/hooks/scaffold-eth";
++import { getParsedError, notification } from "~~/utils/scaffold-eth";
++
++const CONTRACT_NAME = "YourContract";
++
++const Greetings: NextPage = () => {
++  const [newGreeting, setNewGreeting] = useState("");
++  const { isConnected } = useAccount();
++  const { targetNetwork } = useTargetNetwork();
++
++  const { data: deployedContract, isLoading: isContractLoading } = useDeployedContractInfo({
++    contractName: CONTRACT_NAME,
++  });
++
++  const { data: greeting, isLoading: isGreetingLoading } = useScaffoldReadContract({
++    contractName: CONTRACT_NAME,
++    functionName: "greeting",
++  });
++
++  const { data: totalCounter, isLoading: isTotalCounterLoading } = useScaffoldReadContract({
++    contractName: CONTRACT_NAME,
++    functionName: "totalCounter",
++  });
++
++  const { writeContractAsync, isMining } = useScaffoldWriteContract({
++    contractName: CONTRACT_NAME,
++  });
++
++  const { data: greetingChanges, isLoading: isGreetingChangesLoading } = useScaffoldEventHistory({
++    contractName: CONTRACT_NAME,
++    eventName: "GreetingChange",
++    watch: true,
++  });
++
++  const sortedGreetingChanges = useMemo(
++    () =>
++      [...(greetingChanges || [])].sort((a, b) => {
++        const aBlockNumber = a.blockNumber || 0n;
++        const bBlockNumber = b.blockNumber || 0n;
++        if (aBlockNumber < bBlockNumber) return 1;
++        if (aBlockNumber > bBlockNumber) return -1;
++        return Number((b.logIndex || 0) - (a.logIndex || 0));
++      }),
++    [greetingChanges],
++  );
++
++  const handleSetGreeting = async (event: FormEvent<HTMLFormElement>) => {
++    event.preventDefault();
++
++    const trimmedGreeting = newGreeting.trim();
++    if (!trimmedGreeting) {
++      notification.warning("Enter a greeting before submitting.");
++      return;
++    }
++
++    try {
++      await writeContractAsync({
++        functionName: "setGreeting",
++        args: [trimmedGreeting],
++      });
++      setNewGreeting("");
++    } catch (error) {
++      notification.error(getParsedError(error));
++    }
++  };
++
++  return (
++    <div className="grow bg-base-200">
++      <div className="mx-auto flex w-full max-w-5xl flex-col gap-8 px-4 py-8 sm:px-6 lg:px-8">
++        <div className="flex flex-col gap-4">
++          <div>
++            <p className="text-sm font-medium uppercase tracking-wide text-primary">YourContract</p>
++            <h1 className="mt-1 text-3xl font-bold">Greetings</h1>
++          </div>
++          {!isContractLoading && !deployedContract && (
++            <div className="alert alert-warning">
++              <span>Deploy YourContract to the target network before reading or writing greetings.</span>
++            </div>
++          )}
++        </div>
++
++        <section className="grid gap-4 md:grid-cols-[minmax(0,1fr)_220px]">
++          <div className="bg-base-100 border border-base-300 p-6">
++            <p className="text-sm font-medium text-base-content/60">Current greeting</p>
++            <p className="mt-3 break-words text-2xl font-semibold">
++              {isGreetingLoading ? "Loading..." : (greeting ?? "No greeting found")}
++            </p>
++          </div>
++          <div className="bg-base-100 border border-base-300 p-6">
++            <p className="text-sm font-medium text-base-content/60">Total changes</p>
++            <p className="mt-3 text-4xl font-bold">{isTotalCounterLoading ? "..." : totalCounter?.toString() || "0"}</p>
++          </div>
++        </section>
++
++        <section className="bg-base-100 border border-base-300 p-6">
++          <form className="flex flex-col gap-4 md:flex-row" onSubmit={handleSetGreeting}>
++            <label className="form-control flex-1">
++              <span className="label pb-2">
++                <span className="label-text font-medium">New greeting</span>
++              </span>
++              <input
++                className="input input-bordered w-full"
++                disabled={!isConnected || isMining || !deployedContract}
++                maxLength={120}
++                onChange={event => setNewGreeting(event.target.value)}
++                placeholder={isConnected ? "Share a new greeting" : "Connect your wallet to set a greeting"}
++                value={newGreeting}
++              />
++            </label>
++            <div className="flex items-end">
++              <button
++                className="btn btn-primary w-full md:w-auto"
++                disabled={!isConnected || isMining || !deployedContract || !newGreeting.trim()}
++                type="submit"
++              >
++                {isMining ? <span className="loading loading-spinner loading-sm" /> : "Set Greeting"}
++              </button>
++            </div>
++          </form>
++        </section>
++
++        <section className="flex flex-col gap-4">
++          <div className="flex items-center justify-between gap-4">
++            <h2 className="text-xl font-semibold">Past changes</h2>
++            <span className="badge badge-neutral">{sortedGreetingChanges.length}</span>
++          </div>
++
++          <div className="overflow-hidden border border-base-300 bg-base-100">
++            {isGreetingChangesLoading ? (
++              <div className="flex items-center justify-center gap-2 p-8 text-base-content/70">
++                <span className="loading loading-spinner loading-sm" />
++                <span>Loading greeting changes...</span>
++              </div>
++            ) : sortedGreetingChanges.length > 0 ? (
++              <ul className="divide-y divide-base-300">
++                {sortedGreetingChanges.map(change => {
++                  const greetingSetter = change.args.greetingSetter;
++                  const changedGreeting = change.args.newGreeting;
++                  const eventKey = `${change.transactionHash}-${change.logIndex}`;
++
++                  return (
++                    <li
++                      className="flex flex-col gap-3 p-4 sm:flex-row sm:items-start sm:justify-between"
++                      key={eventKey}
++                    >
++                      <div className="min-w-0 flex-1">
++                        <p className="break-words text-lg font-medium">{changedGreeting}</p>
++                        <p className="mt-1 text-sm text-base-content/60">
++                          Block {change.blockNumber?.toString() || "pending"}
++                        </p>
++                      </div>
++                      <div className="shrink-0">
++                        <Address address={greetingSetter} chain={targetNetwork} />
++                      </div>
++                    </li>
++                  );
++                })}
++              </ul>
++            ) : (
++              <div className="p-8 text-center text-base-content/70">No greeting changes yet.</div>
++            )}
++          </div>
++        </section>
++      </div>
++    </div>
++  );
++};
++
++export default Greetings;
+diff --git a/packages/nextjs/components/Header.tsx b/packages/nextjs/components/Header.tsx
+index bc63eb4..0b1c616 100644
+--- a/packages/nextjs/components/Header.tsx
++++ b/packages/nextjs/components/Header.tsx
+@@ -5,12 +5,10 @@ import Image from "next/image";
+ import Link from "next/link";
+ import { usePathname } from "next/navigation";
+ import { hardhat } from "viem/chains";
+-import { Bars3Icon, BugAntIcon } from "@heroicons/react/24/outline";
++import { Bars3Icon, BugAntIcon, ChatBubbleLeftRightIcon } from "@heroicons/react/24/outline";
+ import { FaucetButton, RainbowKitCustomConnectButton } from "~~/components/scaffold-eth";
+ import { useOutsideClick, useTargetNetwork } from "~~/hooks/scaffold-eth";
+ 
+-
+-
+ type HeaderMenuLink = {
+   label: string;
+   href: string;
+@@ -19,14 +17,19 @@ type HeaderMenuLink = {
+ 
+ export const menuLinks: HeaderMenuLink[] = [
+   {
+-    label: 'Home',
+-    href: '/'
++    label: "Home",
++    href: "/",
++  },
++  {
++    label: "Greetings",
++    href: "/greetings",
++    icon: <ChatBubbleLeftRightIcon className="h-4 w-4" />,
+   },
+   {
+-    label: 'Debug Contracts',
+-    href: '/debug',
+-    icon: <BugAntIcon className="h-4 w-4" />
+-  }
++    label: "Debug Contracts",
++    href: "/debug",
++    icon: <BugAntIcon className="h-4 w-4" />,
++  },
+ ];
+ 
+ export const HeaderMenuLinks = () => {
+@@ -102,4 +105,4 @@ export const Header = () => {
+       </div>
+     </div>
+   );
+-};
+\ No newline at end of file
++};
+
+# Untracked files and status
+ A packages/nextjs/app/greetings/page.tsx
+ M packages/nextjs/components/Header.tsx
