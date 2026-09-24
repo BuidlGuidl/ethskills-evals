@@ -22,6 +22,10 @@ export const loadShowcase = (filePath: string): Entry[] | null => {
       throw new Error(`${filePath}: entry ${position + 1} must name a skill, model, before and after`);
     }
 
+    if (entry.benchmark !== undefined && (typeof entry.benchmark !== "string" || entry.benchmark.length === 0)) {
+      throw new Error(`${filePath}: entry ${position + 1} names an empty benchmark`);
+    }
+
     if (entry.before === entry.after) {
       throw new Error(`${filePath}: entry ${position + 1} names one version twice`);
     }
@@ -65,7 +69,7 @@ export const runUsage = (text: string, value: unknown): Run["usage"] => {
   };
 };
 
-type SelectionRun = Pick<Run, "task" | "skill" | "model" | "variant" | "skill_content" | "superseded_by" | "retracted" | "pass" | "rubric" | "prompt">;
+type SelectionRun = Pick<Run, "task" | "skill" | "model" | "variant" | "skill_content" | "superseded_by" | "retracted" | "pass" | "rubric" | "prompt" | "benchmark">;
 
 type ShowcaseData = {
   skills: { name: string; versions: { id: string; runs: number }[] }[];
@@ -82,6 +86,7 @@ export const selectShowcase = <Data extends ShowcaseData>(index: Data, entries: 
   const candidates = index.runs.filter(run =>
     live.has(run.task) && run.superseded_by === null && run.retracted === null && run.pass !== null &&
     entries.some(entry => run.skill === entry.skill && run.model === entry.model &&
+      (entry.benchmark === undefined || run.benchmark === entry.benchmark) &&
       (run.variant === "no_skill" || (run.variant === "with_skill" && (run.skill_content === entry.before || run.skill_content === entry.after)))),
   );
   const warnings: string[] = [];
@@ -102,7 +107,7 @@ export const selectShowcase = <Data extends ShowcaseData>(index: Data, entries: 
     const excluded: string[] = [];
     let hasTasks = false;
     for (const task of liveTasks.filter(task => task.skill === entry.skill)) {
-      const mine = candidates.filter(run => run.task === task.id && run.model === entry.model);
+      const mine = candidates.filter(run => run.task === task.id && run.model === entry.model && (entry.benchmark === undefined || run.benchmark === entry.benchmark));
       const columns = [
         mine.filter(run => run.variant === "no_skill"),
         mine.filter(run => run.variant === "with_skill" && run.skill_content === entry.before),

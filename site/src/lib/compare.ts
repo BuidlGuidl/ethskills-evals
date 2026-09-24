@@ -100,7 +100,8 @@ export const compareEntry = (entry: Entry, index: Index) => {
   const live = new Set(tasks.map(task => task.id));
   // Resolve readings before partitioning: an older grade must not survive in another column.
   const mine = newest(index.runs).filter(run => measured(run) && run.pass !== null &&
-    run.skill === entry.skill && run.model === entry.model && live.has(run.task));
+    run.skill === entry.skill && run.model === entry.model && live.has(run.task) &&
+    (entry.benchmark === undefined || run.benchmark === entry.benchmark));
   const columns = {
     noSkill: mine.filter(run => run.variant === "no_skill"),
     before: mine.filter(run => run.variant === "with_skill" && run.skill_content === entry.before),

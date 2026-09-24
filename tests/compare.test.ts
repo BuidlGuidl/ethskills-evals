@@ -244,14 +244,20 @@ test("real showcase entries contain only comparable tasks and their runs", () =>
   writeFileSync(cache, readFileSync("site/derived.json", "utf8"));
   execFileSync(process.execPath, ["--import", "tsx", "scripts/build-index.ts", "--no-git", "--no-prs", "--strict", "--out", out, "--cache", cache], { encoding: "utf8" });
   const real: Index = JSON.parse(readFileSync(out, "utf8"));
-  assert.equal(real.showcase?.length, 8);
+  // The major-refine-d9952522 benchmark: every skill on both stacks, 3 graded runs per arm
+  // on every live task, so each entry's three columns are 3 × its task count.
+  assert.equal(real.showcase?.length, 38);
   const results = real.showcase!.map(entry => compareEntry(entry, real));
-  assert.deepEqual(results.map((result, i) => [real.showcase![i].skill, result.usage.before.runs, result.usage.after.runs, result.usage.noSkill.runs]), [
-    ["addresses", 12, 12, 12], ["l2s", 12, 12, 12], ["protocol", 6, 6, 12],
-    ["wallets", 9, 9, 18], ["security", 18, 18, 36], ["orchestration", 9, 9, 12],
-    ["frontend-playbook", 24, 24, 24], ["audit", 11, 12, 24],
+  results.forEach((result, i) => {
+    const expected = result.rows.length * 3;
+    for (const column of ["noSkill", "before", "after"] as const) {
+      assert.equal(result.usage[column].runs, expected, `${real.showcase![i].skill} (${real.showcase![i].model}) ${column}`);
+    }
+  });
+  assert.deepEqual(results.map(result => result.rows.length), [
+    6, 6, 4, 4, 6, 6, 3, 3, 8, 8, 6, 6, 3, 3, 4, 4, 5, 5, 4, 4,
+    5, 5, 2, 2, 7, 7, 8, 8, 5, 5, 3, 3, 7, 7, 4, 4, 7, 7,
   ]);
-  assert.deepEqual(results.map(result => result.rows.length), [4, 4, 2, 3, 6, 3, 8, 4]);
   for (const entry of real.showcase!) {
     for (const row of compareEntry(entry, real).rows) {
       const runs = real.runs.filter(run => run.task === row.task && run.model === entry.model);
@@ -264,5 +270,5 @@ test("real showcase entries contain only comparable tasks and their runs", () =>
       assert.equal(result.rows.reduce((sum, row) => sum + (row[column]?.total ?? 0), 0), result.totals[column]?.total ?? 0);
     }
   }
-  assert.equal(pool((real.showcase ?? []).flatMap(entry => Object.values(compareEntry(entry, real).totals)))?.total, 353);
+  assert.equal(pool((real.showcase ?? []).flatMap(entry => Object.values(compareEntry(entry, real).totals)))?.total, 1746);
 });

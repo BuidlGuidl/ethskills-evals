@@ -11,7 +11,7 @@ import type { Entry, Index } from "../site/src/lib/types.js";
 const entry: Entry = { skill: "addresses", model: "claude-opus-5", before: "big", after: "small" };
 const run = (id: string, content: string | null) => ({
   rubric: "checks" as string | null, prompt: "prompt" as string | null, task: "addresses-quiz-001", skill: "addresses", run: id, model: entry.model,
-  variant: content === null ? "no_skill" : "with_skill", skill_content: content,
+  variant: content === null ? "no_skill" : "with_skill", skill_content: content, benchmark: null as string | null,
   superseded_by: null as string | null, retracted: null as string | null, pass: true as boolean | null,
 });
 const data = {
@@ -143,15 +143,17 @@ test("the CLI selects the committed showcase after resolution and leaves the der
   try {
     const built = spawnSync(process.execPath, args, { encoding: "utf8" });
     assert.equal(built.status, 0, built.stderr);
-    assert.equal(built.stderr.trim().split("\n").length, 8);
+    assert.equal(built.stderr.trim().split("\n").length, 38);
     assert.doesNotMatch(built.stderr, /warning:/);
     assert.match(built.stderr, /showcase protocol \(claude-opus-5\): excluded none/);
-    assert.match(built.stderr, /wallets-goal-004 \(no runs before the rewrite\)/);
+    // Entries pin the benchmark, so runs from earlier rounds on the same skill text
+    // cannot mix a task's columns and nothing is excluded.
+    assert.doesNotMatch(built.stderr, /excluded (?!none)/);
     const index: Index = JSON.parse(readFileSync(out, "utf8"));
-    assert.equal(index.skills.length, 8);
+    assert.equal(index.skills.length, 19);
     assert.deepEqual(index.showcase, loadShowcase("site/showcase.json"));
-    assert.equal(index.tasks.length, 34);
-    assert.equal(index.runs.length, 353);
+    assert.equal(index.tasks.length, 97);
+    assert.equal(index.runs.length, 1746);
     assert.deepEqual(index.warnings, []);
     assert.ok(!("notes" in index));
     for (const entry of index.showcase!) {
@@ -173,7 +175,9 @@ test("the CLI selects the committed showcase after resolution and leaves the der
     execFileSync(process.execPath, [...args, "--showcase", path.join(dir, "absent.json")]);
     const full: Index = JSON.parse(readFileSync(out, "utf8"));
     assert.equal(full.showcase, undefined);
-    const regrades = index.runs.filter(run => run.regrade_of !== null);
+    // The selected benchmark has no regrades, so the reading-inherits-usage invariant is
+    // checked over the unfiltered index, where the older rounds' regrades live.
+    const regrades = full.runs.filter(run => run.regrade_of !== null && run.superseded_by === null);
     assert.ok(regrades.length > 0);
     for (const reading of regrades) {
       let source = reading;
@@ -187,12 +191,15 @@ test("the CLI selects the committed showcase after resolution and leaves the der
       const runs = index.runs.filter(run => run.skill === entry.skill && run.model === entry.model);
       return [entry.skill, ...[entry.before, entry.after, null].map(id => runs.filter(run => id === null ? run.variant === "no_skill" : run.variant === "with_skill" && run.skill_content === id).length)];
     });
-    assert.deepEqual(counts, [
-      ["addresses", 12, 12, 12], ["l2s", 12, 12, 12], ["protocol", 6, 6, 12],
-      ["wallets", 9, 9, 18], ["security", 18, 18, 36], ["orchestration", 9, 9, 12],
-      ["frontend-playbook", 24, 24, 24], ["audit", 11, 12, 24],
-    ]);
-    assert.ok(full.skills.length > index.skills.length);
+    // One benchmark, 3 graded runs per arm on every live task: each entry's three
+    // columns are exactly 3 x its skill's task count, on both models.
+    assert.deepEqual(counts, index.showcase!.map(entry => {
+      const taskCount = index.tasks.filter(task => task.skill === entry.skill).length;
+      return [entry.skill, taskCount * 3, taskCount * 3, taskCount * 3];
+    }));
+    // The manifest now names every skill, so the narrowing shows in runs, not skills.
+    assert.equal(full.skills.length, index.skills.length);
+    assert.ok(full.runs.length > index.runs.length);
     assert.ok(full.runs.some(run => run.superseded_by !== null));
 
     const versions = spawnSync(process.execPath, [...args, "--versions"], { encoding: "utf8" });
