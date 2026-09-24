@@ -1,0 +1,245 @@
+diff --git a/FINDINGS.md b/FINDINGS.md
+new file mode 100644
+index 0000000..49db93a
+--- /dev/null
++++ b/FINDINGS.md
+@@ -0,0 +1,101 @@
++# UsdtYieldVault Sign-Off Findings
++
++I would not ship this vault to mainnet as it stands.
++
++The existing suite proves the mocked happy path, but it does not test the vault as a yield vault. The contract stores its own asset total in `totalAssetsStored` and uses that number for `totalAssets()`, `convertToShares()`, `convertToAssets()`, `balanceOfUnderlying()`, and `sharePrice()`. It never reads the live aUSDT balance, even though Aave yield is represented by the vault owning more aUSDT over time.
++
++I added one new proof file under `test/`: `test/UsdtYieldVaultAudit.t.sol`. I did not change anything under `src/`, `test/UsdtYieldVault.t.sol`, or `test/mocks/`.
++
++## Finding 1: Aave yield is not redeemable by shareholders
++
++Severity: High.
++
++How I found it: `src/UsdtYieldVault.sol` stores deposits in `totalAssetsStored` at lines 97, 143-145, and uses that stored number for redemptions at lines 160-164. Aave yield increases the vault's aUSDT balance, but the vault never includes that balance in accounting.
++
++Impact: the product is a "USDT yield vault", but Aave yield is invisible to shareholders. Once all shares are withdrawn, any accrued yield can remain as unowned aUSDT in the vault with no function that assigns or withdraws it.
++
++Evidence:
++
++Command:
++
++```bash
++forge test --match-path test/UsdtYieldVaultAudit.t.sol --match-test test_AaveYieldIsNotRedeemableByShareholder -vv
++```
++
++Output:
++
++```text
++stty: 'standard input': Inappropriate ioctl for device
++No files changed, compilation skipped
++
++Ran 1 test for test/UsdtYieldVaultAudit.t.sol:UsdtYieldVaultAuditTest
++[FAIL: shareholder should be credited with Aave yield: 1000000000 != 1050000000] test_AaveYieldIsNotRedeemableByShareholder() (gas: 256040)
++Logs:
++  vault.totalAssets() 1000000000
++  vault aUSDT balance 1050000000
++  alice redeemable assets 1000000000
++  expected assets including Aave yield 1050000000
++
++Suite result: FAILED. 0 passed; 1 failed; 0 skipped; finished in 987.86µs (244.85µs CPU time)
++
++Ran 1 test suite in 8.34ms (987.86µs CPU time): 0 tests passed, 1 failed, 0 skipped (1 total tests)
++
++Failing tests:
++Encountered 1 failing test in test/UsdtYieldVaultAudit.t.sol:UsdtYieldVaultAuditTest
++[FAIL: shareholder should be credited with Aave yield: 1000000000 != 1050000000] test_AaveYieldIsNotRedeemableByShareholder() (gas: 256040)
++
++Encountered a total of 1 failing tests, 0 tests succeeded
++
++Tip: Run `forge test --rerun` to retry only the 1 failed test
++```
++
++What I would change: make the vault's asset accounting derive from the live aUSDT balance, not a manually stored deposit counter. For Aave V3, `aToken.balanceOf(address(this))` is the current claim including accrued interest. `totalAssets()`, share conversion, `balanceOfUnderlying()`, and `sharePrice()` should use that live balance, with careful handling for any idle USDT if the design ever leaves funds unsupplied.
++
++## Finding 2: Withdrawal fees do not accrue to remaining shareholders
++
++Severity: High.
++
++How I found it: `withdraw()` calculates a gross asset amount, charges a fee, withdraws only the net amount from Aave, but subtracts the gross amount from `totalAssetsStored` at lines 111-119. The fee stays in Aave as aUSDT owned by the vault, but the vault deletes it from shareholder accounting.
++
++Impact: the contract comments and README say withdrawal fees stay supplied in Aave and accrue to remaining shareholders. They do stay supplied, but they do not accrue. Remaining shareholders cannot redeem them through shares. Over time, withdrawal fees become unowned aUSDT trapped in the vault's address.
++
++Evidence:
++
++Command:
++
++```bash
++forge test --match-path test/UsdtYieldVaultAudit.t.sol --match-test test_WithdrawalFeeDoesNotAccrueToRemainingShareholder -vv
++```
++
++Output:
++
++```text
++stty: 'standard input': Inappropriate ioctl for device
++No files changed, compilation skipped
++
++Ran 1 test for test/UsdtYieldVaultAudit.t.sol:UsdtYieldVaultAuditTest
++[FAIL: withdrawal fee should accrue to remaining shareholder: 1000000000 != 1003000000] test_WithdrawalFeeDoesNotAccrueToRemainingShareholder() (gas: 357576)
++Logs:
++  vault.totalAssets() 1000000000
++  vault aUSDT balance 1003000000
++  bob redeemable assets 1000000000
++  expected bob assets including Alice withdrawal fee 1003000000
++
++Suite result: FAILED. 0 passed; 1 failed; 0 skipped; finished in 1.04ms (274.60µs CPU time)
++
++Ran 1 test suite in 13.46ms (1.04ms CPU time): 0 tests passed, 1 failed, 0 skipped (1 total tests)
++
++Failing tests:
++Encountered 1 failing test in test/UsdtYieldVaultAudit.t.sol:UsdtYieldVaultAuditTest
++[FAIL: withdrawal fee should accrue to remaining shareholder: 1000000000 != 1003000000] test_WithdrawalFeeDoesNotAccrueToRemainingShareholder() (gas: 357576)
++
++Encountered a total of 1 failing tests, 0 tests succeeded
++
++Tip: Run `forge test --rerun` to retry only the 1 failed test
++```
++
++What I would change: same root fix as Finding 1: derive `totalAssets()` from the live aUSDT balance. If keeping stored accounting anyway, `withdraw()` must not remove retained fees from the accounting pool; subtract only the amount actually withdrawn from Aave, or explicitly mint/account the fee to the remaining shareholders. The cleaner fix is to remove `totalAssetsStored` from share pricing and use live assets.
++
++## Sign-off recommendation
++
++Do not deploy this contract as a mainnet yield vault until accounting is changed and retested against a model where aUSDT balances grow and retained fees are redeemable by the intended shareholders.
+diff --git a/test/UsdtYieldVaultAudit.t.sol b/test/UsdtYieldVaultAudit.t.sol
+new file mode 100644
+index 0000000..f1ccb35
+--- /dev/null
++++ b/test/UsdtYieldVaultAudit.t.sol
+@@ -0,0 +1,128 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.28;
++
++import {Test, console2} from "forge-std/Test.sol";
++import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
++import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
++
++import {UsdtYieldVault} from "../src/UsdtYieldVault.sol";
++import {IAavePool} from "../src/interfaces/IAavePool.sol";
++import {MockUSDT} from "./mocks/MockUSDT.sol";
++
++contract AuditAToken is ERC20 {
++    address public immutable pool;
++
++    constructor(address _pool) ERC20("Audit Aave Tether USD", "aUSDT") {
++        pool = _pool;
++    }
++
++    function decimals() public pure override returns (uint8) {
++        return 6;
++    }
++
++    function mint(address to, uint256 amount) external {
++        require(msg.sender == pool, "only pool");
++        _mint(to, amount);
++    }
++
++    function burn(address from, uint256 amount) external {
++        require(msg.sender == pool, "only pool");
++        _burn(from, amount);
++    }
++}
++
++contract YieldingAavePool is IAavePool {
++    MockUSDT public immutable underlying;
++    AuditAToken public immutable aToken;
++
++    constructor(address _underlying) {
++        underlying = MockUSDT(_underlying);
++        aToken = new AuditAToken(address(this));
++    }
++
++    function supply(address asset, uint256 amount, address onBehalfOf, uint16) external override {
++        require(asset == address(underlying), "wrong asset");
++        IERC20(asset).transferFrom(msg.sender, address(this), amount);
++        aToken.mint(onBehalfOf, amount);
++    }
++
++    function withdraw(address asset, uint256 amount, address to) external override returns (uint256) {
++        require(asset == address(underlying), "wrong asset");
++        aToken.burn(msg.sender, amount);
++        IERC20(asset).transfer(to, amount);
++        return amount;
++    }
++
++    function accrueYield(address account, uint256 amount) external {
++        underlying.mint(address(this), amount);
++        aToken.mint(account, amount);
++    }
++}
++
++contract UsdtYieldVaultAuditTest is Test {
++    UsdtYieldVault public vault;
++    MockUSDT public usdt;
++    YieldingAavePool public pool;
++
++    address public owner = makeAddr("owner");
++    address public alice = makeAddr("alice");
++    address public bob = makeAddr("bob");
++
++    uint256 public constant DEPOSIT_AMOUNT = 1_000e6;
++    uint256 public constant AAVE_YIELD = 50e6;
++
++    function setUp() public {
++        usdt = new MockUSDT();
++        pool = new YieldingAavePool(address(usdt));
++        vault = new UsdtYieldVault(address(usdt), address(pool.aToken()), address(pool), 0, owner);
++
++        usdt.mint(alice, 100_000e6);
++        usdt.mint(bob, 100_000e6);
++
++        vm.prank(alice);
++        usdt.approve(address(vault), type(uint256).max);
++        vm.prank(bob);
++        usdt.approve(address(vault), type(uint256).max);
++    }
++
++    function _deposit(address account, uint256 amount) internal returns (uint256 shares) {
++        vm.prank(account);
++        shares = vault.deposit(amount);
++    }
++
++    function test_AaveYieldIsNotRedeemableByShareholder() public {
++        _deposit(alice, DEPOSIT_AMOUNT);
++        pool.accrueYield(address(vault), AAVE_YIELD);
++
++        console2.log("vault.totalAssets()", vault.totalAssets());
++        console2.log("vault aUSDT balance", pool.aToken().balanceOf(address(vault)));
++        console2.log("alice redeemable assets", vault.balanceOfUnderlying(alice));
++        console2.log("expected assets including Aave yield", DEPOSIT_AMOUNT + AAVE_YIELD);
++
++        assertEq(
++            vault.balanceOfUnderlying(alice),
++            DEPOSIT_AMOUNT + AAVE_YIELD,
++            "shareholder should be credited with Aave yield"
++        );
++    }
++
++    function test_WithdrawalFeeDoesNotAccrueToRemainingShareholder() public {
++        uint256 aliceShares = _deposit(alice, DEPOSIT_AMOUNT);
++        _deposit(bob, DEPOSIT_AMOUNT);
++
++        vm.prank(alice);
++        vault.withdraw(aliceShares);
++
++        uint256 expectedBobAssets =
++            DEPOSIT_AMOUNT + ((DEPOSIT_AMOUNT * vault.WITHDRAW_FEE_BPS()) / vault.BPS_DENOMINATOR());
++
++        console2.log("vault.totalAssets()", vault.totalAssets());
++        console2.log("vault aUSDT balance", pool.aToken().balanceOf(address(vault)));
++        console2.log("bob redeemable assets", vault.balanceOfUnderlying(bob));
++        console2.log("expected bob assets including Alice withdrawal fee", expectedBobAssets);
++
++        assertEq(
++            vault.balanceOfUnderlying(bob), expectedBobAssets, "withdrawal fee should accrue to remaining shareholder"
++        );
++    }
++}
+
+# Untracked files and status
+ A FINDINGS.md
+ A test/UsdtYieldVaultAudit.t.sol

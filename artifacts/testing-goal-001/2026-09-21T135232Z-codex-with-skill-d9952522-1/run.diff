@@ -1,0 +1,427 @@
+diff --git a/FINDINGS.md b/FINDINGS.md
+new file mode 100644
+index 0000000..0bff35f
+--- /dev/null
++++ b/FINDINGS.md
+@@ -0,0 +1,320 @@
++# UsdtYieldVault findings
++
++Verdict: do not ship this vault to mainnet in its current state.
++
++The original suite is green, but it does not exercise the real USDT/Aave integration and it does not assert custody/accounting conservation after a full exit. I added only new tests under `test/`:
++
++- `test/UsdtYieldVaultMainnetFork.t.sol`
++- `test/UsdtYieldVaultAccountingFailure.t.sol`
++
++I did not change `src/`, `test/UsdtYieldVault.t.sol`, or `test/mocks/`.
++
++## Existing suite baseline
++
++Command:
++
++```bash
++forge test --match-path test/UsdtYieldVault.t.sol
++```
++
++Output:
++
++```text
++stty: 'standard input': Inappropriate ioctl for device
++No files changed, compilation skipped
++
++Ran 39 tests for test/UsdtYieldVault.t.sol:UsdtYieldVaultTest
++[PASS] test_BalanceOfUnderlying() (gas: 188628)
++[PASS] test_BalanceOfUnderlyingIsZeroForNonDepositor() (gas: 12247)
++[PASS] test_BpsDenominator() (gas: 5605)
++[PASS] test_ConstructorSetsAUsdt() (gas: 7868)
++[PASS] test_ConstructorSetsAavePool() (gas: 7911)
++[PASS] test_ConstructorSetsDepositFee() (gas: 7640)
++[PASS] test_ConstructorSetsOwner() (gas: 10023)
++[PASS] test_ConstructorSetsUsdt() (gas: 7891)
++[PASS] test_ConvertToAssetsAfterDeposit() (gas: 188208)
++[PASS] test_ConvertToAssetsEmptyVault() (gas: 7751)
++[PASS] test_ConvertToSharesAfterDeposit() (gas: 188262)
++[PASS] test_ConvertToSharesEmptyVault() (gas: 7870)
++[PASS] test_DepositEmitsEvent() (gas: 189496)
++[PASS] test_DepositMintsShares() (gas: 188002)
++[PASS] test_DepositSuppliesToAave() (gas: 189964)
++[PASS] test_DepositTransfersUsdtFromDepositor() (gas: 191195)
++[PASS] test_DepositUpdatesTotalAssets() (gas: 188609)
++[PASS] test_DepositUpdatesTotalShares() (gas: 187721)
++[PASS] test_MinDeposit() (gas: 5627)
++[PASS] test_PartialWithdraw() (gas: 202104)
++[PASS] test_PauseBlocksDeposit() (gas: 20742)
++[PASS] test_RevertWhen_DepositBelowMinimum() (gas: 18229)
++[PASS] test_RevertWhen_NonOwnerPauses() (gas: 13510)
++[PASS] test_RevertWhen_NonOwnerSetsDepositFee() (gas: 13517)
++[PASS] test_RevertWhen_WithdrawExceedsBalance() (gas: 191993)
++[PASS] test_RevertWhen_WithdrawZeroShares() (gas: 18215)
++[PASS] test_SecondDepositorMintsShares() (gas: 256582)
++[PASS] test_SetDepositFeeEmitsEvent() (gas: 21001)
++[PASS] test_SetDepositFeeToZero() (gas: 189786)
++[PASS] test_SetDepositFeeUpdatesValue() (gas: 19909)
++[PASS] test_SharePriceAfterDeposit() (gas: 188139)
++[PASS] test_SharePriceStartsAtOneUsdt() (gas: 7781)
++[PASS] test_ShareScale() (gas: 5650)
++[PASS] test_TotalAssetsStartsAtZero() (gas: 7671)
++[PASS] test_UnpauseRestoresDeposit() (gas: 194451)
++[PASS] test_WithdrawBurnsShares() (gas: 194521)
++[PASS] test_WithdrawEmitsEvent() (gas: 194960)
++[PASS] test_WithdrawFeeBps() (gas: 5540)
++[PASS] test_WithdrawReturnsUsdt() (gas: 196362)
++Suite result: ok. 39 passed; 0 failed; 0 skipped; finished in 1.81ms (5.59ms CPU time)
++
++Ran 1 test suite in 7.74ms (1.81ms CPU time): 39 tests passed, 0 failed, 0 skipped (39 total tests)
++```
++
++## Finding 1 - Critical: mainnet deposits revert with real USDT
++
++### What I found
++
++`deposit()` transfers USDT with `SafeERC20`, but then calls `usdt.approve(address(aavePool), amount)` directly at `src/UsdtYieldVault.sol:94`. Real mainnet USDT returns no data from `approve`. A high-level Solidity call through `IERC20.approve(...) returns (bool)` tries to decode a boolean from empty return data and reverts.
++
++The result is worse than a fee or accounting bug: a real mainnet deposit cannot complete.
++
++### How I found it
++
++I added a pinned mainnet fork test in `test/UsdtYieldVaultMainnetFork.t.sol`. The test:
++
++1. Forks Ethereum mainnet at block `26_026_308`.
++2. Deploys the current vault against the real USDT, real aUSDT, and real Aave V3 Pool addresses.
++3. Funds a test user with USDT using Foundry's `deal`.
++4. Uses a low-level call for the user approval so the test itself does not fail on USDT's no-return behavior.
++5. Calls `vault.deposit(1_000e6)`.
++
++The trace shows the user approval succeeds, `transferFrom` succeeds, and the vault then reverts immediately after calling real USDT `approve(AAVE_POOL, amount)`.
++
++Block selection command:
++
++```bash
++cast block-number --rpc-url https://ethereum-rpc.publicnode.com
++```
++
++Output:
++
++```text
++stty: 'standard input': Inappropriate ioctl for device
++26026308
++```
++
++Evidence command:
++
++```bash
++forge test --match-path test/UsdtYieldVaultMainnetFork.t.sol -vvvv
++```
++
++Output:
++
++```text
++stty: 'standard input': Inappropriate ioctl for device
++No files changed, compilation skipped
++
++Ran 1 test for test/UsdtYieldVaultMainnetFork.t.sol:UsdtYieldVaultMainnetForkTest
++[FAIL: EvmError: Revert] test_MainnetDepositShouldSucceedWithRealUsdtAndAave() (gas: 1123013)
++Traces:
++  [4362] UsdtYieldVaultMainnetForkTest::setUp()
++    ├─ [0] VM::envOr("MAINNET_RPC_URL", "https://ethereum-rpc.publicnode.com") [staticcall]
++    │   └─ ← [Return] <env var value>
++    ├─ [0] VM::createSelectFork("<rpc url>", 26026308 [2.602e7])
++    │   └─ ← [Return] 0
++    └─ ← [Stop]
++
++  [1123013] UsdtYieldVaultMainnetForkTest::test_MainnetDepositShouldSucceedWithRealUsdtAndAave()
++    ├─ [768792] → new UsdtYieldVault@0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f
++    │   ├─ emit OwnershipTransferred(previousOwner: 0x0000000000000000000000000000000000000000, newOwner: owner: [0x7c8999dC9a822c1f0Df42023113EDB4FDd543266])
++    │   └─ ← [Return] 3596 bytes of code
++    ├─ [5031] 0xdAC17F958D2ee523a2206206994597C13D831ec7::balanceOf(alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6]) [staticcall]
++    │   └─ ← [Return] 0
++    ├─ [0] VM::record()
++    │   └─ ← [Return]
++    ├─ [1031] 0xdAC17F958D2ee523a2206206994597C13D831ec7::balanceOf(alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6]) [staticcall]
++    │   └─ ← [Return] 0
++    ├─ [0] VM::accesses(0xdAC17F958D2ee523a2206206994597C13D831ec7) [staticcall]
++    │   └─ ← [Return] [0x000000000000000000000000000000000000000000000000000000000000000a, 0xab6d3e55895e3e05e9a2ebf84052cdb55ff087915a8643eed90f4e6e80e70698], []
++    ├─ [0] VM::load(0xdAC17F958D2ee523a2206206994597C13D831ec7, 0xab6d3e55895e3e05e9a2ebf84052cdb55ff087915a8643eed90f4e6e80e70698) [staticcall]
++    │   └─ ← [Return] 0x0000000000000000000000000000000000000000000000000000000000000000
++    ├─ emit WARNING_UninitedSlot(who: 0xdAC17F958D2ee523a2206206994597C13D831ec7, slot: 77538513652134917009484598156056052292627943328711086492832673518089096595096 [7.753e76])
++    ├─ [0] VM::load(0xdAC17F958D2ee523a2206206994597C13D831ec7, 0xab6d3e55895e3e05e9a2ebf84052cdb55ff087915a8643eed90f4e6e80e70698) [staticcall]
++    │   └─ ← [Return] 0x0000000000000000000000000000000000000000000000000000000000000000
++    ├─ [1031] 0xdAC17F958D2ee523a2206206994597C13D831ec7::balanceOf(alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6]) [staticcall]
++    │   └─ ← [Return] 0
++    ├─ [0] VM::store(0xdAC17F958D2ee523a2206206994597C13D831ec7, 0xab6d3e55895e3e05e9a2ebf84052cdb55ff087915a8643eed90f4e6e80e70698, 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff)
++    │   └─ ← [Return]
++    ├─ [1031] 0xdAC17F958D2ee523a2206206994597C13D831ec7::balanceOf(alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6]) [staticcall]
++    │   └─ ← [Return] 115792089237316195423570985008687907853269984665640564039457584007913129639935 [1.157e77]
++    ├─ [0] VM::store(0xdAC17F958D2ee523a2206206994597C13D831ec7, 0xab6d3e55895e3e05e9a2ebf84052cdb55ff087915a8643eed90f4e6e80e70698, 0x0000000000000000000000000000000000000000000000000000000000000000)
++    │   └─ ← [Return]
++    ├─ emit SlotFound(who: 0xdAC17F958D2ee523a2206206994597C13D831ec7, fsig: 0x70a08231, keysHash: 0xd3751b735d9edcdf3462f9493be94138f68ee6a5bfd2c14f7e1a7b0b58f11cca, slot: 77538513652134917009484598156056052292627943328711086492832673518089096595096 [7.753e76])
++    ├─ [0] VM::load(0xdAC17F958D2ee523a2206206994597C13D831ec7, 0xab6d3e55895e3e05e9a2ebf84052cdb55ff087915a8643eed90f4e6e80e70698) [staticcall]
++    │   └─ ← [Return] 0x0000000000000000000000000000000000000000000000000000000000000000
++    ├─ [0] VM::store(0xdAC17F958D2ee523a2206206994597C13D831ec7, 0xab6d3e55895e3e05e9a2ebf84052cdb55ff087915a8643eed90f4e6e80e70698, 0x000000000000000000000000000000000000000000000000000000003b9aca00)
++    │   └─ ← [Return]
++    ├─ [1031] 0xdAC17F958D2ee523a2206206994597C13D831ec7::balanceOf(alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6]) [staticcall]
++    │   └─ ← [Return] 1000000000 [1e9]
++    ├─ [0] VM::prank(alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6])
++    │   └─ ← [Return]
++    ├─ [24953] 0xdAC17F958D2ee523a2206206994597C13D831ec7::approve(UsdtYieldVault: [0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f], 115792089237316195423570985008687907853269984665640564039457584007913129639935 [1.157e77])
++    │   ├─ emit Approval(owner: alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6], spender: UsdtYieldVault: [0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f], value: 115792089237316195423570985008687907853269984665640564039457584007913129639935 [1.157e77])
++    │   └─ ← [Stop]
++    ├─ [0] VM::prank(alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6])
++    │   └─ ← [Return]
++    ├─ [64074] UsdtYieldVault::deposit(1000000000 [1e9])
++    │   ├─ [34830] 0xdAC17F958D2ee523a2206206994597C13D831ec7::transferFrom(alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6], UsdtYieldVault: [0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f], 1000000000 [1e9])
++    │   │   ├─ emit Transfer(from: alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6], to: UsdtYieldVault: [0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f], value: 1000000000 [1e9])
++    │   │   └─ ← [Stop]
++    │   ├─ [24953] 0xdAC17F958D2ee523a2206206994597C13D831ec7::approve(0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2, 1000000000 [1e9])
++    │   │   ├─ emit Approval(owner: UsdtYieldVault: [0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f], spender: 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2, value: 1000000000 [1e9])
++    │   │   └─ ← [Stop]
++    │   └─ ← [Revert] EvmError: Revert
++    └─ ← [Revert] EvmError: Revert
++
++Backtrace:
++  at UsdtYieldVault.deposit
++  at UsdtYieldVaultMainnetForkTest.test_MainnetDepositShouldSucceedWithRealUsdtAndAave
++
++Suite result: FAILED. 0 passed; 1 failed; 0 skipped; finished in 2.43s (1.92s CPU time)
++
++Ran 1 test suite in 2.44s (2.43s CPU time): 0 tests passed, 1 failed, 0 skipped (1 total tests)
++
++Failing tests:
++Encountered 1 failing test in test/UsdtYieldVaultMainnetFork.t.sol:UsdtYieldVaultMainnetForkTest
++[FAIL: EvmError: Revert] test_MainnetDepositShouldSucceedWithRealUsdtAndAave() (gas: 1123013)
++
++Encountered a total of 1 failing tests, 0 tests succeeded
++
++Tip: Run `forge test --rerun` to retry only the 1 failed test
++```
++
++### What I would change
++
++Use `SafeERC20` for approvals to the Aave pool, not `IERC20.approve` directly. Since USDT is both no-return and has the well-known nonzero-to-nonzero allowance restriction, I would use OpenZeppelin `SafeERC20.forceApprove` for the pool allowance path, or otherwise explicitly reset to zero and perform low-level optional-return-safe approval. I would keep the fork test and require it to pass against the real USDT/Aave addresses before deployment.
++
++## Finding 2 - High: withdrawal fees are stranded in Aave when all shares exit
++
++### What I found
++
++`withdraw()` computes `grossAssets`, subtracts `grossAssets` from `totalAssetsStored`, burns all requested shares, but only withdraws `netAssets` from Aave at `src/UsdtYieldVault.sol:111-119`.
++
++If the last depositor withdraws all shares, `totalShares == 0` and `totalAssets() == 0`, but the withdrawal fee remains as aUSDT owned by the vault. There is no fee recipient, sweep function, or accounting path that can redeem it. The README says fees remain supplied and accrue to remaining shareholders, but in the last-shareholder case there are no remaining shareholders.
++
++### How I found it
++
++I added `test_WithdrawFeeIsStrandedAfterAllSharesExit()` in `test/UsdtYieldVaultAccountingFailure.t.sol`. It performs one deposit, withdraws all shares, and asserts that no Aave receipt tokens remain after `totalShares` and `totalAssets` are both zero.
++
++Evidence command:
++
++```bash
++forge test --match-path test/UsdtYieldVaultAccountingFailure.t.sol -vv
++```
++
++Output:
++
++```text
++stty: 'standard input': Inappropriate ioctl for device
++Compiling 1 files with Solc 0.8.28
++Solc 0.8.28 finished in 919.72ms
++Compiler run successful!
++
++Ran 2 tests for test/UsdtYieldVaultAccountingFailure.t.sol:UsdtYieldVaultAccountingFailureTest
++[FAIL: next call did not revert as expected] test_DepositFeeCannotExceedBasisPointDenominator() (gas: 10608)
++[FAIL: all Aave funds should be withdrawn when no shares remain: 3000000 != 0] test_WithdrawFeeIsStrandedAfterAllSharesExit() (gas: 251737)
++Suite result: FAILED. 0 passed; 2 failed; 0 skipped; finished in 891.90µs (326.97µs CPU time)
++
++Ran 1 test suite in 14.18ms (891.90µs CPU time): 0 tests passed, 2 failed, 0 skipped (2 total tests)
++
++Failing tests:
++Encountered 2 failing tests in test/UsdtYieldVaultAccountingFailure.t.sol:UsdtYieldVaultAccountingFailureTest
++[FAIL: next call did not revert as expected] test_DepositFeeCannotExceedBasisPointDenominator() (gas: 10608)
++[FAIL: all Aave funds should be withdrawn when no shares remain: 3000000 != 0] test_WithdrawFeeIsStrandedAfterAllSharesExit() (gas: 251737)
++
++Encountered a total of 2 failing tests, 0 tests succeeded
++
++Tip: Run `forge test --rerun` to retry only the 2 failed tests
++```
++
++The failed assertion shows `3_000_000` base units, i.e. 3 USDT, still held as aUSDT by the vault after accounting says the vault has zero assets and zero shares.
++
++### What I would change
++
++Decide who owns fees and represent that explicitly in accounting. Two reasonable designs:
++
++- If fees belong to a fee recipient, withdraw `grossAssets` from Aave, transfer `netAssets` to the user, and send or account the fee separately.
++- If fees are meant to benefit remaining shareholders, only leave fees in the share pool while `totalShares > 0`; when the last shares are burned, redeem or assign the remaining fee so it cannot become unowned aUSDT.
++
++In either design, add a conservation invariant: when `totalShares == 0`, the vault should not retain aUSDT/USDT unless it is explicitly tracked as protocol fees.
++
++## Finding 3 - Medium: `depositFeeBps` has no upper bound and can brick deposits
++
++### What I found
++
++`setDepositFee()` accepts any `uint256` at `src/UsdtYieldVault.sol:126-129`, and the constructor also stores `_depositFeeBps` without validation at `src/UsdtYieldVault.sol:72-79`.
++
++Values at or above `10_000` bps are not semantically usable:
++
++- `10_000` bps makes `netAmount == 0`, so every deposit reverts with `NoSharesMinted`.
++- More than `10_000` bps makes `amount - fee` underflow and revert with a Solidity panic.
++
++This is owner-only, but it is still value math that decides whether users can deposit. A bad deploy parameter, bad governance action, or compromised owner can halt deposits through a configuration value that the contract presents as valid.
++
++### How I found it
++
++I added `test_DepositFeeCannotExceedBasisPointDenominator()` in `test/UsdtYieldVaultAccountingFailure.t.sol`. The test expects a fee above the denominator to be rejected. The setter accepts it, so Foundry reports `next call did not revert as expected`.
++
++Evidence command:
++
++```bash
++forge test --match-path test/UsdtYieldVaultAccountingFailure.t.sol -vv
++```
++
++Output:
++
++```text
++stty: 'standard input': Inappropriate ioctl for device
++Compiling 1 files with Solc 0.8.28
++Solc 0.8.28 finished in 919.72ms
++Compiler run successful!
++
++Ran 2 tests for test/UsdtYieldVaultAccountingFailure.t.sol:UsdtYieldVaultAccountingFailureTest
++[FAIL: next call did not revert as expected] test_DepositFeeCannotExceedBasisPointDenominator() (gas: 10608)
++[FAIL: all Aave funds should be withdrawn when no shares remain: 3000000 != 0] test_WithdrawFeeIsStrandedAfterAllSharesExit() (gas: 251737)
++Suite result: FAILED. 0 passed; 2 failed; 0 skipped; finished in 891.90µs (326.97µs CPU time)
++
++Ran 1 test suite in 14.18ms (891.90µs CPU time): 0 tests passed, 2 failed, 0 skipped (2 total tests)
++
++Failing tests:
++Encountered 2 failing tests in test/UsdtYieldVaultAccountingFailure.t.sol:UsdtYieldVaultAccountingFailureTest
++[FAIL: next call did not revert as expected] test_DepositFeeCannotExceedBasisPointDenominator() (gas: 10608)
++[FAIL: all Aave funds should be withdrawn when no shares remain: 3000000 != 0] test_WithdrawFeeIsStrandedAfterAllSharesExit() (gas: 251737)
++
++Encountered a total of 2 failing tests, 0 tests succeeded
++
++Tip: Run `forge test --rerun` to retry only the 2 failed tests
++```
++
++### What I would change
++
++Add a custom error and validate both constructor and setter input. I would not use `BPS_DENOMINATOR` itself as the practical max unless a 100% deposit fee is intentionally allowed, because 100% deposits cannot mint shares. A safer bound is an explicit small `MAX_DEPOSIT_FEE_BPS` chosen by governance, with tests for zero, max, max plus one, and constructor validation.
++
++## Additional check attempted
++
++I attempted to run Slither as a deploy-signoff check, but the installed executable is broken in this workspace. I am not counting this as a passed static-analysis check.
++
++Command:
++
++```bash
++slither .
++```
++
++Output:
++
++```text
++stty: 'standard input': Inappropriate ioctl for device
++Traceback (most recent call last):
++  File "/home/damu/.local/bin/slither", line 5, in <module>
++    from slither.__main__ import main
++ModuleNotFoundError: No module named 'slither'
++```
+diff --git a/test/UsdtYieldVaultAccountingFailure.t.sol b/test/UsdtYieldVaultAccountingFailure.t.sol
+new file mode 100644
+index 0000000..1f1832c
+--- /dev/null
++++ b/test/UsdtYieldVaultAccountingFailure.t.sol
+@@ -0,0 +1,47 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.28;
++
++import {Test} from "forge-std/Test.sol";
++
++import {UsdtYieldVault} from "../src/UsdtYieldVault.sol";
++import {MockUSDT} from "./mocks/MockUSDT.sol";
++import {MockAavePool, MockAToken} from "./mocks/MockAavePool.sol";
++
++contract UsdtYieldVaultAccountingFailureTest is Test {
++    UsdtYieldVault internal vault;
++    MockUSDT internal usdt;
++    MockAavePool internal pool;
++    MockAToken internal aUsdt;
++
++    address internal owner = makeAddr("owner");
++    address internal alice = makeAddr("alice");
++
++    function setUp() public {
++        usdt = new MockUSDT();
++        pool = new MockAavePool(address(usdt));
++        aUsdt = pool.aToken();
++        vault = new UsdtYieldVault(address(usdt), address(aUsdt), address(pool), 10, owner);
++
++        usdt.mint(alice, 100_000e6);
++        vm.prank(alice);
++        usdt.approve(address(vault), type(uint256).max);
++    }
++
++    function test_WithdrawFeeIsStrandedAfterAllSharesExit() public {
++        vm.prank(alice);
++        uint256 shares = vault.deposit(1_000e6);
++
++        vm.prank(alice);
++        vault.withdraw(shares);
++
++        assertEq(vault.totalShares(), 0);
++        assertEq(vault.totalAssets(), 0);
++        assertEq(aUsdt.balanceOf(address(vault)), 0, "all Aave funds should be withdrawn when no shares remain");
++    }
++
++    function test_DepositFeeCannotExceedBasisPointDenominator() public {
++        vm.prank(owner);
++        vm.expectRevert();
++        vault.setDepositFee(vault.BPS_DENOMINATOR() + 1);
++    }
++}
+diff --git a/test/UsdtYieldVaultMainnetFork.t.sol b/test/UsdtYieldVaultMainnetFork.t.sol
+new file mode 100644
+index 0000000..1b835e1
+--- /dev/null
++++ b/test/UsdtYieldVaultMainnetFork.t.sol
+@@ -0,0 +1,37 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.28;
++
++import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
++import {Test} from "forge-std/Test.sol";
++
++import {UsdtYieldVault} from "../src/UsdtYieldVault.sol";
++
++contract UsdtYieldVaultMainnetForkTest is Test {
++    address internal constant USDT = 0xdAC17F958D2ee523a2206206994597C13D831ec7;
++    address internal constant A_USDT = 0x23878914EFE38d27C4D67Ab83ed1b93A74D4086a;
++    address internal constant AAVE_POOL = 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2;
++    uint256 internal constant FORK_BLOCK = 26_026_308;
++
++    address internal owner = makeAddr("owner");
++    address internal alice = makeAddr("alice");
++
++    function setUp() public {
++        string memory rpcUrl = vm.envOr("MAINNET_RPC_URL", string("https://ethereum-rpc.publicnode.com"));
++        vm.createSelectFork(rpcUrl, FORK_BLOCK);
++    }
++
++    function test_MainnetDepositShouldSucceedWithRealUsdtAndAave() public {
++        UsdtYieldVault vault = new UsdtYieldVault(USDT, A_USDT, AAVE_POOL, 0, owner);
++
++        deal(USDT, alice, 1_000e6);
++
++        vm.prank(alice);
++        (bool approved,) = USDT.call(abi.encodeCall(IERC20.approve, (address(vault), type(uint256).max)));
++        assertTrue(approved);
++
++        vm.prank(alice);
++        vault.deposit(1_000e6);
++
++        assertEq(IERC20(A_USDT).balanceOf(address(vault)), 1_000e6);
++    }
++}
+
+# Untracked files and status
+ A FINDINGS.md
+ A test/UsdtYieldVaultAccountingFailure.t.sol
+ A test/UsdtYieldVaultMainnetFork.t.sol

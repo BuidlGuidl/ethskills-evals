@@ -1,0 +1,466 @@
+diff --git a/FINDINGS.md b/FINDINGS.md
+new file mode 100644
+index 0000000..7d7ad3f
+--- /dev/null
++++ b/FINDINGS.md
+@@ -0,0 +1,296 @@
++# FINDINGS
++
++I would not sign off on mainnet deployment as it stands.
++
++The original suite still passes when run by itself, but the new evidence tests show failures in the production assumptions: real USDT deposits revert before Aave supply, Aave yield is not credited to depositors, and withdrawal fees are stranded instead of accruing to remaining shareholders.
++
++I did not change anything under `src/`, `test/UsdtYieldVault.t.sol`, or `test/mocks/`. New tests are in:
++
++- `test/UsdtYieldVaultMainnetEvidence.t.sol`
++- `test/UsdtYieldVaultAccountingEvidence.t.sol`
++
++## Finding 1: Deposits revert with real mainnet USDT
++
++Severity: Critical
++
++How I found it:
++
++`UsdtYieldVault.deposit()` correctly uses `SafeERC20.safeTransferFrom()` for the user-to-vault transfer, but then calls `usdt.approve(address(aavePool), amount)` directly. Real mainnet USDT at `0xdAC17F958D2ee523a2206206994597C13D831ec7` does not return a boolean value from `approve`. The high-level Solidity `IERC20.approve` call expects return data and reverts after USDT executes.
++
++The fork trace shows:
++
++- User low-level approval to the vault succeeds.
++- Vault `transferFrom` succeeds.
++- Vault raw `approve` to the real Aave V3 pool emits `Approval`.
++- The vault call then reverts before `aavePool.supply()`.
++
++Command:
++
++```bash
++forge test --match-contract UsdtYieldVaultMainnetEvidenceTest --match-test test_DepositIntoAaveWithRealUsdtShouldSucceed --fork-url https://ethereum.publicnode.com -vvv
++```
++
++Output:
++
++```text
++Compiling 1 files with Solc 0.8.28
++Solc 0.8.28 finished in 1.04s
++Compiler run successful!
++
++Ran 1 test for test/UsdtYieldVaultMainnetEvidence.t.sol:UsdtYieldVaultMainnetEvidenceTest
++[FAIL: EvmError: Revert] test_DepositIntoAaveWithRealUsdtShouldSucceed() (gas: 332994)
++Traces:
++  [332994] UsdtYieldVaultMainnetEvidenceTest::test_DepositIntoAaveWithRealUsdtShouldSucceed()
++    ├─ [5031] 0xdAC17F958D2ee523a2206206994597C13D831ec7::balanceOf(alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6]) [staticcall]
++    │   └─ ← [Return] 0
++    ├─ [0] VM::record()
++    │   └─ ← [Return]
++    ├─ [1031] 0xdAC17F958D2ee523a2206206994597C13D831ec7::balanceOf(alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6]) [staticcall]
++    │   └─ ← [Return] 0
++    ├─ [0] VM::accesses(0xdAC17F958D2ee523a2206206994597C13D831ec7) [staticcall]
++    │   └─ ← [Return] [0x000000000000000000000000000000000000000000000000000000000000000a, 0xab6d3e55895e3e05e9a2ebf84052cdb55ff087915a8643eed90f4e6e80e70698], []
++    ├─ [0] VM::load(0xdAC17F958D2ee523a2206206994597C13D831ec7, 0xab6d3e55895e3e05e9a2ebf84052cdb55ff087915a8643eed90f4e6e80e70698) [staticcall]
++    │   └─ ← [Return] 0x0000000000000000000000000000000000000000000000000000000000000000
++    ├─ emit WARNING_UninitedSlot(who: 0xdAC17F958D2ee523a2206206994597C13D831ec7, slot: 77538513652134917009484598156056052292627943328711086492832673518089096595096 [7.753e76])
++    ├─ [0] VM::load(0xdAC17F958D2ee523a2206206994597C13D831ec7, 0xab6d3e55895e3e05e9a2ebf84052cdb55ff087915a8643eed90f4e6e80e70698) [staticcall]
++    │   └─ ← [Return] 0x0000000000000000000000000000000000000000000000000000000000000000
++    ├─ [1031] 0xdAC17F958D2ee523a2206206994597C13D831ec7::balanceOf(alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6]) [staticcall]
++    │   └─ ← [Return] 0
++    ├─ [0] VM::store(0xdAC17F958D2ee523a2206206994597C13D831ec7, 0xab6d3e55895e3e05e9a2ebf84052cdb55ff087915a8643eed90f4e6e80e70698, 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff)
++    │   └─ ← [Return]
++    ├─ [1031] 0xdAC17F958D2ee523a2206206994597C13D831ec7::balanceOf(alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6]) [staticcall]
++    │   └─ ← [Return] 115792089237316195423570985008687907853269984665640564039457584007913129639935 [1.157e77]
++    ├─ [0] VM::store(0xdAC17F958D2ee523a2206206994597C13D831ec7, 0xab6d3e55895e3e05e9a2ebf84052cdb55ff087915a8643eed90f4e6e80e70698, 0x0000000000000000000000000000000000000000000000000000000000000000)
++    │   └─ ← [Return]
++    ├─ emit SlotFound(who: 0xdAC17F958D2ee523a2206206994597C13D831ec7, fsig: 0x70a08231, keysHash: 0xd3751b735d9edcdf3462f9493be94138f68ee6a5bfd2c14f7e1a7b0b58f11cca, slot: 77538513652134917009484598156056052292627943328711086492832673518089096595096 [7.753e76])
++    ├─ [0] VM::load(0xdAC17F958D2ee523a2206206994597C13D831ec7, 0xab6d3e55895e3e05e9a2ebf84052cdb55ff087915a8643eed90f4e6e80e70698) [staticcall]
++    │   └─ ← [Return] 0x0000000000000000000000000000000000000000000000000000000000000000
++    ├─ [0] VM::store(0xdAC17F958D2ee523a2206206994597C13D831ec7, 0xab6d3e55895e3e05e9a2ebf84052cdb55ff087915a8643eed90f4e6e80e70698, 0x000000000000000000000000000000000000000000000000000000003b9aca00)
++    │   └─ ← [Return]
++    ├─ [1031] 0xdAC17F958D2ee523a2206206994597C13D831ec7::balanceOf(alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6]) [staticcall]
++    │   └─ ← [Return] 1000000000 [1e9]
++    ├─ [0] VM::prank(alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6])
++    │   └─ ← [Return]
++    ├─ [24953] 0xdAC17F958D2ee523a2206206994597C13D831ec7::approve(UsdtYieldVault: [0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f], 1000000000 [1e9])
++    │   ├─ emit Approval(owner: alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6], spender: UsdtYieldVault: [0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f], value: 1000000000 [1e9])
++    │   └─ ← [Stop]
++    ├─ [0] VM::prank(alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6])
++    │   └─ ← [Return]
++    ├─ [73268] UsdtYieldVault::deposit(1000000000 [1e9])
++    │   ├─ [35224] 0xdAC17F958D2ee523a2206206994597C13D831ec7::transferFrom(alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6], UsdtYieldVault: [0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f], 1000000000 [1e9])
++    │   │   ├─ emit Transfer(from: alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6], to: UsdtYieldVault: [0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f], value: 1000000000 [1e9])
++    │   │   └─ ← [Stop]
++    │   ├─ [24953] 0xdAC17F958D2ee523a2206206994597C13D831ec7::approve(0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2, 1000000000 [1e9])
++    │   │   ├─ emit Approval(owner: UsdtYieldVault: [0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f], spender: 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2, value: 1000000000 [1e9])
++    │   │   └─ ← [Stop]
++    │   └─ ← [Revert] EvmError: Revert
++    └─ ← [Revert] EvmError: Revert
++
++Backtrace:
++  at UsdtYieldVault.deposit
++  at UsdtYieldVaultMainnetEvidenceTest.test_DepositIntoAaveWithRealUsdtShouldSucceed
++
++Suite result: FAILED. 0 passed; 1 failed; 0 skipped; finished in 2.90s (1.78s CPU time)
++
++Ran 1 test suite in 5.54s (2.90s CPU time): 0 tests passed, 1 failed, 0 skipped (1 total tests)
++
++Failing tests:
++Encountered 1 failing test in test/UsdtYieldVaultMainnetEvidence.t.sol:UsdtYieldVaultMainnetEvidenceTest
++[FAIL: EvmError: Revert] test_DepositIntoAaveWithRealUsdtShouldSucceed() (gas: 332994)
++
++Encountered a total of 1 failing tests, 0 tests succeeded
++
++Tip: Run `forge test --rerun` to retry only the 1 failed test
++```
++
++Fix I would make:
++
++Use `SafeERC20` for approvals too. In OpenZeppelin v5, use `usdt.forceApprove(address(aavePool), amount)` or establish a safe allowance pattern that handles USDT's no-return and zero-first approval behavior. Then fork-test the exact mainnet USDT/Aave path.
++
++## Finding 2: Withdrawal fees do not accrue to remaining shareholders
++
++Severity: High
++
++How I found it:
++
++The README and contract comments say fees stay supplied in Aave and accrue to remaining shareholders. The implementation subtracts `grossAssets` from `totalAssetsStored`, but withdraws only `netAssets` from Aave. The withdrawal fee remains as aUSDT in the vault, but it is removed from vault accounting and no remaining shareholder can claim it.
++
++In the test, Alice and Bob each deposit 1,000 USDT. Alice withdraws and pays a 3 USDT withdrawal fee. Bob's underlying balance should increase from 1,000 USDT to 1,003 USDT if the fee accrues to remaining shareholders. It stays at 1,000 USDT.
++
++Command:
++
++```bash
++forge test --match-contract UsdtYieldVaultAccountingEvidenceTest --match-test test_WithdrawalFeeShouldAccrueToRemainingShareholders -vvv
++```
++
++Output:
++
++```text
++Compiling 1 files with Solc 0.8.28
++Solc 0.8.28 finished in 915.85ms
++Compiler run successful!
++
++Ran 1 test for test/UsdtYieldVaultAccountingEvidence.t.sol:UsdtYieldVaultAccountingEvidenceTest
++[FAIL: withdrawal fee should accrue to Bob: 1000000000 != 1003000000] test_WithdrawalFeeShouldAccrueToRemainingShareholders() (gas: 345951)
++Traces:
++  [345951] UsdtYieldVaultAccountingEvidenceTest::test_WithdrawalFeeShouldAccrueToRemainingShareholders()
++    ├─ [0] VM::prank(alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6])
++    │   └─ ← [Return]
++    ├─ [219073] UsdtYieldVault::deposit(1000000000 [1e9])
++    │   ├─ [32420] MockUSDT::transferFrom(alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6], UsdtYieldVault: [0xF62849F9A0B5Bf2913b396098F7c7019b51A820a], 1000000000 [1e9])
++    │   │   ├─ emit Transfer(from: alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6], to: UsdtYieldVault: [0xF62849F9A0B5Bf2913b396098F7c7019b51A820a], value: 1000000000 [1e9])
++    │   │   └─ ← [Return] true
++    │   ├─ [24734] MockUSDT::approve(EvidenceAavePool: [0x2e234DAe75C793f67A35089C9d99245E1C58470b], 1000000000 [1e9])
++    │   │   ├─ emit Approval(owner: UsdtYieldVault: [0xF62849F9A0B5Bf2913b396098F7c7019b51A820a], spender: EvidenceAavePool: [0x2e234DAe75C793f67A35089C9d99245E1C58470b], value: 1000000000 [1e9])
++    │   │   └─ ← [Return] true
++    │   ├─ [76664] EvidenceAavePool::supply(MockUSDT: [0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f], 1000000000 [1e9], UsdtYieldVault: [0xF62849F9A0B5Bf2913b396098F7c7019b51A820a], 0)
++    │   │   ├─ [26057] MockUSDT::transferFrom(UsdtYieldVault: [0xF62849F9A0B5Bf2913b396098F7c7019b51A820a], EvidenceAavePool: [0x2e234DAe75C793f67A35089C9d99245E1C58470b], 1000000000 [1e9])
++    │   │   │   ├─ emit Transfer(from: UsdtYieldVault: [0xF62849F9A0B5Bf2913b396098F7c7019b51A820a], to: EvidenceAavePool: [0x2e234DAe75C793f67A35089C9d99245E1C58470b], value: 1000000000 [1e9])
++    │   │   │   └─ ← [Return] true
++    │   │   ├─ [46823] EvidenceAToken::mint(UsdtYieldVault: [0xF62849F9A0B5Bf2913b396098F7c7019b51A820a], 1000000000 [1e9])
++    │   │   │   ├─ emit Transfer(from: 0x0000000000000000000000000000000000000000, to: UsdtYieldVault: [0xF62849F9A0B5Bf2913b396098F7c7019b51A820a], value: 1000000000 [1e9])
++    │   │   │   └─ ← [Stop]
++    │   │   └─ ← [Stop]
++    │   ├─ emit Deposited(account: alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6], assets: 1000000000 [1e9], shares: 1000000000000000000000 [1e21], fee: 0)
++    │   └─ ← [Return] 1000000000000000000000 [1e21]
++    ├─ [0] VM::prank(bob: [0x1D96F2f6BeF1202E4Ce1Ff6Dad0c2CB002861d3e])
++    │   └─ ← [Return]
++    ├─ [92331] UsdtYieldVault::deposit(1000000000 [1e9])
++    │   ├─ [30420] MockUSDT::transferFrom(bob: [0x1D96F2f6BeF1202E4Ce1Ff6Dad0c2CB002861d3e], UsdtYieldVault: [0xF62849F9A0B5Bf2913b396098F7c7019b51A820a], 1000000000 [1e9])
++    │   │   ├─ emit Transfer(from: bob: [0x1D96F2f6BeF1202E4Ce1Ff6Dad0c2CB002861d3e], to: UsdtYieldVault: [0xF62849F9A0B5Bf2913b396098F7c7019b51A820a], value: 1000000000 [1e9])
++    │   │   └─ ← [Return] true
++    │   ├─ [22634] MockUSDT::approve(EvidenceAavePool: [0x2e234DAe75C793f67A35089C9d99245E1C58470b], 1000000000 [1e9])
++    │   │   ├─ emit Approval(owner: UsdtYieldVault: [0xF62849F9A0B5Bf2913b396098F7c7019b51A820a], spender: EvidenceAavePool: [0x2e234DAe75C793f67A35089C9d99245E1C58470b], value: 1000000000 [1e9])
++    │   │   └─ ← [Return] true
++    │   ├─ [8464] EvidenceAavePool::supply(MockUSDT: [0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f], 1000000000 [1e9], UsdtYieldVault: [0xF62849F9A0B5Bf2913b396098F7c7019b51A820a], 0)
++    │   │   ├─ [4157] MockUSDT::transferFrom(UsdtYieldVault: [0xF62849F9A0B5Bf2913b396098F7c7019b51A820a], EvidenceAavePool: [0x2e234DAe75C793f67A35089C9d99245E1C58470b], 1000000000 [1e9])
++    │   │   │   ├─ emit Transfer(from: UsdtYieldVault: [0xF62849F9A0B5Bf2913b396098F7c7019b51A820a], to: EvidenceAavePool: [0x2e234DAe75C793f67A35089C9d99245E1C58470b], value: 1000000000 [1e9])
++    │   │   │   └─ ← [Return] true
++    │   │   ├─ [3023] EvidenceAToken::mint(UsdtYieldVault: [0xF62849F9A0B5Bf2913b396098F7c7019b51A820a], 1000000000 [1e9])
++    │   │   │   ├─ emit Transfer(from: 0x0000000000000000000000000000000000000000, to: UsdtYieldVault: [0xF62849F9A0B5Bf2913b396098F7c7019b51A820a], value: 1000000000 [1e9])
++    │   │   │   └─ ← [Stop]
++    │   │   └─ ← [Stop]
++    │   ├─ emit Deposited(account: bob: [0x1D96F2f6BeF1202E4Ce1Ff6Dad0c2CB002861d3e], assets: 1000000000 [1e9], shares: 1000000000000000000000 [1e21], fee: 0)
++    │   └─ ← [Return] 1000000000000000000000 [1e21]
++    ├─ [1253] UsdtYieldVault::balanceOfUnderlying(bob: [0x1D96F2f6BeF1202E4Ce1Ff6Dad0c2CB002861d3e]) [staticcall]
++    │   └─ ← [Return] 1000000000 [1e9]
++    ├─ [0] VM::prank(alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6])
++    │   └─ ← [Return]
++    ├─ [15874] UsdtYieldVault::withdraw(1000000000000000000000 [1e21])
++    │   ├─ [7716] EvidenceAavePool::withdraw(MockUSDT: [0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f], 997000000 [9.97e8], alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6])
++    │   │   ├─ [3126] EvidenceAToken::burn(UsdtYieldVault: [0xF62849F9A0B5Bf2913b396098F7c7019b51A820a], 997000000 [9.97e8])
++    │   │   │   ├─ emit Transfer(from: UsdtYieldVault: [0xF62849F9A0B5Bf2913b396098F7c7019b51A820a], to: 0x0000000000000000000000000000000000000000, value: 997000000 [9.97e8])
++    │   │   │   └─ ← [Stop]
++    │   │   ├─ [3281] MockUSDT::transfer(alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6], 997000000 [9.97e8])
++    │   │   │   ├─ emit Transfer(from: EvidenceAavePool: [0x2e234DAe75C793f67A35089C9d99245E1C58470b], to: alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6], value: 997000000 [9.97e8])
++    │   │   │   └─ ← [Return] true
++    │   │   └─ ← [Return] 997000000 [9.97e8]
++    │   ├─ emit Withdrawn(account: alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6], assets: 997000000 [9.97e8], shares: 1000000000000000000000 [1e21], fee: 3000000 [3e6])
++    │   └─ ← [Return] 997000000 [9.97e8]
++    ├─ [1253] UsdtYieldVault::balanceOfUnderlying(bob: [0x1D96F2f6BeF1202E4Ce1Ff6Dad0c2CB002861d3e]) [staticcall]
++    │   └─ ← [Return] 1000000000 [1e9]
++    ├─ [0] VM::assertEq(1000000000 [1e9], 1003000000 [1.003e9], "withdrawal fee should accrue to Bob") [staticcall]
++    │   └─ ← [Revert] withdrawal fee should accrue to Bob: 1000000000 != 1003000000
++    └─ ← [Revert] withdrawal fee should accrue to Bob: 1000000000 != 1003000000
++
++Backtrace:
++  at VM.assertEq
++  at UsdtYieldVaultAccountingEvidenceTest.test_WithdrawalFeeShouldAccrueToRemainingShareholders
++
++Suite result: FAILED. 0 passed; 1 failed; 0 skipped; finished in 1.09ms (277.91µs CPU time)
++
++Ran 1 test suite in 14.25ms (1.09ms CPU time): 0 tests passed, 1 failed, 0 skipped (1 total tests)
++
++Failing tests:
++Encountered 1 failing test in test/UsdtYieldVaultAccountingEvidence.t.sol:UsdtYieldVaultAccountingEvidenceTest
++[FAIL: withdrawal fee should accrue to Bob: 1000000000 != 1003000000] test_WithdrawalFeeShouldAccrueToRemainingShareholders() (gas: 345951)
++
++Encountered a total of 1 failing tests, 0 tests succeeded
++
++Tip: Run `forge test --rerun` to retry only the 1 failed test
++```
++
++Fix I would make:
++
++Use the live Aave receipt balance as the vault's asset base, or otherwise keep retained fees in accounting. If the intended design is "fees accrue to remaining shareholders", withdrawals should remove only `netAssets` from Aave/accounting after burning shares, leaving the fee inside the asset base for the remaining shares. Also define what happens when the last shareholder withdraws, because retained fees with zero shares otherwise become orphaned.
++
++## Finding 3: Aave yield is never credited to depositors
++
++Severity: High
++
++How I found it:
++
++The vault stores `totalAssetsStored` and uses it for all share conversions. It never reads the live `aUsdt.balanceOf(address(this))`. Aave aTokens represent a growing claim as interest accrues, so this vault's share price does not include the actual Aave yield.
++
++The test deposits 1,000 USDT, then simulates Aave yield by increasing the vault's aUSDT balance to 1,100 USDT. The vault still reports `totalAssets()` as 1,000 USDT.
++
++Command:
++
++```bash
++forge test --match-contract UsdtYieldVaultAccountingEvidenceTest --match-test test_TotalAssetsShouldIncludeAaveYield -vvv
++```
++
++Output:
++
++```text
++No files changed, compilation skipped
++
++Ran 1 test for test/UsdtYieldVaultAccountingEvidence.t.sol:UsdtYieldVaultAccountingEvidenceTest
++[FAIL: totalAssets should include Aave yield: 1000000000 != 1100000000] test_TotalAssetsShouldIncludeAaveYield() (gas: 248437)
++Traces:
++  [248437] UsdtYieldVaultAccountingEvidenceTest::test_TotalAssetsShouldIncludeAaveYield()
++    ├─ [0] VM::prank(alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6])
++    │   └─ ← [Return]
++    ├─ [219073] UsdtYieldVault::deposit(1000000000 [1e9])
++    │   ├─ [32420] MockUSDT::transferFrom(alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6], UsdtYieldVault: [0xF62849F9A0B5Bf2913b396098F7c7019b51A820a], 1000000000 [1e9])
++    │   │   ├─ emit Transfer(from: alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6], to: UsdtYieldVault: [0xF62849F9A0B5Bf2913b396098F7c7019b51A820a], value: 1000000000 [1e9])
++    │   │   └─ ← [Return] true
++    │   ├─ [24734] MockUSDT::approve(EvidenceAavePool: [0x2e234DAe75C793f67A35089C9d99245E1C58470b], 1000000000 [1e9])
++    │   │   ├─ emit Approval(owner: UsdtYieldVault: [0xF62849F9A0B5Bf2913b396098F7c7019b51A820a], spender: EvidenceAavePool: [0x2e234DAe75C793f67A35089C9d99245E1C58470b], value: 1000000000 [1e9])
++    │   │   └─ ← [Return] true
++    │   ├─ [76664] EvidenceAavePool::supply(MockUSDT: [0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f], 1000000000 [1e9], UsdtYieldVault: [0xF62849F9A0B5Bf2913b396098F7c7019b51A820a], 0)
++    │   │   ├─ [26057] MockUSDT::transferFrom(UsdtYieldVault: [0xF62849F9A0B5Bf2913b396098F7c7019b51A820a], EvidenceAavePool: [0x2e234DAe75C793f67A35089C9d99245E1C58470b], 1000000000 [1e9])
++    │   │   │   ├─ emit Transfer(from: UsdtYieldVault: [0xF62849F9A0B5Bf2913b396098F7c7019b51A820a], to: EvidenceAavePool: [0x2e234DAe75C793f67A35089C9d99245E1C58470b], value: 1000000000 [1e9])
++    │   │   │   └─ ← [Return] true
++    │   │   ├─ [46823] EvidenceAToken::mint(UsdtYieldVault: [0xF62849F9A0B5Bf2913b396098F7c7019b51A820a], 1000000000 [1e9])
++    │   │   │   ├─ emit Transfer(from: 0x0000000000000000000000000000000000000000, to: UsdtYieldVault: [0xF62849F9A0B5Bf2913b396098F7c7019b51A820a], value: 1000000000 [1e9])
++    │   │   │   └─ ← [Stop]
++    │   │   └─ ← [Stop]
++    │   ├─ emit Deposited(account: alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6], assets: 1000000000 [1e9], shares: 1000000000000000000000 [1e21], fee: 0)
++    │   └─ ← [Return] 1000000000000000000000 [1e21]
++    ├─ [11899] EvidenceAavePool::accrueYield(UsdtYieldVault: [0xF62849F9A0B5Bf2913b396098F7c7019b51A820a], 100000000 [1e8])
++    │   ├─ [7783] MockUSDT::mint(EvidenceAavePool: [0x2e234DAe75C793f67A35089C9d99245E1C58470b], 100000000 [1e8])
++    │   │   ├─ emit Transfer(from: 0x0000000000000000000000000000000000000000, to: EvidenceAavePool: [0x2e234DAe75C793f67A35089C9d99245E1C58470b], value: 100000000 [1e8])
++    │   │   └─ ← [Stop]
++    │   ├─ [3023] EvidenceAToken::mint(UsdtYieldVault: [0xF62849F9A0B5Bf2913b396098F7c7019b51A820a], 100000000 [1e8])
++    │   │   ├─ emit Transfer(from: 0x0000000000000000000000000000000000000000, to: UsdtYieldVault: [0xF62849F9A0B5Bf2913b396098F7c7019b51A820a], value: 100000000 [1e8])
++    │   │   └─ ← [Stop]
++    │   └─ ← [Stop]
++    ├─ [293] UsdtYieldVault::totalAssets() [staticcall]
++    │   └─ ← [Return] 1000000000 [1e9]
++    ├─ [559] EvidenceAToken::balanceOf(UsdtYieldVault: [0xF62849F9A0B5Bf2913b396098F7c7019b51A820a]) [staticcall]
++    │   └─ ← [Return] 1100000000 [1.1e9]
++    ├─ [0] VM::assertEq(1000000000 [1e9], 1100000000 [1.1e9], "totalAssets should include Aave yield") [staticcall]
++    │   └─ ← [Revert] totalAssets should include Aave yield: 1000000000 != 1100000000
++    └─ ← [Revert] totalAssets should include Aave yield: 1000000000 != 1100000000
++
++Backtrace:
++  at VM.assertEq
++  at UsdtYieldVaultAccountingEvidenceTest.test_TotalAssetsShouldIncludeAaveYield
++
++Suite result: FAILED. 0 passed; 1 failed; 0 skipped; finished in 1.01ms (217.62µs CPU time)
++
++Ran 1 test suite in 12.05ms (1.01ms CPU time): 0 tests passed, 1 failed, 0 skipped (1 total tests)
++
++Failing tests:
++Encountered 1 failing test in test/UsdtYieldVaultAccountingEvidence.t.sol:UsdtYieldVaultAccountingEvidenceTest
++[FAIL: totalAssets should include Aave yield: 1000000000 != 1100000000] test_TotalAssetsShouldIncludeAaveYield() (gas: 248437)
++
++Encountered a total of 1 failing tests, 0 tests succeeded
++
++Tip: Run `forge test --rerun` to retry only the 1 failed test
++```
++
++Fix I would make:
++
++Base `totalAssets()`, `convertToShares()`, `convertToAssets()`, `balanceOfUnderlying()`, and `sharePrice()` on live Aave assets, not only on a manually maintained principal counter. For Aave V3 aTokens, the simplest model is usually `aUsdt.balanceOf(address(this))`, with careful handling of zero-share states, rounding, and any reserved protocol-fee balance.
+diff --git a/test/UsdtYieldVaultAccountingEvidence.t.sol b/test/UsdtYieldVaultAccountingEvidence.t.sol
+new file mode 100644
+index 0000000..04a5cea
+--- /dev/null
++++ b/test/UsdtYieldVaultAccountingEvidence.t.sol
+@@ -0,0 +1,109 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.28;
++
++import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
++import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
++import {Test} from "forge-std/Test.sol";
++
++import {IAavePool} from "../src/interfaces/IAavePool.sol";
++import {UsdtYieldVault} from "../src/UsdtYieldVault.sol";
++import {MockUSDT} from "./mocks/MockUSDT.sol";
++
++contract EvidenceAToken is ERC20 {
++    address public immutable pool;
++
++    constructor(address _pool) ERC20("Aave Tether USD", "aUSDT") {
++        pool = _pool;
++    }
++
++    function decimals() public pure override returns (uint8) {
++        return 6;
++    }
++
++    function mint(address to, uint256 amount) external {
++        require(msg.sender == pool, "only pool");
++        _mint(to, amount);
++    }
++
++    function burn(address from, uint256 amount) external {
++        require(msg.sender == pool, "only pool");
++        _burn(from, amount);
++    }
++}
++
++contract EvidenceAavePool is IAavePool {
++    MockUSDT public immutable underlying;
++    EvidenceAToken public immutable aToken;
++
++    constructor(MockUSDT _underlying) {
++        underlying = _underlying;
++        aToken = new EvidenceAToken(address(this));
++    }
++
++    function supply(address, uint256 amount, address onBehalfOf, uint16) external override {
++        underlying.transferFrom(msg.sender, address(this), amount);
++        aToken.mint(onBehalfOf, amount);
++    }
++
++    function withdraw(address, uint256 amount, address to) external override returns (uint256) {
++        aToken.burn(msg.sender, amount);
++        underlying.transfer(to, amount);
++        return amount;
++    }
++
++    function accrueYield(address account, uint256 amount) external {
++        underlying.mint(address(this), amount);
++        aToken.mint(account, amount);
++    }
++}
++
++contract UsdtYieldVaultAccountingEvidenceTest is Test {
++    UsdtYieldVault internal vault;
++    MockUSDT internal usdt;
++    EvidenceAavePool internal pool;
++    IERC20 internal aUsdt;
++
++    address internal owner = makeAddr("owner");
++    address internal alice = makeAddr("alice");
++    address internal bob = makeAddr("bob");
++
++    function setUp() public {
++        usdt = new MockUSDT();
++        pool = new EvidenceAavePool(usdt);
++        aUsdt = IERC20(address(pool.aToken()));
++        vault = new UsdtYieldVault(address(usdt), address(aUsdt), address(pool), 0, owner);
++
++        usdt.mint(alice, 100_000e6);
++        usdt.mint(bob, 100_000e6);
++
++        vm.prank(alice);
++        usdt.approve(address(vault), type(uint256).max);
++        vm.prank(bob);
++        usdt.approve(address(vault), type(uint256).max);
++    }
++
++    function _deposit(address account, uint256 amount) internal returns (uint256) {
++        vm.prank(account);
++        return vault.deposit(amount);
++    }
++
++    function test_WithdrawalFeeShouldAccrueToRemainingShareholders() public {
++        uint256 aliceShares = _deposit(alice, 1_000e6);
++        _deposit(bob, 1_000e6);
++
++        uint256 bobBefore = vault.balanceOfUnderlying(bob);
++
++        vm.prank(alice);
++        vault.withdraw(aliceShares);
++
++        assertEq(vault.balanceOfUnderlying(bob), bobBefore + 3e6, "withdrawal fee should accrue to Bob");
++    }
++
++    function test_TotalAssetsShouldIncludeAaveYield() public {
++        _deposit(alice, 1_000e6);
++
++        pool.accrueYield(address(vault), 100e6);
++
++        assertEq(vault.totalAssets(), aUsdt.balanceOf(address(vault)), "totalAssets should include Aave yield");
++    }
++}
+diff --git a/test/UsdtYieldVaultMainnetEvidence.t.sol b/test/UsdtYieldVaultMainnetEvidence.t.sol
+new file mode 100644
+index 0000000..492b7e8
+--- /dev/null
++++ b/test/UsdtYieldVaultMainnetEvidence.t.sol
+@@ -0,0 +1,38 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.28;
++
++import {Test} from "forge-std/Test.sol";
++
++import {UsdtYieldVault} from "../src/UsdtYieldVault.sol";
++
++contract UsdtYieldVaultMainnetEvidenceTest is Test {
++    address internal constant USDT = 0xdAC17F958D2ee523a2206206994597C13D831ec7;
++    address internal constant AAVE_V3_POOL = 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2;
++    address internal constant AUSDT = 0x23878914EFE38d27C4D67Ab83ed1b93A74D4086a;
++
++    address internal owner = makeAddr("owner");
++    address internal alice = makeAddr("alice");
++
++    UsdtYieldVault internal vault;
++
++    function setUp() public {
++        if (block.chainid != 1) return;
++        vault = new UsdtYieldVault(USDT, AUSDT, AAVE_V3_POOL, 0, owner);
++    }
++
++    function test_DepositIntoAaveWithRealUsdtShouldSucceed() public {
++        if (block.chainid != 1) return;
++
++        uint256 amount = 1_000e6;
++        deal(USDT, alice, amount);
++
++        vm.prank(alice);
++        (bool ok,) = USDT.call(abi.encodeWithSignature("approve(address,uint256)", address(vault), amount));
++        assertTrue(ok, "user approval failed");
++
++        vm.prank(alice);
++        uint256 shares = vault.deposit(amount);
++
++        assertGt(shares, 0, "deposit should mint shares");
++    }
++}
+
+# Untracked files and status
+ A FINDINGS.md
+ A test/UsdtYieldVaultAccountingEvidence.t.sol
+ A test/UsdtYieldVaultMainnetEvidence.t.sol
