@@ -1,0 +1,119 @@
+diff --git a/FORK.md b/FORK.md
+new file mode 100644
+index 0000000..34c3a17
+--- /dev/null
++++ b/FORK.md
+@@ -0,0 +1,110 @@
++# Local Base Fork
++
++The old onboarding note is wrong about both the fork command and the health check.
++
++It says to run:
++
++```bash
++yarn fork base
++```
++
++In this checkout that does **not** pass `base` to Anvil. The root script only forwards to the
++Foundry workspace:
++
++```json
++// package.json
++"fork": "yarn foundry:fork",
++"foundry:fork": "yarn workspace @se-2/foundry fork",
++```
++
++The Foundry workspace script reads the second Yarn positional argument (`$1`), not the first
++one (`$0`):
++
++```json
++// packages/foundry/package.json
++"fork": "make fork FORK_URL=${1:-mainnet}",
++```
++
++So a dry run of the onboarding command resolves to a mainnet fork:
++
++```bash
++$ MAKEFLAGS=-n yarn fork base
++anvil --fork-url mainnet --chain-id 31337
++```
++
++That is why reads from Base USDC at `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` came back
++empty: the local node was alive, but it was forked from Ethereum mainnet, where that Base USDC
++contract is not deployed at that address.
++
++The repo does have a Base RPC alias:
++
++```toml
++# packages/foundry/foundry.toml
++[rpc_endpoints]
++mainnet = "https://eth-mainnet.alchemyapi.io/v2/${ALCHEMY_API_KEY}"
++base = "https://mainnet.base.org"
++```
++
++## Correct Command
++
++From the repo root, pass a throwaway first positional argument so `base` becomes `$1`:
++
++```bash
++yarn fork _ base
++```
++
++A dry run shows that this is the command that actually reaches the Base alias:
++
++```bash
++$ MAKEFLAGS=-n yarn fork _ base
++anvil --fork-url base --chain-id 31337
++```
++
++Equivalently, from the Foundry package you can bypass the Yarn positional-argument issue:
++
++```bash
++cd packages/foundry
++make fork FORK_URL=base
++```
++
++Both commands end up at the Makefile fork target:
++
++```make
++# packages/foundry/Makefile
++fork: setup-anvil-wallet
++	anvil --fork-url ${FORK_URL} --chain-id 31337
++```
++
++## Better Fork Check
++
++Do not use `cast chain-id` to decide whether the fork source is Base. This Makefile always starts
++Anvil with `--chain-id 31337`, so `cast chain-id` only proves that the local node is responding.
++It does not prove which upstream chain Anvil forked.
++
++Check for the Base state this project depends on instead:
++
++```bash
++cast code \
++  --rpc-url http://127.0.0.1:8545 \
++  0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
++```
++
++That should return non-empty bytecode, not `0x`.
++
++Then check a real USDC read:
++
++```bash
++cast call \
++  --rpc-url http://127.0.0.1:8545 \
++  0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 \
++  "decimals()(uint8)"
++```
++
++On a Base fork this returns:
++
++```text
++6
++```
++
++If the code is `0x` or the `decimals()` call returns empty/reverts, the local node may still be
++mining transactions, but it is not the Base fork needed for this checkout.
+
+# Untracked files and status
+ A FORK.md

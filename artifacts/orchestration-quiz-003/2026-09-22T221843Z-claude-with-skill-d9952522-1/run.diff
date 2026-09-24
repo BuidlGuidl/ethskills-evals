@@ -1,0 +1,380 @@
+diff --git a/packages/nextjs/app/greetings/_components/Greetings.tsx b/packages/nextjs/app/greetings/_components/Greetings.tsx
+new file mode 100644
+index 0000000..66f2798
+--- /dev/null
++++ b/packages/nextjs/app/greetings/_components/Greetings.tsx
+@@ -0,0 +1,138 @@
++"use client";
++
++import { useMemo, useState } from "react";
++import { Address } from "@scaffold-ui/components";
++import { formatEther } from "viem";
++import { useAccount } from "wagmi";
++import { RainbowKitCustomConnectButton } from "~~/components/scaffold-eth";
++import {
++  useScaffoldEventHistory,
++  useScaffoldReadContract,
++  useScaffoldWriteContract,
++  useTargetNetwork,
++} from "~~/hooks/scaffold-eth";
++
++export const Greetings = () => {
++  const [newGreeting, setNewGreeting] = useState("");
++  const { isConnected } = useAccount();
++  const { targetNetwork } = useTargetNetwork();
++
++  const { data: greeting, isLoading: isGreetingLoading } = useScaffoldReadContract({
++    contractName: "YourContract",
++    functionName: "greeting",
++  });
++
++  const { data: totalCounter, isLoading: isCounterLoading } = useScaffoldReadContract({
++    contractName: "YourContract",
++    functionName: "totalCounter",
++  });
++
++  const { writeContractAsync, isMining } = useScaffoldWriteContract({ contractName: "YourContract" });
++
++  // fromBlock is omitted on purpose: the hook falls back to the contract's deployedOnBlock.
++  const {
++    data: greetingChanges,
++    isLoading: areChangesLoading,
++    isFetchingNewEvent,
++  } = useScaffoldEventHistory({
++    contractName: "YourContract",
++    eventName: "GreetingChange",
++    watch: true,
++  });
++
++  const sortedChanges = useMemo(
++    () =>
++      [...(greetingChanges ?? [])].sort(
++        (a, b) => Number((b.blockNumber ?? 0n) - (a.blockNumber ?? 0n)) || (b.logIndex ?? 0) - (a.logIndex ?? 0),
++      ),
++    [greetingChanges],
++  );
++
++  const handleSubmit = async () => {
++    // The hook toasts its own errors and returns undefined when it bails out early,
++    // so only clear the input once a transaction actually went through.
++    const hash = await writeContractAsync({ functionName: "setGreeting", args: [newGreeting.trim()] });
++    if (hash) setNewGreeting("");
++  };
++
++  const isFeedLoading = areChangesLoading || isFetchingNewEvent;
++
++  return (
++    <div className="flex flex-col items-center grow pt-10 px-5 gap-8 w-full">
++      <div className="card bg-base-100 shadow-xl w-full max-w-2xl">
++        <div className="card-body items-center text-center">
++          <h2 className="card-title">Current greeting</h2>
++          {isGreetingLoading ? (
++            <span className="loading loading-spinner" />
++          ) : (
++            <p className="text-2xl font-bold break-words max-w-full">{greeting}</p>
++          )}
++          <div className="stats bg-base-200">
++            <div className="stat">
++              <div className="stat-title">Times changed</div>
++              <div className="stat-value text-2xl">
++                {isCounterLoading ? <span className="loading loading-spinner" /> : totalCounter?.toString()}
++              </div>
++            </div>
++          </div>
++        </div>
++      </div>
++
++      <div className="card bg-base-100 shadow-xl w-full max-w-2xl">
++        <form
++          className="card-body gap-4"
++          onSubmit={event => {
++            event.preventDefault();
++            void handleSubmit();
++          }}
++        >
++          <h2 className="card-title">Set a new greeting</h2>
++          <input
++            type="text"
++            className="input w-full"
++            placeholder="gm ser"
++            value={newGreeting}
++            onChange={event => setNewGreeting(event.target.value)}
++          />
++          {isConnected ? (
++            <button className="btn btn-primary" type="submit" disabled={isMining || !newGreeting.trim()}>
++              {isMining && <span className="loading loading-spinner loading-sm" />}
++              Set greeting
++            </button>
++          ) : (
++            <div className="flex justify-center">
++              <RainbowKitCustomConnectButton />
++            </div>
++          )}
++        </form>
++      </div>
++
++      <div className="w-full max-w-2xl pb-10">
++        <h2 className="text-xl font-bold mb-4">Past greetings</h2>
++        {isFeedLoading ? (
++          <span className="loading loading-spinner" />
++        ) : !sortedChanges.length ? (
++          <p className="text-base-content/70">No greetings have been set yet.</p>
++        ) : (
++          <div className="flex flex-col gap-3">
++            {sortedChanges.map(change => (
++              <div key={`${change.transactionHash}-${change.logIndex}`} className="card card-sm bg-base-100 shadow-md">
++                <div className="card-body gap-2">
++                  <div className="flex items-center gap-2 flex-wrap">
++                    <Address address={change.args.greetingSetter} chain={targetNetwork} size="sm" />
++                    {change.args.premium && (
++                      <span className="badge badge-secondary badge-sm">
++                        premium · {formatEther(change.args.value ?? 0n)} ETH
++                      </span>
++                    )}
++                  </div>
++                  <p className="break-words">{change.args.newGreeting}</p>
++                </div>
++              </div>
++            ))}
++          </div>
++        )}
++      </div>
++    </div>
++  );
++};
+diff --git a/packages/nextjs/app/greetings/page.tsx b/packages/nextjs/app/greetings/page.tsx
+new file mode 100644
+index 0000000..3902e53
+--- /dev/null
++++ b/packages/nextjs/app/greetings/page.tsx
+@@ -0,0 +1,14 @@
++import { Greetings } from "./_components/Greetings";
++import type { NextPage } from "next";
++import { getMetadata } from "~~/utils/scaffold-eth/getMetadata";
++
++export const metadata = getMetadata({
++  title: "Greetings",
++  description: "Read the current greeting, set a new one, and browse every greeting change",
++});
++
++const GreetingsPage: NextPage = () => {
++  return <Greetings />;
++};
++
++export default GreetingsPage;
+diff --git a/packages/nextjs/components/Header.tsx b/packages/nextjs/components/Header.tsx
+index bc63eb4..0b1c616 100644
+--- a/packages/nextjs/components/Header.tsx
++++ b/packages/nextjs/components/Header.tsx
+@@ -5,12 +5,10 @@ import Image from "next/image";
+ import Link from "next/link";
+ import { usePathname } from "next/navigation";
+ import { hardhat } from "viem/chains";
+-import { Bars3Icon, BugAntIcon } from "@heroicons/react/24/outline";
++import { Bars3Icon, BugAntIcon, ChatBubbleLeftRightIcon } from "@heroicons/react/24/outline";
+ import { FaucetButton, RainbowKitCustomConnectButton } from "~~/components/scaffold-eth";
+ import { useOutsideClick, useTargetNetwork } from "~~/hooks/scaffold-eth";
+ 
+-
+-
+ type HeaderMenuLink = {
+   label: string;
+   href: string;
+@@ -19,14 +17,19 @@ type HeaderMenuLink = {
+ 
+ export const menuLinks: HeaderMenuLink[] = [
+   {
+-    label: 'Home',
+-    href: '/'
++    label: "Home",
++    href: "/",
++  },
++  {
++    label: "Greetings",
++    href: "/greetings",
++    icon: <ChatBubbleLeftRightIcon className="h-4 w-4" />,
+   },
+   {
+-    label: 'Debug Contracts',
+-    href: '/debug',
+-    icon: <BugAntIcon className="h-4 w-4" />
+-  }
++    label: "Debug Contracts",
++    href: "/debug",
++    icon: <BugAntIcon className="h-4 w-4" />,
++  },
+ ];
+ 
+ export const HeaderMenuLinks = () => {
+@@ -102,4 +105,4 @@ export const Header = () => {
+       </div>
+     </div>
+   );
+-};
+\ No newline at end of file
++};
+diff --git a/packages/nextjs/contracts/deployedContracts.ts b/packages/nextjs/contracts/deployedContracts.ts
+index 008d4eb..f1d0ef2 100644
+--- a/packages/nextjs/contracts/deployedContracts.ts
++++ b/packages/nextjs/contracts/deployedContracts.ts
+@@ -4,6 +4,153 @@
+  */
+ import { GenericContractsDeclaration } from "~~/utils/scaffold-eth/contract";
+ 
+-const deployedContracts = {} as const;
++const deployedContracts = {
++  31337: {
++    YourContract: {
++      address: "0x67f65b834aaac92c15c2eba9ff7e81f2d33a1cfd",
++      abi: [
++        {
++          type: "constructor",
++          inputs: [
++            {
++              name: "_owner",
++              type: "address",
++              internalType: "address",
++            },
++          ],
++          stateMutability: "nonpayable",
++        },
++        {
++          type: "receive",
++          stateMutability: "payable",
++        },
++        {
++          type: "function",
++          name: "greeting",
++          inputs: [],
++          outputs: [
++            {
++              name: "",
++              type: "string",
++              internalType: "string",
++            },
++          ],
++          stateMutability: "view",
++        },
++        {
++          type: "function",
++          name: "owner",
++          inputs: [],
++          outputs: [
++            {
++              name: "",
++              type: "address",
++              internalType: "address",
++            },
++          ],
++          stateMutability: "view",
++        },
++        {
++          type: "function",
++          name: "premium",
++          inputs: [],
++          outputs: [
++            {
++              name: "",
++              type: "bool",
++              internalType: "bool",
++            },
++          ],
++          stateMutability: "view",
++        },
++        {
++          type: "function",
++          name: "setGreeting",
++          inputs: [
++            {
++              name: "_newGreeting",
++              type: "string",
++              internalType: "string",
++            },
++          ],
++          outputs: [],
++          stateMutability: "payable",
++        },
++        {
++          type: "function",
++          name: "totalCounter",
++          inputs: [],
++          outputs: [
++            {
++              name: "",
++              type: "uint256",
++              internalType: "uint256",
++            },
++          ],
++          stateMutability: "view",
++        },
++        {
++          type: "function",
++          name: "userGreetingCounter",
++          inputs: [
++            {
++              name: "",
++              type: "address",
++              internalType: "address",
++            },
++          ],
++          outputs: [
++            {
++              name: "",
++              type: "uint256",
++              internalType: "uint256",
++            },
++          ],
++          stateMutability: "view",
++        },
++        {
++          type: "function",
++          name: "withdraw",
++          inputs: [],
++          outputs: [],
++          stateMutability: "nonpayable",
++        },
++        {
++          type: "event",
++          name: "GreetingChange",
++          inputs: [
++            {
++              name: "greetingSetter",
++              type: "address",
++              indexed: true,
++              internalType: "address",
++            },
++            {
++              name: "newGreeting",
++              type: "string",
++              indexed: false,
++              internalType: "string",
++            },
++            {
++              name: "premium",
++              type: "bool",
++              indexed: false,
++              internalType: "bool",
++            },
++            {
++              name: "value",
++              type: "uint256",
++              indexed: false,
++              internalType: "uint256",
++            },
++          ],
++          anonymous: false,
++        },
++      ],
++      inheritedFunctions: {},
++      deployedOnBlock: 273,
++    },
++  },
++} as const;
+ 
+ export default deployedContracts satisfies GenericContractsDeclaration;
+
+# Untracked files and status
+ A packages/nextjs/app/greetings/_components/Greetings.tsx
+ A packages/nextjs/app/greetings/page.tsx
+ M packages/nextjs/components/Header.tsx
+ M packages/nextjs/contracts/deployedContracts.ts

@@ -1,0 +1,280 @@
+diff --git a/FORK.md b/FORK.md
+new file mode 100644
+index 0000000..e0503d2
+--- /dev/null
++++ b/FORK.md
+@@ -0,0 +1,200 @@
++# Forking Base locally
++
++We build against a local fork of Base because our contract reads USDC on Base at
++`0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`.
++
++## TL;DR
++
++```bash
++yarn fork FORK_URL=base   # start the fork  (NOT `yarn fork base`)
++yarn fork:check           # prove it is actually Base before you debug anything
++```
++
++## What the onboarding note gets wrong
++
++The note says:
++
++> Start the chain with `yarn fork base` ... Sanity-check it with `cast chain-id`
++> against your local node; if you get a chain id back, the fork is up and you're on Base.
++
++Both halves are wrong. `yarn fork base` gives you a fork of **Ethereum mainnet**, and
++`cast chain-id` cannot tell the difference.
++
++### 1. `yarn fork base` silently forked mainnet, not Base
++
++The `base` argument was thrown away. Before this change, `packages/foundry/package.json`
++had:
++
++```json
++"fork": "make fork FORK_URL=${1:-mainnet}",
++```
++
++Two things go wrong here:
++
++- **`${1:-...}` does not do what it looks like it does.** The script body is run by a
++  shell that has no positional parameters set, so `$1` is always unset and
++  `${1:-mainnet}` always expands to the literal `mainnet`. Reproduced directly:
++
++  ```
++  $ sh -c 'echo "make fork FORK_URL=${1:-mainnet}"' base
++  make fork FORK_URL=mainnet
++  ```
++
++- **Yarn appends extra arguments to the end of the command**, it does not substitute
++  them. Confirmed with a throwaway script in this package (`"__probe": "echo ARGS-RECEIVED:"`):
++
++  ```
++  $ yarn __probe FORK_URL=base
++  ARGS-RECEIVED: FORK_URL=base
++  ```
++
++  So `yarn fork base` expanded to `make fork FORK_URL=mainnet base` — `base` landed as a
++  second *make goal*, not as the fork URL.
++
++Running the old command in this checkout shows exactly that:
++
++```
++$ yarn fork base
++anvil --fork-url mainnet --chain-id 31337
++```
++
++The stray `base` goal never surfaces an error either: `make` runs the `fork` goal first,
++`anvil` blocks forever, and `make` never gets as far as `base` (where it would have said
++`No rule to make target 'base'`). The mistake is completely silent on a working machine.
++
++`--fork-url mainnet` is not ignored — `anvil` resolves it as an alias from
++`packages/foundry/foundry.toml`:
++
++```toml
++[rpc_endpoints]
++mainnet = "https://eth-mainnet.alchemyapi.io/v2/${ALCHEMY_API_KEY}"
++...
++base = "https://mainnet.base.org"
++```
++
++(You can see the resolution in the failure output: the request goes to
++`https://eth-mainnet.alchemyapi.io/v2/...`.)
++
++### Why the USDC reads come back empty
++
++You get a perfectly healthy local node — it just forks the wrong chain. Ethereum mainnet
++has no contract at `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`; that address is Base's
++USDC. (Mainnet USDC is `0xA0b8...eB48`.) So on the mainnet fork that address is a plain
++empty account: `eth_getCode` returns `0x`, and every `staticcall` into it hits an address
++with no code.
++
++That is why the failure looks like "the token isn't deployed" rather than an RPC error.
++The node is up, blocks mine, transactions succeed — reads of that one address just return
++nothing. The contract was never the problem.
++
++### 2. `cast chain-id` cannot detect this
++
++The `fork` target in `packages/foundry/Makefile` pins the chain id:
++
++```make
++# Start a fork
++fork: setup-anvil-wallet
++	anvil --fork-url ${FORK_URL} --chain-id 31337
++```
++
++`--chain-id 31337` **overrides** the forked chain's id. So `cast chain-id` returns `31337`
++whether you forked Base, forked mainnet, or ran a bare `yarn chain` with no fork at all.
++It is deliberately set that way so the frontend keeps working — `packages/nextjs/scaffold.config.ts`
++targets `chains.foundry` (31337).
++
++A `31337` back means "something is listening and speaking JSON-RPC". Nothing more. The
++teammate who ran the check and concluded the fork was healthy got a true answer to a
++question that does not distinguish the two cases.
++
++## The command that actually works
++
++```bash
++yarn fork FORK_URL=base
++```
++
++Since `yarn` appends arguments, this reaches `make` as `make fork FORK_URL=base` and
++overrides the Makefile default. Equivalently, from `packages/foundry`:
++
++```bash
++make fork FORK_URL=base
++```
++
++Verified in this checkout:
++
++```
++$ yarn fork FORK_URL=base
++anvil --fork-url base --chain-id 31337
++
++$ yarn fork            # default still mainnet, unchanged
++anvil --fork-url mainnet --chain-id 31337
++```
++
++Any alias from the `[rpc_endpoints]` table in `foundry.toml` works as `FORK_URL`
++(`base`, `baseSepolia`, `optimism`, ...), as does a full URL.
++
++### Repo changes made to support this
++
++- `packages/foundry/package.json`: `"fork": "make fork FORK_URL=${1:-mainnet}"` →
++  `"fork": "make fork"`. The argument is no longer swallowed; a passed
++  `FORK_URL=...` now reaches `make`.
++- `packages/foundry/Makefile`: added `FORK_URL ?= mainnet` so the default that used to
++  live in the broken shell expansion is preserved.
++- Added a `fork-check` make target and `yarn fork:check` / `yarn foundry:fork-check`
++  scripts.
++
++> Heads up: `"verify": "make verify RPC_URL=${1:-localhost}"` in the same
++> `packages/foundry/package.json` has the identical `${1:-...}` bug and always uses
++> `localhost`. Left alone here since it's outside this issue, but it wants the same
++> one-line fix.
++
++## The check that would have caught this
++
++Because the chain id is forced to `31337`, the only reliable way to identify the forked
++chain is to read **state that only exists on that chain**. Base USDC is exactly that
++marker — it is the thing we depend on, and it has code on Base and on no other chain we
++might plausibly fork (it is absent on mainnet, and on Optimism that address is empty too).
++
++```bash
++yarn fork:check
++```
++
++which runs (`packages/foundry/Makefile`):
++
++```make
++fork-check:
++	@USDC=$$(cast code 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 --rpc-url $(RPC)); \
++	if [ "$$USDC" = "0x" ] || [ -z "$$USDC" ]; then \
++		echo "FAIL: no code at Base USDC on $(RPC) -- this is not a fork of Base."; \
++		exit 1; \
++	fi; \
++	SYM=$$(cast call 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 "symbol()(string)" --rpc-url $(RPC)); \
++	echo "OK: Base USDC present, symbol()=$$SYM"
++```
++
++Or as a one-liner:
++
++```bash
++cast code 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 --rpc-url http://127.0.0.1:8545
++```
++
++- non-empty bytecode → you are on a fork of Base
++- `0x` → you are not, regardless of what `cast chain-id` says
++
++Run against the wrong-chain node that produced this report, it fails loudly instead of
++silently passing:
++
++```
++$ cast chain-id --rpc-url http://127.0.0.1:8545
++31337                                        # the old check: "looks fine"
++
++$ yarn fork:check
++FAIL: no code at Base USDC on http://127.0.0.1:8545 -- this is not a fork of Base.
++$ echo $?
++2
++```
++
++`RPC` is overridable if you're not on the default port: `yarn fork:check RPC=http://127.0.0.1:8546`.
++
++The `symbol()` call is the second half of the check: presence of code proves the fork
++carries Base state, and `symbol()` returning `USDC` proves the address is the token we
++think it is rather than some unrelated contract.
+diff --git a/package.json b/package.json
+index 62b6ea8..eb5d28e 100644
+--- a/package.json
++++ b/package.json
+@@ -17,6 +17,7 @@
+     "deploy": "yarn foundry:deploy",
+     "flatten": "yarn foundry:flatten",
+     "fork": "yarn foundry:fork",
++    "fork:check": "yarn foundry:fork-check",
+     "format": "yarn next:format && yarn foundry:format",
+     "foundry:account": "yarn workspace @se-2/foundry account",
+     "foundry:account-import": "yarn workspace @se-2/foundry account:import",
+@@ -27,6 +28,7 @@
+     "foundry:deploy-verify": "yarn workspace @se-2/foundry deploy:verify",
+     "foundry:flatten": "yarn workspace @se-2/foundry flatten",
+     "foundry:fork": "yarn workspace @se-2/foundry fork",
++    "foundry:fork-check": "yarn workspace @se-2/foundry fork:check",
+     "foundry:format": "yarn workspace @se-2/foundry format",
+     "foundry:generate": "yarn workspace @se-2/foundry account:generate",
+     "foundry:lint": "yarn workspace @se-2/foundry lint",
+diff --git a/packages/foundry/Makefile b/packages/foundry/Makefile
+index f709ae2..3b3a72b 100644
+--- a/packages/foundry/Makefile
++++ b/packages/foundry/Makefile
+@@ -1,6 +1,8 @@
+-.PHONY: build deploy generate-abis get-address account chain compile flatten fork format lint test verify
++.PHONY: build deploy generate-abis get-address account chain compile flatten fork fork-check format lint test verify
+ 
+ DEPLOY_SCRIPT ?= script/Deploy.s.sol
++FORK_URL ?= mainnet
++RPC ?= http://127.0.0.1:8545
+ 
+ # setup wallet for anvil
+ setup-anvil-wallet:
+@@ -15,6 +17,19 @@ chain: setup-anvil-wallet
+ fork: setup-anvil-wallet
+ 	anvil --fork-url ${FORK_URL} --chain-id 31337
+ 
++# Verify the local node is really a fork of Base.
++# `cast chain-id` cannot tell you this: the `fork` target pins --chain-id 31337,
++# so every fork (and a bare `yarn chain`) reports 31337. Probe chain-specific
++# state instead -- Base USDC, which only has code on Base.
++fork-check:
++	@USDC=$$(cast code 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 --rpc-url $(RPC)); \
++	if [ "$$USDC" = "0x" ] || [ -z "$$USDC" ]; then \
++		echo "FAIL: no code at Base USDC on $(RPC) -- this is not a fork of Base."; \
++		exit 1; \
++	fi; \
++	SYM=$$(cast call 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 "symbol()(string)" --rpc-url $(RPC)); \
++	echo "OK: Base USDC present, symbol()=$$SYM"
++
+ # Deploy the contracts
+ deploy:
+ 	@if [ ! -f "$(DEPLOY_SCRIPT)" ]; then 		echo "Error: Deploy script '$(DEPLOY_SCRIPT)' not found"; 		exit 1; 	fi
+diff --git a/packages/foundry/package.json b/packages/foundry/package.json
+index be52fdd..a6dadaa 100644
+--- a/packages/foundry/package.json
++++ b/packages/foundry/package.json
+@@ -12,7 +12,8 @@
+     "compile": "make compile",
+     "deploy": "node scripts-js/parseArgs.js",
+     "flatten": "make flatten",
+-    "fork": "make fork FORK_URL=${1:-mainnet}",
++    "fork": "make fork",
++    "fork:check": "make fork-check",
+     "format": "make format",
+     "postinstall": "shx cp -n .env.example .env",
+     "lint": "make lint",
+
+# Untracked files and status
+ A FORK.md
+ M package.json
+ M packages/foundry/Makefile
+ M packages/foundry/package.json

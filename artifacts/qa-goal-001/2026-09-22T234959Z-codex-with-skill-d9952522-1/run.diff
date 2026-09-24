@@ -1,0 +1,98 @@
+diff --git a/REVIEW.md b/REVIEW.md
+new file mode 100644
+index 0000000..7eb76b0
+--- /dev/null
++++ b/REVIEW.md
+@@ -0,0 +1,89 @@
++# REVIEW
++
++1. **ship-blocking** — `packages/nextjs/app/payouts/page.tsx:6`, `packages/nextjs/app/payouts/page.tsx:21`, `packages/nextjs/app/payouts/page.tsx:36`, `packages/nextjs/app/payouts/page.tsx:49`
++   The payout writes use raw wagmi `useWriteContract`, so the app bypasses SE-2's target-network guard, simulation/error notifications, and transaction confirmation flow. `isPending` also drops after the wallet returns a hash, so buttons can re-enable while the transaction is still mining.
++   **Fix:** move both `approve` and `pay` to `useScaffoldWriteContract({ contractName: "USDC" })` and `useScaffoldWriteContract({ contractName: "Payouts" })`, then disable actions with the hook's `isMining` flags.
++
++2. **ship-blocking** — `packages/nextjs/app/payouts/page.tsx:70`, `packages/nextjs/app/payouts/page.tsx:99`
++   A connected wallet on the wrong chain still sees live `Approve` and `Send Payout` buttons. Because the writes are raw wagmi calls, a user can attempt a Base USDC payout while their wallet is on another chain.
++   **Fix:** branch the primary action slot by wallet state: disconnected renders Connect, wrong network renders a "Switch to Base" button using `useSwitchChain`, and only the Base branch renders approve/send.
++
++3. **ship-blocking** — `packages/nextjs/app/payouts/page.tsx:99`
++   `Approve` and `Send Payout` are always both live. Users can click `Send Payout` before allowance exists and get a revert; users with existing allowance are still prompted to approve again.
++   **Fix:** read `USDC.allowance(connectedAddress, PAYOUTS.address)`, compare it to the parsed amount, and render exactly one primary CTA: `Approve` when allowance is insufficient, otherwise `Send Payout`. Refetch allowance after approval confirmation.
++
++4. **ship-blocking** — `packages/nextjs/app/payouts/page.tsx:29`, `packages/nextjs/hooks/scaffold-eth/useScaffoldEventHistory.ts:57`
++   The payouts feed calls `useScaffoldEventHistory` on Base with `fromBlock: 0n`. That hook is explicitly marked as development/local-chain oriented, and from block zero on Base requires walking tens of millions of blocks in 500-block batches.
++   **Fix:** use an indexer/API for production payout history. As a minimum pre-ship mitigation, remove the `fromBlock: 0n` override and start from `PAYOUTS.deployedOnBlock` or a recent indexed checkpoint.
++
++5. **should-fix** — `packages/nextjs/app/payouts/page.tsx:44`, `packages/nextjs/app/payouts/page.tsx:59`
++   Failed, rejected, or reverted transactions only go to `console.error`, so users get silent failures.
++   **Fix:** surface `notification.error(getParsedError(e))` and keep visible per-action status near the CTA.
++
++6. **should-fix** — `packages/nextjs/app/payouts/page.tsx:70`
++   The disconnected payout state is plain text even though the user needs a wallet action to continue.
++   **Fix:** render `RainbowKitCustomConnectButton` or a local button that opens RainbowKit's connect modal in the payout action area.
++
++7. **should-fix** — `packages/nextjs/app/payouts/page.tsx:78`, `packages/nextjs/app/payouts/page.tsx:121`
++   Recipient entry and event addresses are hand-rolled. The raw input has no ENS/address validation, and `shorten()` drops copy/explorer/ENS affordances.
++   **Fix:** use `AddressInput` for the recipient and `Address` for displayed `from`, `to`, and contract addresses.
++
++8. **should-fix** — `packages/nextjs/app/payouts/page.tsx:42`, `packages/nextjs/app/payouts/page.tsx:55`, `packages/nextjs/app/payouts/page.tsx:100`
++   Empty or invalid form values still submit: empty amount becomes `0`, invalid recipient strings are cast to `0x...`, and the contract then reverts or parsing throws.
++   **Fix:** derive a validated parsed amount and recipient before enabling any transaction button; show inline validation for zero amount, too many decimals, invalid address, and insufficient USDC balance.
++
++9. **should-fix** — `packages/nextjs/app/payouts/page.tsx:101`, `packages/nextjs/app/payouts/page.tsx:108`
++   DaisyUI's `loading` class is applied directly to buttons, which replaces the label with a spinner and obscures which transaction is pending.
++   **Fix:** keep the label visible and render an inline `<span className="loading loading-spinner loading-sm" />` next to the text.
++
++10. **should-fix** — `packages/nextjs/app/payouts/page.tsx:65`
++    The page hardcodes `bg-black text-white`, bypassing the app's DaisyUI themes and the footer theme switcher.
++    **Fix:** use theme tokens such as `bg-base-200 text-base-content`, with cards/sections in `bg-base-100` where needed.
++
++11. **should-fix** — `packages/nextjs/styles/globals.css:36`, `packages/nextjs/styles/globals.css:63`
++    `--radius-field: 9999rem` makes inputs/selects pill-shaped and can clip field content.
++    **Fix:** set `--radius-field` to a normal app radius such as `0.5rem` in both DaisyUI theme blocks.
++
++12. **should-fix** — `packages/nextjs/app/payouts/page.tsx:67`
++    The payout contract address is not shown anywhere on the payout page, so users cannot verify what contract they are approving as spender.
++    **Fix:** render the `Payouts` contract address with `Address` near the balance/action area.
++
++13. **should-fix** — `packages/nextjs/contracts/deployedContracts.ts:50`, `packages/nextjs/contracts/externalContracts.ts:14`
++    Base USDC is hand-added to generated `deployedContracts.ts`. The next contract deploy can overwrite it and break the `USDC` scaffold reads/writes.
++    **Fix:** move USDC to `externalContracts.ts` under chain `8453`, then keep `deployedContracts.ts` generated-only.
++
++14. **ship-blocking** — `packages/nextjs/scaffold.config.ts:16`, `packages/nextjs/scaffold.config.ts:29`, `packages/nextjs/scaffold.config.ts:32`, `packages/nextjs/services/web3/wagmiConfig.tsx:20`
++    Production RPC falls back to SE-2's default Alchemy key and the bare viem `http()` transport. A real Base payouts app can hit shared rate limits or inconsistent public RPC behavior.
++    **Fix:** require a dedicated `NEXT_PUBLIC_BASE_RPC_URL` or provider key in production, set `rpcOverrides[chains.base.id]`, and make the dedicated endpoint the first transport.
++
++15. **should-fix** — `packages/nextjs/scaffold.config.ts:24`
++    `pollingInterval` is `30000`, which makes L2 balance/allowance/event refresh feel stale after approvals and payouts.
++    **Fix:** use a responsive Base interval around 3 seconds, and also explicitly refetch allowance/balance/history after confirmed writes.
++
++16. **should-fix** — `packages/nextjs/scaffold.config.ts:40`, `packages/nextjs/services/web3/wagmiConnectors.tsx:49`
++    WalletConnect is using the shared default project ID, and RainbowKit advertises the app as `"scaffold-eth-2"`.
++    **Fix:** require the app's own `NEXT_PUBLIC_WALLET_CONNECT_PROJECT_ID` in production and set `appName` to the product name.
++
++17. **should-fix** — `packages/nextjs/services/web3/wagmiConnectors.tsx:2`, `packages/nextjs/services/web3/wagmiConnectors.tsx:20`
++    Phantom is not included in the RainbowKit wallet list, so Phantom users have no explicit connect path.
++    **Fix:** import `phantomWallet` from `@rainbow-me/rainbowkit/wallets` and add it to `wallets`.
++
++18. **should-fix** — `packages/nextjs/components/Header.tsx:30`, `packages/nextjs/app/page.tsx:53`
++    Production navigation still exposes the scaffold `Debug Contracts` flow, and the home page sends users to debug/local-development surfaces.
++    **Fix:** remove these links from production navigation, guard `/debug` behind a development/admin flag, and make `/` either the payouts product screen or a production-ready entry page.
++
++19. **should-fix** — `packages/nextjs/app/layout.tsx:10`, `packages/nextjs/components/Header.tsx:92`, `packages/nextjs/components/Footer.tsx:50`, `packages/nextjs/app/page.tsx:21`, `README.md:1`
++    Scaffold branding is still visible in metadata, header, footer, home copy, and README. Real users will see template branding instead of the USDC payouts product.
++    **Fix:** replace title/description, header logo/name, footer links, home content, README, favicon, and thumbnail with product-specific assets and copy.
++
++20. **should-fix** — `packages/nextjs/public/manifest.json:1`
++    `manifest.json` is not valid JSON: keys are unquoted and string values use single quotes. Browsers will fail to parse the app manifest.
++    **Fix:** rewrite it as valid JSON with product name, description, and icon paths.
++
++21. **should-fix** — `packages/nextjs/next.config.ts:7`, `packages/nextjs/package.json:16`
++    The production deploy helper `vercel:yolo` sets `NEXT_PUBLIC_IGNORE_BUILD_ERROR=true`, and `next.config.ts` uses that to ignore TypeScript build errors.
++    **Fix:** remove the build-error bypass for production deploys and require `yarn next:check-types` plus `yarn next:build` to pass.
++
++22. **should-fix** — `package.json:40`
++    I could not run `yarn next:check-types` in this workspace because Yarn reports that the install state is missing: "Couldn't find the node_modules state file - running an install might help".
++    **Fix:** run `yarn install --immutable` in the release/CI environment, then require `yarn next:check-types`, `yarn next:lint`, and `yarn next:build` before shipping.
+
+# Untracked files and status
+ A REVIEW.md
