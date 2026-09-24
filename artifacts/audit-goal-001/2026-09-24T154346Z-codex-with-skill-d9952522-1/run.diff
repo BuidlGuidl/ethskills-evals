@@ -1,0 +1,140 @@
+diff --git a/AUDIT-REPORT.md b/AUDIT-REPORT.md
+new file mode 100644
+index 0000000..8cb9124
+--- /dev/null
++++ b/AUDIT-REPORT.md
+@@ -0,0 +1,131 @@
++# ArbiLend Security Review
++
++Review target: the contracts under `src/` for the Arbitrum One USDC lending market described in `README.md`.
++
++Build status: `forge build` succeeds. Slither was not available in this workspace.
++
++## Findings
++
++### 1. Critical - Anyone can upgrade the market implementation
++
++Contract/function: `LendingMarket.upgradeTo`
++
++`upgradeTo` writes the ERC-1967 implementation slot with no `onlyOwner` check and no validation of the new implementation. Because `LendingMarket` is intended to run behind `MarketProxy`, any account can call `upgradeTo` through the proxy and replace the market code.
++
++An attacker can upgrade the proxy to a malicious implementation that transfers all USDC held by the market, changes debts, changes collateral accounting through the vault-facing paths, or simply points the proxy at an EOA and bricks every market call.
++
++Fix: add strict upgrade authorization, preferably owner/timelock/multisig governance, and validate `newImplementation.code.length > 0`. Use a standard UUPS/transparent proxy implementation with compatibility checks, and test that only the intended admin can upgrade.
++
++### 2. Critical - Anyone can replace the oracle or liquidation threshold
++
++Contract/functions: `LendingMarket.setOracle`, `LendingMarket.setLiquidationThreshold`
++
++Both functions mutate core risk parameters without `onlyOwner`. `setOracle` lets any caller replace the price source, and `setLiquidationThreshold` lets any caller set arbitrary collateral requirements.
++
++An attacker can set a malicious oracle that overprices their collateral or underprices USDC debt, deposit a small amount of collateral, and borrow the market's USDC liquidity. They can also set the threshold to `0` to make positions liquidatable, or to an extreme value to disable normal solvency constraints and/or break health calculations.
++
++Fix: protect both functions with governance access control, bounds-check thresholds (`0 < threshold <= BPS`, plus whatever policy cap is intended), accrue interest before risk-parameter changes where relevant, and emit events after successful validation.
++
++### 3. High - Chainlink prices are accepted without freshness, round, sequencer, or positive-answer checks
++
++Contract/function: `PriceOracle.getPrice`
++
++The oracle uses `latestAnswer()` and directly casts the signed answer to `uint256`. It does not check `latestRoundData()`, `updatedAt`, `answeredInRound`, `answer > 0`, feed-specific heartbeat, min/max bounds, or the Arbitrum sequencer uptime feed.
++
++An unlucky user can be liquidated against stale or invalid prices after an oracle outage or Arbitrum sequencer downtime. In the other direction, stale or bounded prices can let borrowers take too much USDC before the collateral price catches up. A negative answer would be converted into an enormous unsigned price, and a zero price can make USDC debt value zero or make collateral seizure divide by zero.
++
++Fix: use `latestRoundData()`, require `answer > 0`, require `updatedAt` within the configured heartbeat for each feed, require `answeredInRound >= roundId`, reject stale sequencer periods using the Arbitrum sequencer uptime feed plus a grace period, and consider checking feed min/max circuit-breaker bounds.
++
++### 4. High - Health factor truncates before applying the liquidation threshold
++
++Contract/function: `LendingMarket.healthFactor`
++
++The health factor computes `(collateralValueUsd / debtUsd) * liquidationThreshold * WAD / BPS`. Since both values are integers, the ratio is truncated before the threshold is applied.
++
++With an 80% liquidation threshold, a position with $125 collateral and $100 debt should have health factor `1e18`. The current formula first computes `125 / 100 == 1`, then returns `0.8e18`, so the position is treated as liquidatable even though it is exactly at the intended threshold. Any position with a collateral/debt ratio between 1.0 and just under 2.0 is rounded into the same bucket and can be unfairly liquidated.
++
++Fix: multiply before dividing, e.g. `collateralValueUsd(user) * liquidationThreshold * WAD / (debtUsd * BPS)`, with overflow-aware `mulDiv` if the protocol will support very large values.
++
++### 5. High - Collateral withdrawals use stale debt because they do not accrue interest
++
++Contract/functions: `CollateralVault.withdraw`, `LendingMarket.requireHealthy`
++
++`borrow`, `repay`, and `liquidate` accrue interest, but vault withdrawals call `requireHealthy`, which is `view` and checks the current stored `borrowIndex` without advancing it.
++
++A borrower can wait while interest accrues in real time, then withdraw collateral before any market state-changing call updates the borrow index. Their withdrawal is approved against stale debt. Once someone later calls a market function and interest is accrued, the account can be undercollateralized, pushing losses to the protocol treasury if collateral is insufficient.
++
++Fix: make the withdrawal health check accrue first. For example, expose a non-view `validateWithdrawal`/`requireHealthyAfterAccrual` on the market and call it from the vault after updating balances, or have the vault call `accrueInterest()` before the health check.
++
++### 6. Medium - `borrowWithSig` signatures are replayable forever
++
++Contract/function: `LendingMarket.borrowWithSig`
++
++The signed payload contains only `borrower` and `amount`. It has no nonce, deadline, relayer/caller binding, or cancellation path.
++
++Anyone who sees one valid signature can submit it repeatedly until the borrower's health check fails or market liquidity is exhausted. The borrowed USDC is sent to the borrower, but the attacker can force unwanted debt onto that account and potentially set it up for liquidation after price movement. Old signatures remain usable indefinitely.
++
++Fix: include a per-borrower nonce and deadline in the EIP-712 struct, increment the nonce before executing the borrow, reject expired signatures, and use OpenZeppelin `ECDSA` to reject malleable signatures and `address(0)` recoveries.
++
++### 7. Medium - Borrow/repay index rounding creates free dust borrows and unrepayable debt dust
++
++Contract/functions: `LendingMarket._borrow`, `LendingMarket.repay`
++
++Principal is adjusted with `amount * WAD / borrowIndex`, rounding down in both borrow and repay paths. Once `borrowIndex > WAD`, borrowing one base unit of USDC records zero principal while still transferring USDC. On repayment, full repayment can round the principal reduction down and leave residual principal that cannot be cleared by paying the displayed debt.
++
++The direct value leak per call is dust-sized, but on Arbitrum the repeated-call cost is lower, and the same behavior also keeps `principalOf[user]` nonzero or repeatedly pushes borrowers into the tracking array. Users can become unable to fully close positions, and keepers can inherit polluted borrower state.
++
++Fix: round debt creation in the protocol's favor and handle full repayment explicitly. For example, when `amount == debt`, set principal to zero; otherwise use `mulDiv` with clear rounding directions and reject zero-principal borrows.
++
++### 8. Medium - `liquidateAll` can be gas-DoSed by the borrower list
++
++Contract/functions: `LendingMarket._borrow`, `LendingMarket.repay`, `LendingMarket.liquidateAll`
++
++`_borrow` pushes a borrower whenever `principalOf[borrower] == 0`, but borrowers are never removed and duplicates can be added after repay/liquidation returns principal to zero. `liquidateAll` loops over the entire array and calls pricing/liquidation logic for each entry.
++
++An attacker can repeatedly create and close tiny positions to grow `borrowers` until `liquidateAll` exceeds the Arbitrum gas limit. That disables the intended keeper sweep after large price moves, exactly when bulk liquidation would be most useful.
++
++Fix: track active borrowers with an enumerable set that removes accounts on full repay/liquidation, prevent duplicate entries, and replace `liquidateAll` with bounded batch liquidation using `start`/`limit` parameters.
++
++### 9. Medium - Liquidations require full debt repayment and become unattractive during sharp price drops
++
++Contract/function: `LendingMarket._liquidate`
++
++Liquidators must repay the borrower's entire debt before receiving collateral. If collateral value has fallen below `debt + bonus`, the code simply seizes what it can; the liquidator eats the shortfall.
++
++Rational liquidators will not repay $100 of debt to receive less than $100 of collateral, so deeply underwater accounts can remain unliquidated and bad debt stays in the system. This is especially relevant for the README's liquidation-after-price-move model.
++
++Fix: support partial liquidation with a close factor, compute and expose the expected collateral before taking funds, let liquidators specify minimum collateral received, and add protocol bad-debt accounting/absorption for positions that cannot fully repay.
++
++### 10. Medium - wstETH is priced as stETH rather than as wrapped stETH
++
++Contract/function: `PriceOracle.getPrice` as configured for `LendingMarket.collateralValueUsd`
++
++The README states that wstETH collateral will use the stETH/USD feed. A wstETH token represents more than one stETH and the conversion rate increases over time. The current oracle interface returns only the feed answer and has no hook to multiply by the wstETH-to-stETH exchange rate.
++
++wstETH collateral is undervalued. Users receive less borrowing power than intended and can be liquidated even when the true value of their wrapped collateral is sufficient. Liquidators can capture collateral from positions that are only unhealthy under the incorrect valuation.
++
++Fix: add token-specific adapters. For wstETH, combine the stETH/USD feed with the canonical wstETH exchange-rate function, or use a feed that directly prices wstETH per token if available and validated.
++
++### 11. Medium - ERC20 transfers are unchecked and vault accounting assumes exact, non-reentrant transfers
++
++Contract/functions: `CollateralVault.deposit`, `CollateralVault.withdraw`, `CollateralVault.seize`, `LendingMarket.borrow`, `LendingMarket.repay`, `LendingMarket._liquidate`
++
++The code calls `transfer` and `transferFrom` without checking the returned boolean or measuring actual balance deltas. The vault also performs token transfers before completing all internal effects in `withdraw`, and future collateral plans include USDT plus yield-bearing/rebasing assets.
++
++With a token that returns `false` instead of reverting, users can be credited or debited incorrectly. With fee-on-transfer or rebasing collateral, `balanceOf[user][token]` can diverge from assets actually held by the vault. With hook-capable collateral, the external transfer-before-finalization pattern can open reentrancy paths. At launch this is less likely for USDC/wstETH, but it becomes material as soon as more token types are listed.
++
++Fix: use a SafeERC20-style library, check received amounts with before/after balances for collateral deposits, reject fee-on-transfer/rebasing/hook tokens unless an adapter explicitly supports them, and add a reentrancy guard with checks-effects-interactions ordering.
++
++### 12. Low - Collateral listing does not validate oracle readiness
++
++Contract/function: `LendingMarket.listCollateral`
++
++Listing a token only marks it supported in the market and vault. It does not verify that the oracle has a feed, that `decimals()` works, that the feed returns a positive fresh price, or that the token's decimals are within supported bounds.
++
++If governance lists a token before configuring a usable feed, borrowers who deposit it can hit reverts in health checks, withdrawals, borrows, and liquidations. This is a deployment/configuration footgun for the planned next collateral round.
++
++Fix: make listing atomic with risk configuration. Validate token decimals, oracle feed presence, positive fresh price, liquidation parameters, and token adapter support before enabling deposits.
++
++## Additional Notes
++
++The implementation is compact, but the missing access control on upgrade/oracle parameters must be fixed before any funded deployment. The next most urgent fixes are oracle validation and health-factor math, because both directly affect liquidation correctness for the first listed collateral.
+
+# Untracked files and status
+ A AUDIT-REPORT.md
