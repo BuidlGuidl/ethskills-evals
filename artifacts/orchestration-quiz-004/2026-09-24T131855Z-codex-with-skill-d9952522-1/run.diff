@@ -1,0 +1,102 @@
+diff --git a/FORK.md b/FORK.md
+new file mode 100644
+index 0000000..4f95014
+--- /dev/null
++++ b/FORK.md
+@@ -0,0 +1,93 @@
++# Forking Base Locally
++
++The old onboarding note says:
++
++```sh
++yarn fork base
++cast chain-id --rpc-url http://127.0.0.1:8545
++```
++
++That note proves the local node answers, but it does not prove the fork is Base.
++
++## What went wrong
++
++In this repo, the root script is only a wrapper:
++
++```json
++"fork": "yarn foundry:fork",
++"foundry:fork": "yarn workspace @se-2/foundry fork"
++```
++
++The Foundry workspace script reads the network from shell positional argument `$1`, and falls back to `mainnet` when `$1` is empty:
++
++```json
++"fork": "make fork FORK_URL=${1:-mainnet}"
++```
++
++The Makefile then starts Anvil with whatever `FORK_URL` was set to, but always gives the local fork chain id `31337`:
++
++```make
++fork: setup-anvil-wallet
++	anvil --fork-url ${FORK_URL} --chain-id 31337
++```
++
++The Base RPC alias exists in `packages/foundry/foundry.toml`:
++
++```toml
++mainnet = "https://eth-mainnet.alchemyapi.io/v2/${ALCHEMY_API_KEY}"
++base = "https://mainnet.base.org"
++```
++
++With this Yarn script shape, `yarn fork base` does not populate `$1` for the workspace script. A dry run shows the problem:
++
++```sh
++$ MAKEFLAGS=-n yarn fork base
++anvil --fork-url mainnet --chain-id 31337
++```
++
++So the local node is healthy, transactions mine, and `cast chain-id` returns a chain id, but the upstream fork is Ethereum mainnet. Base USDC at `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` is not deployed at that address on Ethereum mainnet, so reads against it come back as empty `0x` / no contract code.
++
++`cast chain-id` missed this because the Makefile forces the local Anvil chain id to `31337` for every fork, regardless of whether the upstream state is Base, mainnet, or some other chain.
++
++## Correct command
++
++Start the Base fork with:
++
++```sh
++yarn fork --network base
++```
++
++Dry run:
++
++```sh
++$ MAKEFLAGS=-n yarn fork --network base
++anvil --fork-url base --chain-id 31337
++```
++
++That uses the `base` RPC endpoint from `packages/foundry/foundry.toml`, which is currently:
++
++```toml
++base = "https://mainnet.base.org"
++```
++
++## Check the fork is really Base
++
++After starting the fork, check Base-specific state instead of only checking the local chain id:
++
++```sh
++USDC=0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
++cast code --rpc-url http://127.0.0.1:8545 $USDC
++```
++
++On a Base fork this returns contract bytecode, not `0x`. On the accidental mainnet fork it returns `0x`.
++
++An even stronger check is to call the token:
++
++```sh
++cast call \
++  --rpc-url http://127.0.0.1:8545 \
++  0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 \
++  "decimals()(uint8)"
++```
++
++Expected result on a Base fork: `6`. If the call returns empty data or cannot decode, the local RPC may be up, but it is not a fork with Base USDC deployed at that address.
+
+# Untracked files and status
+ A FORK.md

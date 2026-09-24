@@ -28,6 +28,45 @@ export const requireString = (value: unknown, name: string) => {
   return value;
 };
 
+// One token, so it can name a manifest entry or a dir without quoting.
+const BENCHMARK_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+export const parseBenchmark = (value: string) => {
+  if (!BENCHMARK_ID.test(value)) {
+    throw new Error(`benchmark id must be letters, digits, '.', '_' or '-', starting with a letter or digit: ${value}`);
+  }
+
+  return value;
+};
+
+// A field that a record may carry, may set to null, or may not have at all: absent and null
+// both read as null, anything else still has to be a string. The alternative is the same
+// `undefined || null ? null : requireString` ternary copied at every optional field, which is
+// where the operand order drifts.
+export const nullableString = (value: unknown, name: string) =>
+  value === undefined || value === null ? null : requireString(value, name);
+
+// A flag that may be absent. parseArgs stores a valueless flag as `true`, so requireString
+// is what turns `--model --effort low` into an argument error rather than a model named
+// "true"; absent stays null for the caller to resolve or refuse.
+export const optionalArg = (args: Record<string, string | boolean>, flag: string) =>
+  args[flag] === undefined ? null : requireString(args[flag], `--${flag}`);
+
+// For build-index, which reads records leniently so one bad file cannot stop the site — but
+// not silently: an unquoted `benchmark: 2026-09-17` loads as a Date, and reading it as null
+// would drop the run out of its benchmark, the one thing the field exists to prevent.
+export const readBenchmark = (value: unknown): { benchmark: string | null; warning: string | null } => {
+  if (value === undefined || value === null) {
+    return { benchmark: null, warning: null };
+  }
+
+  if (typeof value === "string") {
+    return { benchmark: value, warning: null };
+  }
+
+  return { benchmark: null, warning: `benchmark is not a string (${JSON.stringify(value)}); quote it in result.yaml` };
+};
+
 export const requireNumber = (value: unknown, name: string) => {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     throw new Error(`missing required numeric field: ${name}`);

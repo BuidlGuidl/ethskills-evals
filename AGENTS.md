@@ -17,7 +17,7 @@ Ask one question, wait for the answer, then ask the next. Never batch them. **Wi
 
 **Step 3 — the expectations.** Draft the `expect:` lines and show them. These are the whole grading surface, so make them concrete enough that the judge cannot bluff: name the file, the magnitude, the derivation you want to see. "Does it look right" is not an expect line. Ask the human whether these are the right conditions, and whether any are missing.
 
-**Step 4 — how to run it.** Ask which executor (`claude` or `codex`) and how many runs per variant. Recommend `runs: 3`; fewer is noise. Runs on different executors or models are different benchmarks, so never blend them in one table.
+**Step 4 — how to run it.** Ask which executor (`claude`, `codex` or `opencode`) and how many runs per variant. Recommend `runs: 3`; fewer is noise. Runs on different executors or models are different benchmarks, so never blend them in one table. In the same question, propose the benchmark id every `setup` will carry (see `--benchmark` under "The loop"): the one the human named, or else a readable one you pick, `2026-09-clean` say. One id per comparison, not per task.
 
 Then write `tasks/<id>.yaml` and run the loop. Report back at the end, not during.
 
@@ -25,15 +25,15 @@ Then write `tasks/<id>.yaml` and run the loop. Report back at the end, not durin
 
 The skills under `skills/` are vendored at a pinned commit, and a task spec may already exist under `tasks/`. When it does:
 
-1. Ask exactly one question: the stack. Detect which harness you are running on and propose running everything on it — executor and judge both (claude → opus, codex → the model the harness reads out of `~/.codex/config.toml` and passes explicitly, see "The three roles"). One skill runs on one stack, start to finish. A second stack is a separate benchmark with its own runs and report, never blended into one table.
-2. Run the loop as written, grading every run with `--judge-agent <your agent> --judge-model <your model>`.
+1. Ask exactly one question: the stack. A stack is the agent, the model and the effort. Detect which harness you are running on and propose running everything on it — executor and judge both (claude → opus at the effort you are running at, codex → the model and `model_reasoning_effort` the harness reads out of `~/.codex/config.toml` and passes explicitly, see "The three roles"). An open model is a stack too: `opencode` as executor with the model named as opencode names it (`openrouter/moonshotai/kimi-k3`, `openrouter/z-ai/glm-5.3` — the provider is part of the name, on the site too) at an effort its catalog entry lists (`low`, `high` or `max` for both). If you are opencode yourself, you can orchestrate — the loop below has been run from opencode start to finish — but you cannot judge, so propose a claude or codex judge and name it in every `verify`. One skill runs on one stack, start to finish. A second stack, including the same model at another effort, is a separate benchmark with its own runs and report, never blended into one table. Propose the benchmark id in the same breath — the one the human named, or a readable one you pick — so `setup` has it without a second question.
+2. Run the loop as written, grading every run with `--judge-agent <your agent> --judge-model <your model> --judge-effort <your effort>`.
 3. File the results PR titled `eval: <skill> (<stack>)`, report included.
 
 ## The loop
 
-1. `yarn setup --task tasks/<id>.yaml --variant <no_skill|with_skill> --run <n> --executor <claude|codex>` — builds `<run-dir>/workspace`, seeds it as its own git repo and records the baseline sha in `<run-dir>/baseline.sha`.
-2. `yarn run-executor --run artifacts/<id>/<run-id> --model <model>` — spawns the executor in that workspace on `TASK.md`, saves the transcript, records when it finished. Long runs: start it detached (`nohup yarn run-executor … &`) and wait for `finished:` in `executor.yaml`, because a harness that kills the foreground process kills the run.
-3. `yarn verify --run artifacts/<id>/<run-id> --judge-agent <claude|codex> --judge-model <model>` — assembles evidence, runs the judge, fills `result.yaml`. Use the same judge for every run in the benchmark.
+1. `yarn setup --task tasks/<id>.yaml --variant <no_skill|with_skill> --run <n> --executor <claude|codex|opencode> --benchmark <id>` — builds `<run-dir>/workspace`, seeds it as its own git repo and records the baseline sha in `<run-dir>/baseline.sha`.
+2. `yarn run-executor --run artifacts/<id>/<run-id> --model <model> --effort <effort>` — spawns the executor in that workspace on `TASK.md`, saves the transcript, records when it finished. Long runs: start it detached (`nohup yarn run-executor … &`) and wait for `finished:` in `executor.yaml`, because a harness that kills the foreground process kills the run.
+3. `yarn verify --run artifacts/<id>/<run-id> --judge-agent <claude|codex> --judge-model <model> --judge-effort <effort>` — assembles evidence, runs the judge, fills `result.yaml`. Use the same judge for every run in the benchmark.
 4. Repeat for every variant and run.
 5. Compare. The headline is raw pass counts per variant (`with_skill 2/3 vs no_skill 0/3`). Read per-check failures, not just the aggregate.
 6. File a mistake record in `mistakes/` the first time you see a mistake. `frequency: 1/1` is honest about weak evidence; an unfiled observation is lost.
@@ -41,6 +41,23 @@ The skills under `skills/` are vendored at a pinned commit, and a task spec may 
 8. Recommend skill edits only where a mistake record shows a real gap.
 
 Runs are append-only. A re-run after a patch is a new run id, never an overwrite.
+
+**`--benchmark <id>` names the comparison a run belongs to**, and every run of one comparison
+carries the same id: same task set, same expect lines, same skill text, one model and effort
+per column, `k` runs per variant, one judge. The site selects runs by this id, so it is what
+keeps a run made for a benchmark apart from a run made by hand a day later on the same model.
+Pick one readable name per benchmark, `2026-09-clean` say, and use it for every `setup` in it;
+if the benchmark has to start over (a task reworded, so its runs are made again), that is a new
+id, and the old runs stay in `artifacts/` under theirs. `setup` refuses to run without one. A
+rubric fix is not a restart: its regrades inherit the source run's id, and `expect_sha` is what
+tells the readings apart.
+
+**A benchmark several people run gets a skill**, `.agents/skills/benchmark-<name>/SKILL.md`,
+with `.claude/skills/benchmark-<name>` a symlink to it so claude lists it too. It pins what every
+operator has to agree on — the id, the commit, the arms, the stacks, the judge, the run count —
+so the human names only the skill to run, and nobody's defaults leak into a column. This file
+stays the general loop; the skill says only what is particular to that benchmark. Open one when
+the human asks to run a benchmark that has one (`benchmark-major-refine` is #119).
 
 **Editing an expect line is the one exception**, and it is still not an overwrite — see
 "Revising expect lines" below. A rubric fix is not a new measurement, so re-running the
@@ -53,7 +70,7 @@ the two.
 1. **Never perform the task yourself.** Your context is contaminated by definition. Every run is a fresh executor. If you catch yourself editing files inside a workspace, stop, delete the run, start over.
 2. **The executor never sees the grading.** The task yaml and its expect lines stay out of the workspace. `setup` hard-fails on leaks; do not work around it.
 3. **Always use the scripts** — setup, execution, grading. All three. Improvisation at any of them quietly corrupts records, and spawning executors by hand is what once left runs graded before they finished and workspaces deleted under live processes.
-4. **Grade after execution, independently.** Never let an executor self-report success. `verify` requires `--judge-agent`, so the grading agent is always a stated choice; add `--judge-model` to grade on the orchestrator's model. When judge and executor are the same agent the record says `self_judged: true` — expected on a single-stack benchmark, and the report has to say so.
+4. **Grade after execution, independently.** Never let an executor self-report success. `verify` requires `--judge-agent`, `--judge-model` and `--judge-effort` (codex takes the last two from `~/.codex/config.toml` when they are not passed), so the grading stack is always a stated choice and `result.yaml` names it under `judge:`. When judge and executor are the same agent the record says `self_judged: true` — expected on a single-stack benchmark, and the report has to say so.
 5. **One executor per workspace, one run at a time per workspace.** `run-executor` refuses a second pass over a workspace that already ran. Runs in different workspaces are independent — each has its own git repo — but never point two processes at one run dir.
 6. **`verify` deletes the workspace once it has graded it.** Evidence is captured into `<run-dir>/run.diff` or `<run-dir>/output/` first and both are committed, so nothing is lost. Pass `--keep-workspace` when you mean to dig through it afterwards — it holds the workspace until the next `clean-workspaces --delete`, which counts a graded run's workspace as spent, so dig through it before you sweep. Grading cannot start until `executor.yaml` says the executor finished, which is what keeps a live run from being graded and deleted under itself. Every other ending orphans a workspace — a killed executor never gets graded, and deleting its run dir to start over (rules 1 and 3) deletes the only record of where its workspace is. `yarn clean-workspaces` lists what can be reclaimed — a workspace whose run dir is gone, and one whose run is already graded, which covers `--keep-workspace` and a cleanup that failed after the grade was written — and `--delete` removes them; run it after a benchmark, from the checkout that made the runs, or live runs in another worktree look like orphans. If the runs were made with `EVAL_WORKSPACE_ROOT` set, sweep that root: `--root <path>`, or the same variable in the environment. That variable is read by all three commands, not just `setup` — export it for the whole benchmark or `run-executor` and `verify` will look for the workspace under the default root.
 
@@ -64,28 +81,34 @@ the two.
 **Executor**: a freshly spawned agent that performs one run in a clean workspace.
 
 ```bash
-yarn run-executor --run artifacts/<id>/<run-id> --model <model>
+yarn run-executor --run artifacts/<id>/<run-id> --model <model> --effort <effort>
 ```
 
 The script builds the executor's command, so the flags that matter cannot be forgotten: `--setting-sources project` for claude (user-level config crowds the skill listing and skills stop triggering), and for codex `sandbox_workspace_write.network_access=true` (`workspace-write` blocks network by default, so without it every live-data task fails for the wrong reason) plus `--disable shell_snapshot` (codex otherwise sources a snapshot of the operator's interactive shell into every command; one unparseable line in it takes the executor's shell down for the whole run, and a run that cannot open a file grades as a skill that did not help) and `--ephemeral` (the codex home below is shared by every run on the machine, and without it each run's session log lands there for the next run to find). The codex judge carries both flags too. The same exposure on the claude side is still open: `--setting-sources project` governs settings-file discovery only, and claude snapshots the operator's shell the same way. Two limits on that codex flag worth stating: it removes the snapshot, not the login shell — codex still runs every command through `/bin/bash -lc`, so `/etc/profile` and the operator's `~/.bash_profile` are sourced with it on — and it does not fail open, because an unrecognised feature name exits 1 before the run starts and `verify` refuses a non-zero exit, so a codex rename surfaces as a dead run rather than as a flag that quietly stopped applying.
 
 Codex also runs with `CODEX_HOME` pointed at `.codex-home/` in this repo, built by `lib/codex-home.ts`: the harness puts a generated `config.toml` and a symlink to the operator's `auth.json` there, and nothing of the operator's beyond that. Flags do not cover this: `--ignore-user-config` drops `config.toml` alone, while `~/.codex/skills`, `plugins/`, `rules/` and `memories` load by directory discovery, so an operator with a global codex skill on the task's subject contaminates the `no_skill` variant and nothing in the record shows it. Codex fills the rest of the dir in itself as it runs — its own bundled skills, plugin cache and state dbs — which is machine-local and the same for every operator, and `--ephemeral` keeps run content (`sessions/`, `history.jsonl`) out of it so one run's skill text cannot reach the next one. The judge runs under the same home. Delete `.codex-home/` any time; the next run rebuilds it.
 
-Omit `--model` to let the CLI pick its own default; whatever ran is recorded in `executor.yaml` and copied into `result.yaml`. For codex that default is now the harness's business: since the redirect means codex reads no `~/.codex/config.toml`, `run-executor` and `verify` read the operator's top-level `model =` out of it themselves and pass it on the command line, so the model in the record is the model that ran. The operator's top-level `model_reasoning_effort =` travels the same way, on argv and into `executor.yaml` as `reasoning_effort`, because it moves the answer as much as the model does and a benchmark cannot straddle a silent change to it. A value set only under a `[profile]` table is not picked up — the harness says so and records `null` rather than naming a setting the run never used.
+Opencode is the route to open models, and runs on OpenRouter only: `OPENROUTER_API_KEY` must be set, and the model is named the way opencode names it (`openrouter/<vendor>/<model>`, e.g. `openrouter/moonshotai/kimi-k3` — `opencode models` lists them). Its isolation is all environment, built by `lib/opencode-home.ts`, and it takes more levers than codex's one variable. The child environment is rebuilt without every `OPENCODE_*` and `OTEL_*` variable and without every provider key the models catalog names, `OPENROUTER_API_KEY` included: a key in the environment enables its provider, and the bash tool inherits the environment, so a debugging `env` would put the key in a committed transcript. That list is the catalog's, not a list of AI vendors — it takes `GITHUB_TOKEN`, `AWS_*`, `HF_TOKEN`, `GOOGLE_APPLICATION_CREDENTIALS` and `CLOUDFLARE_API_TOKEN` with it — so an opencode run's shell is poorer than a claude or codex run's in those, which no task here has needed yet; a task that does needs the filter narrowed first. The OpenRouter key goes into an `auth.json` in the run's own data dir instead, deleted when the run ends, and every run start sweeps the keys of run-executors that were killed before they could. `XDG_CONFIG_HOME` points at a shared, settings-free config dir under `.opencode-home/`, and `XDG_DATA_HOME` / `XDG_STATE_HOME` at a dir per run under `.opencode-home/runs/`, because opencode's data dir carries `tool-output/` and workspace snapshots a later run can read — codex's `--ephemeral`, by another route. `~/.opencode` and the managed dirs (`/etc/opencode`, on macOS also `/Library/Application Support/opencode` and an opencode plist under `/Library/Managed Preferences`) cannot be redirected, so `run-executor` refuses to start while they hold anything opencode would load (skills, agents, commands, plugins, tools, an `opencode.json`); opencode's own npm install in `~/.opencode` does not count. The same check runs over the harness's shared config dir, the one place every run reads that a run can also write to: an `AGENTS.md` or a `skills/` an executor put there is a refusal, not something to clean up quietly. `OPENCODE_DISABLE_EXTERNAL_SKILLS` drops the `.claude/` and `.agents/` skill dirs, global and project alike — there is no switch that keeps the project copy and drops `~/.agents/skills` — so the skill under test is installed at `.opencode/skills/` for opencode runs, the one place left that opencode reads; `OPENCODE_DISABLE_CLAUDE_CODE` drops `~/.claude/CLAUDE.md`. `OPENCODE_CONFIG_CONTENT` carries the harness's own settings, which outrank any `opencode.json` in the workspace: sharing off (an operator's `share: auto` would publish the session), the `task` tool off (subagent spend never reaches the parent session's usage events, and `--auto` never answers a subagent's permission prompt, so a run that delegated would under-report or hang), and `small_model` pinned to the run's model. `PWD` is set to the workspace, because opencode takes its project root from `$PWD` ahead of the cwd it was spawned in — inherited from the orchestrator's shell, that made the first run treat this repo as its project, read this file and write its answer here (`--dir` is passed as well).
+
+The models catalog is pinned. opencode refreshes `~/.cache/opencode/models.json` hourly and reads a model's accepted efforts and prices from it, so a benchmark would otherwise straddle a catalog change: the first opencode run copies the operator's catalog to `.opencode-home/models.json`, every run reads that copy (`OPENCODE_MODELS_PATH`, fetching off), `executor.yaml` records its hash as `models_catalog`, and `--effort` is checked against the `effort` entry in the model's `reasoning_options` — `kimi-k3` and `glm-5.3` take `low`, `high`, `max`, and no `medium`. Only that entry counts: a reasoning model without one (127 of the 247 OpenRouter reasoning models on the 2026-09-16 catalog, the qwen and deepseek lines among them) takes no effort on OpenRouter, so it is refused rather than recorded with one. The check has to be here because opencode accepts any `--variant` and silently runs at the model's default when it knows none of that name, which is a record naming an effort that never ran. Delete the pinned copy to re-pin a fresher catalog — the hash in the record is what shows a benchmark straddled that; a model that is not in it is refused. On argv the run gets `--auto` (approve every permission, claude's `--dangerously-skip-permissions`), `--format json` (the only place opencode reports tokens and its price) and `--title` (without it opencode makes a separate model call to name the session, which reports no usage). Web search is on (`OPENCODE_ENABLE_EXA`), because claude and codex search out of the box; without `EXA_API_KEY` it goes through Exa's shared endpoint. Its bash tool runs every command as `$SHELL -c` — neither login nor interactive — so a zsh operator's `.zshrc` and `.zprofile` stay out (checked 2026-09-16: 2 aliases and 0 functions inside the run against 5 and 8379 in the operator's interactive shell), and only `~/.zshenv` is sourced, which is where `PATH` entries such as foundry's come from. A smaller exposure than codex's `bash -lc`, but the same kind: `$SHELL` and `.zshenv` are the operator's.
+
+What the record does not hold for an opencode run is who served it. OpenRouter routes `kimi-k3` and `glm-5.3` per request across providers that serve different quantizations and context limits behind one name, opencode sends no provider preferences, and the harness sets none — pinning takes a provider order it has no basis to choose. So "same model" on OpenRouter is the same name, not the same weights on the same hardware, across runs and even across the steps of one run. That is a gap in the stack rule, stated here rather than closed.
+
+Every run names its model and its effort, because the effort moves the answer as much as the model does and a benchmark cannot straddle a silent change to either. Both travel on argv and into `executor.yaml` (`model`, `reasoning_effort`), then into `result.yaml` (`executor_model`, `executor_reasoning_effort`). There is no CLI default to fall back on: `run-executor` refuses to start, before it writes `executor.yaml`, when either one cannot be resolved. For claude, `--model` and `--effort` (`low`, `medium`, `high`, `xhigh`, `max`) are both required; for opencode likewise, with `--effort` one of the values the model's entry in the pinned catalog lists (see below). The stacks do not take the same set — codex also takes `none` and `minimal` — and each is checked against its own, because codex validates nothing itself: an unknown effort reaches the API, which refuses it once the run is already under way. For codex, the flags win, and without them the harness reads the operator's top-level `model =` and `model_reasoning_effort =` out of `~/.codex/config.toml` itself, since the redirect means codex reads none of it. A value set only under a `[profile]` table is not picked up, so without a flag it is refused rather than recorded as a setting the run never used. Runs made before this rule carry no effort, and the site shows them as "effort unrecorded". Leave them that way: a codex `transcript.md` header saying `reasoning effort: none` is the CLI reporting that nothing was set, not the API value `none` — every one of the 73 codex runs recording `reasoning_effort: null` prints it — so headers cannot be used to backfill the field. What the record names is what the harness passed, which is not always what the model ran at: a `maxEffortLevel` in the workspace's own settings, or a model with no effort support, can clamp or drop it, and nothing downstream can see that. No template sets one today; if one ever does, say so in the report.
 
 It writes `<run-dir>/transcript.md` beside the raw capture, and `<run-dir>/executor.yaml` with `started`, `finished`, `exit`. A run whose `finished` is still null was killed — including by Ctrl-C, which leaves the record untouched on purpose: it is a dead run, not a zero. Delete it and set up a new one. A run that finished with a non-zero exit is refused by `verify` unless you pass `--grade-failed-run`, so a CLI that was missing or crashed cannot be recorded as a model failure. The same refusal covers the runs the exit code cannot see: `executor.err` is scanned for the signatures of an executor that had no working shell (`Shell snapshot validation failed`, `bwrap:`), because those exit 0 and read as a model that chose not to look at anything. `run-executor` scans first and exits non-zero itself, so the loop stops on the run that broke rather than on the `verify` two steps later; `verify` scans again for runs launched by hand. Only the executor's own signatures are matched, and only up to its first successful command — past that the capture is the run's output, and this repo's own files hold both signatures verbatim. `--grade-failed-run` overrides both refusals and writes `harness_failure:` into `result.yaml` so a run graded over one is never mistaken for a clean one. Add a signature to `SHELL_FAILURES` in `lib/executor-health.ts` whenever a new way of losing the shell turns up.
 
-`transcript.md` means the same thing on both stacks, which takes assembling: claude streams the whole session as stream-json on stdout, while codex writes the session log to stderr and leaves only the final message on stdout. Mine transcripts from `transcript.md` alone; the raw streams beside it are gitignored.
+`transcript.md` means the same thing on every stack, which takes assembling: claude streams the whole session as stream-json on stdout, codex (with `--json`) and opencode (with `--format json`) stream their own event shapes there, and each is rendered to the same sections. Mine transcripts from `transcript.md` alone; the raw streams beside it are gitignored. It is always text: a carriage return keeps the last frame of its line, and the writer strips escape sequences and control bytes other than newline and tab, because one NUL in a tool's output (a `tsc` banner did it, #133) is enough for git to call the file binary and for `git diff` and `grep` to skip it.
 
-**Judge**: a fresh, blind agent that grades `expect:` lines from the evidence `verify` assembles (diff + output files). It never sees the variant, the skill, or the transcript. Claude and codex both work.
+**Judge**: a fresh, blind agent that grades `expect:` lines from the evidence `verify` assembles (diff + output files). It never sees the variant, the skill, or the transcript, and `verify` starts it in a temp dir of its own rather than in this repo, whose root holds `skills/`, this file and the benchmark skills under `.agents/skills/` — all of which a CLI discovers from its cwd. That dir is one per machine, not one per grade: claude keys its project state on the cwd, and a fresh dir each time would leave a `~/.claude/projects` entry per run. Claude and codex both work; opencode does not judge yet, though it orchestrates fine.
 
 Never grade from your own context. You have read the skill and the expect lines, so you cannot grade blind. `verify` spawns the judge for you; pass the agent and model **you** are running as, so the grading happens on the orchestrator's model:
 
 ```bash
-yarn verify --run artifacts/<id>/<run-id> --judge-agent claude --judge-model <your model>
+yarn verify --run artifacts/<id>/<run-id> --judge-agent claude --judge-model <your model> --judge-effort <your effort>
 ```
 
-Omit `--judge-model` to let that agent's CLI pick its own default. Keep one judge for the length of a benchmark. A grader that changes between runs makes `with_skill` and `no_skill` incomparable.
+There is no CLI default for the judge either: a missing model or effort stops `verify` before the judge is spawned, with the same codex fallback to `~/.codex/config.toml` as the executor. Keep one judge, at one effort, for the length of a benchmark. A grader that changes between runs makes `with_skill` and `no_skill` incomparable.
 
 ### Revising expect lines: regrade, do not re-run
 
@@ -93,10 +116,10 @@ When you change a task's `expect:` lines after runs exist, the question is wheth
 
 ```bash
 yarn verify --run artifacts/<id>/<run-id> --regrade --reason "<what changed in the rubric and why>" \
-  --judge-agent claude --judge-model <model>
+  --judge-agent claude --judge-model <model> --judge-effort <effort>
 ```
 
-`--regrade` re-judges a run's stored evidence (`run.diff`, `output/`) against the task spec as it stands now. It never re-executes, never touches the source run dir, and writes `<run-id>-regrade-<n>/result.yaml` with `regrade_of` naming the run it re-read and `regrade_reason` saying why. Grade every run of the task, not the failures only — a wording change that flips a fail to a pass usually flips something the other way too. Hold the judge fixed at whatever graded the run originally; changing the wording and the judge together tells you nothing about either. A regrade is a second reading of one run, never a second run: never add it to a pass tally beside its source.
+`--regrade` re-judges a run's stored evidence (`run.diff`, `output/`) against the task spec as it stands now. It never re-executes, never touches the source run dir, and writes `<run-id>-regrade-<n>/result.yaml` with `regrade_of` naming the run it re-read and `regrade_reason` saying why. It inherits the source run's `benchmark`: the site supersedes readings along `regrade_of`, so a re-reading filed under another id would take the run out of the benchmark it was made for. Grade every run of the task, not the failures only — a wording change that flips a fail to a pass usually flips something the other way too. Hold the judge fixed at whatever graded the run originally; changing the wording and the judge together tells you nothing about either. `verify` holds it for you: on a regrade the judge flags may be omitted, and the judge recorded in the source grade is reused, flags that disagree with it are refused, and a source grade that names no judge still has to be stated in full. A regrade is a second reading of one run, never a second run: never add it to a pass tally beside its source.
 
 It refuses a run that was never graded, a graded run without the flag, a regrade with no stated reason, and — the one that decides whether any of this works — evidence git does not track. Two fields make a mixed rubric visible rather than something a reader reconstructs from git log:
 
@@ -107,7 +130,7 @@ It refuses a run that was never graded, a graded run without the flag, a regrade
 
 The evidence a regrade re-reads is committed — `run.diff` for template-seeded runs, a force-added `output/` for the question-shaped ones — so it works from any clone that has the run dir. Where `output/` was left ignored, which is the default for a bare task that snapshots a whole scaffold, the evidence exists only on the machine that made the run: regrade there, and commit the records.
 
-**Rewording `input:` is not a wording change a regrade can absorb.** The judge is sent the task input as it stands now, so a regrade of a run made before the rewording shows the judge a question the executor was never asked, and grades old evidence against a new prompt. `setup` records `input_sha` on every run for exactly this: `--regrade` hard-fails when the current input hashes differently, and warns when the run predates the field and cannot be checked at all. A reworded input means a fresh baseline in both variants, never a regrade — and the old grades are not comparable to the new ones, which is a fact about the *input*, not about the expect lines.
+**Rewording `input:` is not a wording change a regrade can absorb.** The judge is sent the task input as it stands now, so a regrade of a run made before the rewording shows the judge a question the executor was never asked, and grades old evidence against a new prompt. `setup` records `input_sha` on every run for exactly this: `--regrade` hard-fails when the current input hashes differently. A run that predates the field (every run before 2026-08-28) is checked against the task file as of the commit that added its record — the same revision `build-index` pins it to — and refused the same way when that hashes differently; only a run git cannot place at all (not committed, or a shallow clone) gets a warning instead. That pin is an inference, wrong for a run whose input was edited between the run and the commit; when you know a run saw the current input, stamp `input_sha` on its record and say so in the report, as with `skill_version`. A squash or rebase merge gives the adding commit a tree that may already hold a later rewording, so the check can miss a mismatch there; it never refuses wrongly. On the site a regrade inherits its source's prompt pin, so a regrade of an old run on a reworded prompt matches no task revision and `--strict` refuses the build rather than tabling it beside the post-rewording runs. A reworded input means a fresh baseline in both variants, never a regrade — and the old grades are not comparable to the new ones, which is a fact about the *input*, not about the expect lines.
 
 ## Isolation
 
@@ -156,7 +179,9 @@ The task input never changes across variants. Only the workspace does.
 | `no_skill` | task input (+ template) only |
 | `with_skill` | the skill at `.agents/skills/<name>/`, agent decides to use it |
 
-`.agents/skills/` is the canonical, executor-neutral location; codex discovers it natively. Claude only lists skills from `.claude/skills/`, so claude runs also get a copy there. Supporting a new executor means adding a bridge line in `setup`.
+`setup --skill-ref <commit>` installs the skill as git holds it at that commit instead of as the checkout has it, and records that commit as `skill_version`. That is how a benchmark measures two texts of one skill on the same tasks and the same harness: an old arm and a new arm are both `with_skill`, told apart by `skill_version` and `skill_content`, and the ref is in the run id too (`…-with-skill-2f0adb01-1`) so the two arms never share a run dir or a workspace parent. The ref is looked up in the repo the skill dir sits in, the same one a plain `with_skill` run reads `HEAD` from, and recorded as the first 8 characters of the full sha however it was spelled; a short ref that matches two commits is refused with git's list of candidates, so pin a full sha where operators have to agree. It is refused on `no_skill`, and on a commit where the skill does not exist.
+
+`.agents/skills/` is the canonical, executor-neutral location; codex discovers it natively. Claude only lists skills from `.claude/skills/`, so claude runs also get a copy there, and opencode runs get one at `.opencode/skills/`, because the harness switches opencode's `.agents/` discovery off to keep the operator's global `~/.agents/skills` out (see "The three roles"). Supporting a new executor means adding a bridge line in `setup` and its dir to `SKILL_INSTALL_DIRS` in `lib/workspace.ts`, or the skill leaks into the judge's evidence.
 
 To force the trigger, prepend one line to the spawn prompt (`Use the <name> skill for this task.`) and say so in the report. Trigger-inclusive and content-only numbers must never blend.
 
@@ -164,32 +189,34 @@ To force the trigger, prepend one line to the spawn prompt (`Use the <name> skil
 
 `artifacts/<task-id>/<run-id>/result.yaml`, one per run. `setup` writes the top half, `verify` the rest.
 
-`skill_version` is the repo's HEAD at setup time, not a hash of the skill, so it only identifies the text as long as that commit stays reachable. A rebase, an amend or a squash-merge orphans it and the run stops being able to say what it was given. Before a branch merges, check every `skill_version` it adds with `git merge-base --is-ancestor <sha> HEAD`; where one is unreachable, restamp it to a reachable commit whose `skills/<name>/SKILL.md` blob is byte-identical (`git rev-parse <sha>:skills/<name>/SKILL.md`) and say so in the report. Restamping to a commit with different text is falsifying the record.
+`skill_version` is the repo's HEAD at setup time (or the `--skill-ref` commit), always its first 8 characters so every clone writes the same one (records from before `--skill-ref` carry `git rev-parse --short`, 7 and up), not a hash of the skill, so it only identifies the text as long as that commit stays reachable. A rebase, an amend or a squash-merge orphans it and the run stops being able to say what it was given. Before a branch merges, check every `skill_version` it adds with `git merge-base --is-ancestor <sha> HEAD`; where one is unreachable, restamp it to a reachable commit whose `skills/<name>/SKILL.md` blob is byte-identical (`git rev-parse <sha>:skills/<name>/SKILL.md`) and say so in the report. Restamping to a commit with different text is falsifying the record.
 
 ```yaml
 task: gas-cost-estimate-001
 run: 2026-07-06T093000Z-claude-with-skill-1
 executor: claude
 variant: with_skill
-skill_version: 191dcc1                # git short sha of the skill source; null for no_skill
+skill_version: 2f0adb01               # first 8 chars of the skill source's commit; null for no_skill; older runs carry --short, 7+
 input_sha: 4f2b9c1de803               # sha256 of the input this run was given; absent on pre-2026-08-28 runs
 created: 2026-07-06T09:30:00Z
-executor_model: claude-opus-5         # what actually ran; null when the CLI picked its default
-executor_reasoning_effort: null       # codex only; the operator's model_reasoning_effort, passed on argv
+executor_model: claude-opus-5         # what actually ran; null only on runs made before it was required
+executor_reasoning_effort: medium     # every executor, passed on argv; absent or null on runs made before 2026-09-15
 executor_exit: 0                      # verify refuses anything else unless --grade-failed-run
 harness_failure:                      # absent unless --grade-failed-run graded over a refusal
 usage:                                # what the run cost; absent on runs made before 2026-08-27
   duration_s: 812                     # the harness's own wall clock — the one figure both stacks share
-  turns: 34                           # claude only
-  cost_usd: 4.66                      # claude only; codex exec reports no price
-  input_tokens: 12                    # claude only; the UNCACHED remainder, double digits on a real run
-  cache_creation_input_tokens: 47453  # claude only; where a skill's own prompt lands
-  cache_read_input_tokens: 203362     # claude only; the context re-read on every turn
-  output_tokens: 31748                # claude only
-  total_tokens: 282575                # both stacks; the sum of the four above on claude, codex's own line on codex
+  turns: 34                           # claude, and opencode (one per model call); null on codex
+  cost_usd: 4.66                      # claude's and opencode's reported price; on codex derived from tokens × lib/prices.ts
+  cost_source: executor               # executor (claude, opencode) | list_price (codex); null when there is no cost
+  input_tokens: 12                    # the UNCACHED remainder, double digits on a real claude run
+  cache_creation_input_tokens: 47453  # where a skill's own prompt lands
+  cache_read_input_tokens: 203362     # the context re-read on every turn
+  output_tokens: 31748                # includes reasoning tokens on codex and opencode
+  total_tokens: 282575                # the sum of the four above, on both stacks
 judge:                                # who graded this run
   agent: claude
-  model: claude-opus-4-8              # null when the agent's CLI picked its own default
+  model: claude-opus-4-8              # null only on grades made before it was required
+  reasoning_effort: high              # absent on grades made before 2026-09-15
   self_judged: false                  # true when judge and executor are the same agent
 expects:                              # judged expect lines, in task-spec order
   expect_1: pass
@@ -225,19 +252,21 @@ key per measurement instead of the two bare variant lines — see
 **Every cost or duration number in a report comes out of `yarn run-stats`, never off a keyboard.**
 
 ```bash
-yarn run-stats --tasks <id>,<id> [--since 2026-08-27] [--variant no_skill] [--skill-version <sha>] [--runs]
+yarn run-stats --tasks <id>,<id> [--benchmark <id>] [--since 2026-08-27] [--variant no_skill] [--skill-version <sha>] [--runs]
 ```
 
 It reads the `## run stats` footer `run-executor` writes into each committed `transcript.md`,
 falling back to the raw `## result` block older transcripts carry instead — the same result event
 under different labels, so those runs are derivable too — and to `result.yaml`'s `usage` block for
-what neither holds, which on codex is the token total. It prints per-task medians per variant with
+what neither holds, which on pre-`--json` codex runs is the token total. Codex runs made before `exec --json` are grouped apart from the rest, as `codex (pre-json tokens)`: their `total_tokens` is the old `tokens used` line, a different unit from every other total in the table. It prints per-task medians per executor and variant with
 the cost range beside them and the median `total_tokens`, and says `(n with no stats)` for runs
 that carry none of the three — whose cost and duration this repo simply does not have.
 
 `--skill-version` filters on `result.yaml`'s `skill_version`. Two `with_skill` arms of one task
-differ only by which revision of the skill they read, and the run directory name does not say, so
-an arm is one command rather than a date range a reader has to know the boundaries of.
+differ only by which revision of the skill they read. The run directory name says which only for
+runs set up with `--skill-ref`; a plain `with_skill` run's id carries no ref, and every run from
+before the flag is one of those. `skill_version` is in all of them, so an arm is one command
+rather than a date range a reader has to know the boundaries of.
 
 Print the range as well as the median: at `n=3` a goal task's cheapest and dearest run can differ by
 more than the delta the median is being read for, and a median that carries a headline needs its
@@ -247,23 +276,30 @@ report once carried baseline costs assembled by hand out of a *benchmark-wide* m
 report — one cell took its duration from an aggregate over seven tasks and its cost from the other
 variant's column — and no reviewer could have caught it without re-deriving every cell.
 
-State the executor, its model, the judge, and the run count at the top of every report. If any run came back `self_judged: true`, say so there — on a single-stack benchmark that is every run, and it is a caveat on the numbers, not a defect in them.
+State the executor, its model and effort, the judge with its model and effort, and the run count at the top of every report. If any run came back `self_judged: true`, say so there — on a single-stack benchmark that is every run, and it is a caveat on the numbers, not a defect in them.
 
 Pass counts are not the whole verdict. `result.yaml` carries a `usage` block per run, so
-give the cost row real numbers rather than "no reduction observed": duration and tokens on
-both stacks, dollars on claude. Two arms that both pass every line are not equivalent if one
+give the cost row real numbers rather than "no reduction observed": duration, tokens and
+dollars on both stacks. Two arms that both pass every line are not equivalent if one
 of them took twice the tokens to get there, and on a saturated task that difference is the
-result. Dollars for a codex benchmark have to be derived from tokens and a published price —
-say so in the report rather than printing a figure the harness never measured.
+result. A codex dollar figure is `cost_source: list_price`: the run's token split priced at
+OpenAI's standard-tier list price in `lib/prices.ts` (dated there), not what the operator was
+billed, and it ignores the >272K long-context surcharge. `run-stats` marks it `(list price)`;
+say so in the report too. A codex model missing from that table records `cost_usd: null` —
+add its row before running it. An opencode figure is `cost_source: executor` like claude's,
+but it is opencode's own arithmetic on models.dev's list price, not OpenRouter's bill, which
+is at the routed provider's rate; a route opencode cannot price reports $0 on every step and
+records `cost_usd: null`.
 
-Quote `total_tokens`, never `input_tokens`. On claude the run's input is spread over three
-fields and `input_tokens` alone is the uncached leftover — a skill's whole prompt is billed
-through `cache_creation_input_tokens` and re-read every turn through
-`cache_read_input_tokens`, so a total that skips them cannot see the cost the skill adds.
-And `total_tokens` means different things on the two stacks: claude's counts every cache
-read, codex's `tokens used` line is its own accounting and comes out several times smaller
-for comparable work. Compare tokens between variants within one stack; comparing them across
-stacks is comparing two units.
+Quote `total_tokens`, never `input_tokens`. The run's input is spread over three fields and
+`input_tokens` alone is the uncached leftover — a skill's whole prompt is billed through
+`cache_creation_input_tokens` and re-read every turn through `cache_read_input_tokens`, so a
+total that skips them cannot see the cost the skill adds. Since 2026-09-15 codex runs with
+`exec --json` and records the same four-way split. Codex runs before that carry only the
+`tokens used` line as `total_tokens` — uncached input plus output, several times smaller than
+the same work counted the new way — so never put an old codex total beside a new one. Even
+with the same shape, the two stacks tokenize and cache differently: compare tokens between
+variants within one stack, and dollars across stacks.
 
 Every report ends with this table. Answer the last row honestly: sometimes the eval is the wrong artifact, not the skill.
 
@@ -279,7 +315,7 @@ Every report ends with this table. Answer the last row honestly: sometimes the e
 
 ## What gets committed
 
-Committed: task specs, vendored skills under test, workspace templates under `templates/`, and per run `result.yaml`, `baseline.sha`, `executor.yaml`, `transcript.md`, `run.diff`, plus mistake records and reports. Gitignored: the raw executor capture beside `transcript.md` (`transcript.jsonl`/`transcript.log`), `executor.err`, `output/`, and `workspace.path` — an absolute path on one machine, pointing at a workspace `verify` has already deleted, so it is stale for every reader but the one who made it.
+Committed: task specs, vendored skills under test, workspace templates under `templates/`, and per run `result.yaml`, `baseline.sha`, `executor.yaml`, `transcript.md`, `run.diff`, plus mistake records and reports. Gitignored: the raw executor capture beside `transcript.md` (`transcript.jsonl`, and `transcript.log` on codex runs made before `exec --json`), `executor.err`, `output/`, and `workspace.path` — an absolute path on one machine, pointing at a workspace `verify` has already deleted, so it is stale for every reader but the one who made it.
 
 This line said the opposite until 2026-08-20 — transcripts gitignored, `output/` committed — while `.gitignore` and all 210 committed runs did the reverse. Follow `.gitignore`; the transcript is what a reviewer re-derives a report's claims from, so it is the record that has to survive.
 

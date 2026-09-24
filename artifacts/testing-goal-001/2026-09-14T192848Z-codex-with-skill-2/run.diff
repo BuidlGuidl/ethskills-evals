@@ -1,0 +1,125 @@
+diff --git a/test/UsdtYieldVaultAdversarial.t.sol b/test/UsdtYieldVaultAdversarial.t.sol
+new file mode 100644
+index 0000000..2ced72b
+--- /dev/null
++++ b/test/UsdtYieldVaultAdversarial.t.sol
+@@ -0,0 +1,73 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.28;
++
++import {Test} from "forge-std/Test.sol";
++
++import {UsdtYieldVault} from "../src/UsdtYieldVault.sol";
++import {MockUSDT} from "./mocks/MockUSDT.sol";
++import {MockAavePool, MockAToken} from "./mocks/MockAavePool.sol";
++
++contract UsdtYieldVaultAdversarialTest is Test {
++    UsdtYieldVault internal vault;
++    MockUSDT internal usdt;
++    MockAavePool internal pool;
++    MockAToken internal aUsdt;
++
++    address internal owner = makeAddr("owner");
++    address internal alice = makeAddr("alice");
++    address internal bob = makeAddr("bob");
++
++    function setUp() public {
++        usdt = new MockUSDT();
++        pool = new MockAavePool(address(usdt));
++        aUsdt = pool.aToken();
++        vault = new UsdtYieldVault(address(usdt), address(aUsdt), address(pool), 10, owner);
++
++        usdt.mint(alice, 10_000e6);
++        usdt.mint(bob, 10_000e6);
++        vm.prank(alice);
++        usdt.approve(address(vault), type(uint256).max);
++        vm.prank(bob);
++        usdt.approve(address(vault), type(uint256).max);
++    }
++
++    function _deposit(address account, uint256 amount) internal returns (uint256 shares) {
++        vm.prank(account);
++        shares = vault.deposit(amount);
++    }
++
++    /// A fee accepted by governance must leave the advertised minimum deposit usable.
++    function testFuzz_OwnerSettableFeeMustLeaveDepositsUsable(uint256 feeBps) public {
++        feeBps = bound(feeBps, 0, 10_001);
++        vm.prank(owner);
++        vault.setDepositFee(feeBps);
++
++        uint256 minimumDeposit = vault.MIN_DEPOSIT();
++        vm.prank(alice);
++        uint256 shares = vault.deposit(minimumDeposit);
++        assertGt(shares, 0);
++    }
++
++    /// A vault's recorded assets must equal the Aave claim backing its shares after sequences.
++    function test_AccountingEqualsCustodyAfterTwoFeeBearingWithdrawals() public {
++        uint256 aliceShares = _deposit(alice, 1_000e6);
++        uint256 bobShares = _deposit(bob, 1_000e6);
++
++        vm.prank(alice);
++        vault.withdraw(aliceShares / 2);
++        vm.prank(bob);
++        vault.withdraw(bobShares / 2);
++
++        assertEq(aUsdt.balanceOf(address(vault)), vault.totalAssets(), "Aave custody drifted from accounting");
++    }
++
++    /// Aave yield belongs to shareholders and therefore must change their redeemable balance.
++    function test_AaveYieldAccruesToShareholders() public {
++        _deposit(alice, 1_000e6);
++        uint256 claimBefore = vault.balanceOfUnderlying(alice);
++
++        deal(address(aUsdt), address(vault), aUsdt.balanceOf(address(vault)) + 100e6);
++
++        assertEq(vault.balanceOfUnderlying(alice), claimBefore + 100e6, "Aave yield was ignored");
++    }
++}
+diff --git a/test/UsdtYieldVaultMainnetFork.t.sol b/test/UsdtYieldVaultMainnetFork.t.sol
+new file mode 100644
+index 0000000..c01cfb9
+--- /dev/null
++++ b/test/UsdtYieldVaultMainnetFork.t.sol
+@@ -0,0 +1,36 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.28;
++
++import {Test} from "forge-std/Test.sol";
++
++import {UsdtYieldVault} from "../src/UsdtYieldVault.sol";
++
++contract UsdtYieldVaultMainnetForkTest is Test {
++    address internal constant USDT = 0xdAC17F958D2ee523a2206206994597C13D831ec7;
++    address internal constant AAVE_V3_POOL = 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2;
++    address internal constant A_USDT = 0x23878914EFE38d27C4D67Ab83ed1b93A74D4086a;
++    uint256 internal constant PINNED_BLOCK = 25_970_000;
++
++    address internal alice = makeAddr("alice");
++
++    function setUp() public {
++        vm.createSelectFork(vm.envString("MAINNET_RPC_URL"), PINNED_BLOCK);
++    }
++
++    /// The exact production token and pool must accept a normal vault deposit.
++    function test_DepositRealUsdtIntoAaveV3() public {
++        UsdtYieldVault vault = new UsdtYieldVault(USDT, A_USDT, AAVE_V3_POOL, 10, address(this));
++        deal(USDT, alice, 1_000e6);
++
++        vm.prank(alice);
++        (bool approved,) =
++            USDT.call(abi.encodeWithSignature("approve(address,uint256)", address(vault), type(uint256).max));
++        assertTrue(approved, "user approval failed");
++
++        vm.prank(alice);
++        uint256 shares = vault.deposit(1_000e6);
++
++        assertGt(shares, 0);
++        assertEq(vault.totalAssets(), 1_000e6);
++    }
++}
+
+# Untracked files and status
+ A test/UsdtYieldVaultAdversarial.t.sol
+ A test/UsdtYieldVaultMainnetFork.t.sol

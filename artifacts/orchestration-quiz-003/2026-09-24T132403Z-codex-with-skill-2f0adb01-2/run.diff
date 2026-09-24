@@ -1,0 +1,289 @@
+diff --git a/packages/nextjs/app/greetings/page.tsx b/packages/nextjs/app/greetings/page.tsx
+new file mode 100644
+index 0000000..5c27b26
+--- /dev/null
++++ b/packages/nextjs/app/greetings/page.tsx
+@@ -0,0 +1,228 @@
++"use client";
++
++import { FormEvent, useMemo, useState } from "react";
++import { Address as AddressDisplay } from "@scaffold-ui/components";
++import type { NextPage } from "next";
++import type { Address } from "viem";
++import { useAccount } from "wagmi";
++import { ChatBubbleLeftRightIcon, ClockIcon, PencilSquareIcon } from "@heroicons/react/24/outline";
++import {
++  useScaffoldEventHistory,
++  useScaffoldReadContract,
++  useScaffoldWriteContract,
++  useTargetNetwork,
++} from "~~/hooks/scaffold-eth";
++import { getParsedError, notification } from "~~/utils/scaffold-eth";
++
++type GreetingChangeArgs = {
++  greetingSetter?: Address;
++  newGreeting?: string;
++  premium?: boolean;
++  value?: bigint;
++};
++
++const getGreetingChangeArgs = (args: unknown): GreetingChangeArgs => {
++  if (Array.isArray(args)) {
++    const [greetingSetter, newGreeting, premium, value] = args;
++    return {
++      greetingSetter: greetingSetter as Address | undefined,
++      newGreeting: newGreeting as string | undefined,
++      premium: premium as boolean | undefined,
++      value: value as bigint | undefined,
++    };
++  }
++
++  return (args ?? {}) as GreetingChangeArgs;
++};
++
++const GreetingsPage: NextPage = () => {
++  const [newGreeting, setNewGreeting] = useState("");
++  const { isConnected } = useAccount();
++  const { targetNetwork } = useTargetNetwork();
++
++  const { data: currentGreeting, isLoading: isGreetingLoading } = useScaffoldReadContract({
++    contractName: "YourContract",
++    functionName: "greeting",
++    watch: true,
++  });
++
++  const { data: totalCounter, isLoading: isCounterLoading } = useScaffoldReadContract({
++    contractName: "YourContract",
++    functionName: "totalCounter",
++    watch: true,
++  });
++
++  const { writeContractAsync, isMining } = useScaffoldWriteContract({
++    contractName: "YourContract",
++  });
++
++  const {
++    data: greetingEvents,
++    isLoading: isEventsLoading,
++    isFetchingNewEvent,
++    refetch: refetchGreetingEvents,
++  } = useScaffoldEventHistory({
++    contractName: "YourContract",
++    eventName: "GreetingChange",
++    fromBlock: 0n,
++    watch: true,
++  });
++
++  const greetingChanges = useMemo(
++    () =>
++      [...(greetingEvents ?? [])]
++        .sort((firstEvent, secondEvent) => {
++          const firstBlock = firstEvent.blockNumber ?? 0n;
++          const secondBlock = secondEvent.blockNumber ?? 0n;
++
++          if (firstBlock !== secondBlock) {
++            return firstBlock < secondBlock ? 1 : -1;
++          }
++
++          return Number((secondEvent.logIndex ?? 0) - (firstEvent.logIndex ?? 0));
++        })
++        .map(event => ({
++          key: `${event.transactionHash}-${event.logIndex}`,
++          blockNumber: event.blockNumber,
++          transactionHash: event.transactionHash,
++          ...getGreetingChangeArgs(event.args),
++        })),
++    [greetingEvents],
++  );
++
++  const trimmedGreeting = newGreeting.trim();
++  const hasContractData = currentGreeting !== undefined || totalCounter !== undefined;
++  const totalChanges = typeof totalCounter === "bigint" ? totalCounter.toString() : "0";
++
++  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
++    event.preventDefault();
++
++    if (!trimmedGreeting) {
++      notification.warning("Enter a greeting before submitting.");
++      return;
++    }
++
++    try {
++      await writeContractAsync(
++        {
++          functionName: "setGreeting",
++          args: [trimmedGreeting],
++        },
++        {
++          blockConfirmations: 1,
++          onBlockConfirmation: () => {
++            notification.success("Greeting updated");
++            setNewGreeting("");
++            refetchGreetingEvents();
++          },
++        },
++      );
++    } catch (error) {
++      notification.error(getParsedError(error));
++    }
++  };
++
++  return (
++    <main className="grow bg-base-200">
++      <div className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-4 py-8 sm:px-6 lg:px-8">
++        <section className="grid gap-4 md:grid-cols-[minmax(0,1fr)_14rem]">
++          <div className="bg-base-100 border border-base-300 p-5 shadow-sm">
++            <div className="flex items-center gap-3 text-sm font-medium text-base-content/70">
++              <ChatBubbleLeftRightIcon className="h-5 w-5" />
++              Current greeting
++            </div>
++            <p className="mt-4 min-h-12 break-words text-2xl font-semibold leading-snug">
++              {isGreetingLoading ? (
++                <span className="loading loading-dots loading-md" />
++              ) : (
++                ((currentGreeting as string | undefined) ?? "No deployed greeting found")
++              )}
++            </p>
++            {!hasContractData && !isGreetingLoading && !isCounterLoading && (
++              <p className="mt-3 text-sm text-warning">
++                YourContract is not available on the selected network yet. Run the deploy flow to populate contract
++                metadata.
++              </p>
++            )}
++          </div>
++
++          <div className="bg-base-100 border border-base-300 p-5 shadow-sm">
++            <div className="flex items-center gap-3 text-sm font-medium text-base-content/70">
++              <PencilSquareIcon className="h-5 w-5" />
++              Total changes
++            </div>
++            <p className="mt-4 text-4xl font-bold">{isCounterLoading ? "..." : totalChanges}</p>
++          </div>
++        </section>
++
++        <section className="bg-base-100 border border-base-300 p-5 shadow-sm">
++          <form className="flex flex-col gap-4" onSubmit={handleSubmit}>
++            <label className="form-control w-full">
++              <span className="label pb-2">
++                <span className="label-text font-medium">New greeting</span>
++              </span>
++              <textarea
++                className="textarea textarea-bordered min-h-28 resize-y text-base"
++                disabled={!isConnected || isMining}
++                maxLength={280}
++                onChange={event => setNewGreeting(event.target.value)}
++                placeholder={isConnected ? "Write the next greeting" : "Connect a wallet to submit a greeting"}
++                value={newGreeting}
++              />
++            </label>
++            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
++              <p className="text-sm text-base-content/70">{newGreeting.length}/280</p>
++              <button
++                className="btn btn-primary sm:min-w-44"
++                disabled={!isConnected || isMining || !trimmedGreeting}
++                type="submit"
++              >
++                {isMining && <span className="loading loading-spinner loading-sm" />}
++                {isMining ? "Submitting" : "Submit greeting"}
++              </button>
++            </div>
++          </form>
++        </section>
++
++        <section className="bg-base-100 border border-base-300 shadow-sm">
++          <div className="flex items-center justify-between gap-3 border-b border-base-300 px-5 py-4">
++            <div className="flex items-center gap-3 font-semibold">
++              <ClockIcon className="h-5 w-5" />
++              Past changes
++            </div>
++            {isFetchingNewEvent && <span className="loading loading-spinner loading-sm" />}
++          </div>
++
++          {isEventsLoading ? (
++            <div className="flex min-h-36 items-center justify-center">
++              <span className="loading loading-spinner loading-lg" />
++            </div>
++          ) : greetingChanges.length === 0 ? (
++            <div className="px-5 py-10 text-center text-base-content/70">
++              No greeting changes have been recorded yet.
++            </div>
++          ) : (
++            <ul className="divide-y divide-base-300">
++              {greetingChanges.map(change => (
++                <li className="grid gap-3 px-5 py-4 md:grid-cols-[minmax(0,13rem)_minmax(0,1fr)]" key={change.key}>
++                  <div className="min-w-0">
++                    <AddressDisplay address={change.greetingSetter} chain={targetNetwork} />
++                    {change.blockNumber !== undefined && (
++                      <p className="mt-1 text-xs text-base-content/60">Block {change.blockNumber.toString()}</p>
++                    )}
++                  </div>
++                  <div className="min-w-0">
++                    <p className="break-words text-lg font-medium">{change.newGreeting ?? "Unknown greeting"}</p>
++                    {change.premium && <div className="badge badge-secondary badge-outline mt-2">Premium greeting</div>}
++                  </div>
++                </li>
++              ))}
++            </ul>
++          )}
++        </section>
++      </div>
++    </main>
++  );
++};
++
++export default GreetingsPage;
+diff --git a/packages/nextjs/components/Header.tsx b/packages/nextjs/components/Header.tsx
+index bc63eb4..0b1c616 100644
+--- a/packages/nextjs/components/Header.tsx
++++ b/packages/nextjs/components/Header.tsx
+@@ -5,12 +5,10 @@ import Image from "next/image";
+ import Link from "next/link";
+ import { usePathname } from "next/navigation";
+ import { hardhat } from "viem/chains";
+-import { Bars3Icon, BugAntIcon } from "@heroicons/react/24/outline";
++import { Bars3Icon, BugAntIcon, ChatBubbleLeftRightIcon } from "@heroicons/react/24/outline";
+ import { FaucetButton, RainbowKitCustomConnectButton } from "~~/components/scaffold-eth";
+ import { useOutsideClick, useTargetNetwork } from "~~/hooks/scaffold-eth";
+ 
+-
+-
+ type HeaderMenuLink = {
+   label: string;
+   href: string;
+@@ -19,14 +17,19 @@ type HeaderMenuLink = {
+ 
+ export const menuLinks: HeaderMenuLink[] = [
+   {
+-    label: 'Home',
+-    href: '/'
++    label: "Home",
++    href: "/",
++  },
++  {
++    label: "Greetings",
++    href: "/greetings",
++    icon: <ChatBubbleLeftRightIcon className="h-4 w-4" />,
+   },
+   {
+-    label: 'Debug Contracts',
+-    href: '/debug',
+-    icon: <BugAntIcon className="h-4 w-4" />
+-  }
++    label: "Debug Contracts",
++    href: "/debug",
++    icon: <BugAntIcon className="h-4 w-4" />,
++  },
+ ];
+ 
+ export const HeaderMenuLinks = () => {
+@@ -102,4 +105,4 @@ export const Header = () => {
+       </div>
+     </div>
+   );
+-};
+\ No newline at end of file
++};
+
+# Untracked files and status
+ A packages/nextjs/app/greetings/page.tsx
+ M packages/nextjs/components/Header.tsx

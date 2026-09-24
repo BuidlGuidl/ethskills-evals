@@ -10,14 +10,18 @@ export type Run = {
   variant: Variant | null;
   executor: string | null;
   executor_model: string | null;
+  /** null on records made before effort was recorded */
+  executor_reasoning_effort: string | null;
   model: string;
   usage: { tokens: number | null; duration_s: number | null; cost_usd: number | null; turns: number | null };
   created: string | null;
   pass: boolean | null;
   expects: Record<string, ExpectStatus> | null;
-  judge: { agent: string; model: string | null; self_judged: boolean } | null;
+  judge: { agent: string | null; model: string | null; reasoning_effort: string | null; self_judged: boolean } | null;
   skill_version: string | null;
   skill_content: string | null;
+  /** the benchmark this run was made for, as named at setup; null on runs that predate the field */
+  benchmark: string | null;
   /** this record re-judges that run's stored evidence; it is a second reading, not a second run */
   regrade_of: string | null;
   regraded_at: string | null;

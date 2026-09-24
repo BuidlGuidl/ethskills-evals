@@ -7,8 +7,8 @@ import { encode } from "gpt-tokenizer/encoding/o200k_base";
 import yaml from "js-yaml";
 import { loadShowcase, runModel, runUsage, selectShowcase } from "../lib/showcase.js";
 import { orderReadings } from "../lib/readings.js";
-import { normalizeSkillText, skillContentId } from "../lib/skill.js";
-import { expectSha, inputSha, isRecord, loadTaskSpec, loadYamlFile, parseArgs, requireString } from "../lib/task.js";
+import { SKILL_VERSION_LENGTH, normalizeSkillText, skillContentId } from "../lib/skill.js";
+import { expectSha, inputSha, isRecord, loadTaskSpec, loadYamlFile, parseArgs, readBenchmark, requireString } from "../lib/task.js";
 
 // Builds the json the results site reads, regenerated from the repo in a single pass and
 // gitignored: site/public/index.json, everything the tables need, and docs.json beside it
@@ -18,7 +18,7 @@ import { expectSha, inputSha, isRecord, loadTaskSpec, loadYamlFile, parseArgs, r
 // Two of the three tables it feeds need facts that are in no record:
 //
 //   - which SKILL.md a run actually saw. result.yaml carries skill_version, but that is
-//     `git rev-parse --short HEAD` at setup time — repo state, not a version of the
+//     HEAD at setup time (or the `--skill-ref` commit) — repo state, not a version of the
 //     skill. Many shas map to one unchanged file, and a reduction shares its sha with
 //     whatever else landed that day. The file itself is `git show <sha>:skills/<n>/SKILL.md`,
 //     so versions here are keyed by the hash of that text.
@@ -485,6 +485,24 @@ const main = async () => {
     return null;
   };
 
+  // A record is yaml a human can hand-edit, and the site renders these straight into labels
+  // and titles: anything that is not a non-empty string is "not recorded", never `1` or `true`
+  // rendered into a stack label. Empty strings normalise to null because the site tests one
+  // field for null and the other for truthiness.
+  const recorded = (value: unknown) => (typeof value === "string" && value.length > 0 ? value : null);
+
+  type IndexJudge = { agent: string | null; model: string | null; reasoning_effort: string | null; self_judged: boolean };
+
+  const parseJudge = (value: unknown): IndexJudge | null =>
+    typeof value === "object" && value !== null && !Array.isArray(value)
+      ? {
+        agent: recorded((value as Record<string, unknown>).agent),
+        model: recorded((value as Record<string, unknown>).model),
+        reasoning_effort: recorded((value as Record<string, unknown>).reasoning_effort),
+        self_judged: (value as Record<string, unknown>).self_judged === true,
+      }
+      : null;
+
   type IndexRun = {
     task: string;
     skill: string | null;
@@ -492,14 +510,17 @@ const main = async () => {
     variant: unknown;
     executor: unknown;
     executor_model: unknown;
+    executor_reasoning_effort: unknown;
     model: string;
     usage: ReturnType<typeof runUsage>;
     created: string | null;
     pass: boolean | null;
     expects: unknown;
-    judge: unknown;
+    judge: IndexJudge | null;
     skill_version: string | null;
     skill_content: string | null;
+    /** the benchmark this run was made for, as named at setup; null on runs that predate the field */
+    benchmark: string | null;
     regrade_of: string | null;
     regraded_at: string | null;
     superseded_by: string | null;
@@ -516,6 +537,11 @@ const main = async () => {
 
   const runs: IndexRun[] = [];
   const seen = new Map<string, { skill: string; id: string; sha: string; first: string; runs: number }>();
+  // Regrades inherit their source's prompt, including those arriving from a branch before
+  // verify on main saw them, as #128's six did. Matching by expect_sha alone can select
+  // a later prompt. Sources come before their regrades because listDirs sorts and a
+  // regrade dir extends its source's name.
+  const pinnedPrompts = new Map<string, string | null>();
 
   for (const taskId of listDirs(path.join(ROOT, "artifacts"))) {
     for (const runId of listDirs(path.join(ROOT, "artifacts", taskId))) {
@@ -529,10 +555,18 @@ const main = async () => {
       const loaded = loadYamlFile(resultPath);
       const skill = taskSkill.get(taskId) ?? null;
       const skillVersion = typeof loaded.skill_version === "string" ? loaded.skill_version : null;
+      const regradeOf = typeof loaded.regrade_of === "string" ? loaded.regrade_of : null;
+      const recordedInput = typeof loaded.input_sha === "string" ? loaded.input_sha : null;
+      const inheritedInput = regradeOf === null ? null : pinnedPrompts.get(`${taskId}/${regradeOf}`) ?? null;
+      if (regradeOf !== null && !pinnedPrompts.has(`${taskId}/${regradeOf}`)) {
+        warnings.push(`${runDir}: regrade of ${regradeOf}, whose prompt pin is unknown; matched by expect_sha alone`);
+      }
       const { rubric, pinned } = rubricFor(taskId, runId, {
         expect: typeof loaded.expect_sha === "string" ? loaded.expect_sha : null,
-        input: typeof loaded.input_sha === "string" ? loaded.input_sha : null,
+        input: recordedInput ?? inheritedInput,
       });
+
+      pinnedPrompts.set(`${taskId}/${runId}`, recordedInput ?? inheritedInput ?? rubric?.input_sha ?? null);
 
       if (rubric === null) {
         warnings.push(`${runDir}: no readable task rubric; comparisons disabled for this run`);
@@ -540,6 +574,12 @@ const main = async () => {
         warnings.push(
           `${runDir}: rubric read from tasks/${taskId}.yaml as it stands now, not from the revision this run was graded on`,
         );
+      }
+
+      const { benchmark, warning: benchmarkWarning } = readBenchmark(loaded.benchmark);
+
+      if (benchmarkWarning !== null) {
+        warnings.push(`${runDir}: ${benchmarkWarning}`);
       }
 
       let skillContent: string | null = null;
@@ -589,15 +629,17 @@ const main = async () => {
         run: runId,
         variant: loaded.variant ?? null,
         executor: loaded.executor ?? null,
-        executor_model: loaded.executor_model ?? null,
+        executor_model: recorded(loaded.executor_model),
+        executor_reasoning_effort: recorded(loaded.executor_reasoning_effort),
         model: runModel(loaded),
         usage: runUsage(transcript, loaded.usage),
         created: typeof loaded.created === "string" ? loaded.created : null,
         pass: typeof loaded.pass === "boolean" ? loaded.pass : null,
         expects: loaded.expects ?? null,
-        judge: loaded.judge ?? null,
+        judge: parseJudge(loaded.judge),
         skill_version: skillVersion,
         skill_content: skillContent,
+        benchmark,
         regrade_of: typeof loaded.regrade_of === "string" ? loaded.regrade_of : null,
         regraded_at: typeof loaded.regraded_at === "string" ? loaded.regraded_at : null,
         superseded_by: null,
@@ -677,7 +719,7 @@ const main = async () => {
       versions.push({
         skill: name,
         id: currentId,
-        sha: !dirty && head !== null ? head.slice(0, 7) : "worktree",
+        sha: !dirty && head !== null ? head.slice(0, SKILL_VERSION_LENGTH) : "worktree",
         first: "",
         runs: 0,
         text: currentText,
@@ -859,10 +901,22 @@ const main = async () => {
   }
 
   const ungraded = output.runs.filter(run => run.pass === null).length;
+  // One line per benchmark with its record count, so a mistyped id — which parseBenchmark
+  // cannot tell from a real one — shows up as a benchmark of one while the run is still fresh.
+  const perBenchmark = new Map<string, number>();
+
+  for (const run of runs) {
+    if (run.benchmark !== null) {
+      perBenchmark.set(run.benchmark, (perBenchmark.get(run.benchmark) ?? 0) + 1);
+    }
+  }
+
+  const benchmarks = [...perBenchmark].sort(([a], [b]) => a.localeCompare(b)).map(([id, count]) => `${id} ${count}`).join(", ");
 
   process.stdout.write(
     `wrote ${path.relative(ROOT, outPath)} — ${output.skills.length} skills, ${output.tasks.length} tasks, ${output.runs.length} runs` +
       `${ungraded > 0 ? ` (${ungraded} ungraded)` : ""}, ${output.reports.length} reports, ${output.prs.length} pull requests\n` +
+      `${benchmarks.length > 0 ? `benchmarks: ${benchmarks}\n` : ""}` +
       `${changed ? `updated ${path.relative(ROOT, cachePath)} — commit it: the site builds from this cache, not from git\n` : ""}`,
   );
 };

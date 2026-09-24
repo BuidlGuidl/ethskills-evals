@@ -1,0 +1,257 @@
+diff --git a/FINDINGS.md b/FINDINGS.md
+new file mode 100644
+index 0000000..dea3b65
+--- /dev/null
++++ b/FINDINGS.md
+@@ -0,0 +1,175 @@
++# UsdtYieldVault security sign-off
++
++## Decision
++
++**Do not deploy this vault to mainnet in its current form.** The vault does not
++account for Aave yield, and its withdrawal fee is removed from its accounting
++even though the corresponding aUSDT stays in the vault. Thus the implementation
++cannot deliver its stated yield-bearing behavior and permanently strands value.
++There is also no upper bound on the mutable deposit fee.
++
++The reproductions are in the new file `test/UsdtYieldVaultAudit.t.sol`. No file
++under `src/`, the existing `test/UsdtYieldVault.t.sol`, or `test/mocks/` was
++changed.
++
++## 1. High: Aave yield is never owned or redeemable by shareholders
++
++### Cause and impact
++
++`totalAssets()`, `convertToShares()`, `convertToAssets()`, and `sharePrice()` use
++`totalAssetsStored`, a counter changed only by deposits and withdrawals. They
++never read the vault's aUSDT balance. On Aave V3, interest is reflected in the
++holder's increasing aToken balance. That increase therefore never changes this
++vault's share price.
++
++The test models Aave having credited 100 USDT of yield after a 1,000 USDT
++deposit. The vault owns 1,100 aUSDT but reports only 1,000 USDT. A full withdrawal
++is consequently calculated from the stale 1,000 USDT principal, leaving the
++yield behind with no shares that can claim it.
++
++### Reproduction
++
++Command run:
++
++```text
++forge test --match-contract UsdtYieldVaultAuditTest --match-test test_AaveYieldMustIncreaseReportedTotalAssets -vv
++```
++
++Real output:
++
++```text
++No files changed, compilation skipped
++2026-09-14T19:36:27.902515Z  WARN evm::traces::external: etherscan config not found
++
++Ran 1 test for test/UsdtYieldVaultAudit.t.sol:UsdtYieldVaultAuditTest
++[FAIL: Aave yield is absent from accounting: 1000000000 != 1100000000] test_AaveYieldMustIncreaseReportedTotalAssets() (gas: 250385)
++Suite result: FAILED. 0 passed; 1 failed; 0 skipped; finished in 800.82µs (135.72µs CPU time)
++
++Ran 1 test suite in 7.67ms (800.82µs CPU time): 0 tests passed, 1 failed, 0 skipped (1 total tests)
++
++Failing tests:
++Encountered 1 failing test in test/UsdtYieldVaultAudit.t.sol:UsdtYieldVaultAuditTest
++[FAIL: Aave yield is absent from accounting: 1000000000 != 1100000000] test_AaveYieldMustIncreaseReportedTotalAssets() (gas: 250385)
++
++Encountered a total of 1 failing tests, 0 tests succeeded
++
++Tip: Run `forge test --rerun` to retry only the 1 failed test
++```
++
++### Fix (not applied)
++
++Derive total assets from the actual aUSDT position rather than a manually
++maintained principal counter (normally `aUsdt.balanceOf(address(this))`, plus any
++idle underlying if the design can hold it). Use that same live asset value for
++all share minting and redemption calculations. Add tests in which aToken value
++increases between deposits and withdrawals, including multiple depositors and a
++final full redemption.
++
++## 2. High: every withdrawal fee is removed from accounting and stranded
++
++### Cause and impact
++
++`withdraw()` computes `grossAssets`, transfers only `netAssets` out of Aave, but
++subtracts the full `grossAssets` from `totalAssetsStored`. The fee remains as
++aUSDT owned by the vault while disappearing from the value represented by
++shares. This directly contradicts the contract and README statement that fees
++stay supplied and accrue to remaining shareholders.
++
++With one 1,000 USDT deposit and a full withdrawal, the test shows the accounting
++at zero while 3 USDT of aUSDT remains in the vault. There are then no outstanding
++shares able to redeem it. With remaining shareholders, the same mismatch means
++their reported balances omit the retained fee.
++
++### Reproduction
++
++Command run:
++
++```text
++forge test --match-contract UsdtYieldVaultAuditTest --match-test test_WithdrawalFeeMustRemainAccountedFor -vv
++```
++
++Real output:
++
++```text
++No files changed, compilation skipped
++2026-09-14T19:35:18.326290Z  WARN evm::traces::external: etherscan config not found
++
++Ran 1 test for test/UsdtYieldVaultAudit.t.sol:UsdtYieldVaultAuditTest
++[FAIL: withdrawal fee is stranded outside accounting: 0 != 3000000] test_WithdrawalFeeMustRemainAccountedFor() (gas: 250783)
++Suite result: FAILED. 0 passed; 1 failed; 0 skipped; finished in 930.45µs (156.94µs CPU time)
++
++Ran 1 test suite in 13.77ms (930.45µs CPU time): 0 tests passed, 1 failed, 0 skipped (1 total tests)
++
++Failing tests:
++Encountered 1 failing test in test/UsdtYieldVaultAudit.t.sol:UsdtYieldVaultAuditTest
++[FAIL: withdrawal fee is stranded outside accounting: 0 != 3000000] test_WithdrawalFeeMustRemainAccountedFor() (gas: 250783)
++
++Encountered a total of 1 failing tests, 0 tests succeeded
++
++Tip: Run `forge test --rerun` to retry only the 1 failed test
++```
++
++### Fix (not applied)
++
++Using the live aUSDT balance for total assets fixes the accounting mismatch:
++burn the withdrawing user's shares, withdraw only `netAssets`, and let the
++remaining aUSDT automatically increase the value of any remaining shares. The
++empty-vault case needs an explicit policy so a final withdrawal cannot leave
++ownerless fee assets (for example, waive the retained fee for the final holder,
++or mint protocol-owned shares representing retained fees). Specify and test that
++policy rather than allowing an unowned residual balance.
++
++## 3. Medium: an unbounded owner-set fee can disable all deposits
++
++### Cause and impact
++
++`setDepositFee()` accepts any integer. A value above `BPS_DENOMINATOR` makes
++`fee > amount`, so `netAmount = amount - fee` reverts for every deposit. This is
++an avoidable operational footgun in an owner-controlled production parameter.
++The test requires an invalid 10,001 bps value to be rejected; the setter accepts
++it instead.
++
++### Reproduction
++
++Command run:
++
++```text
++forge test --match-contract UsdtYieldVaultAuditTest --match-test test_DepositFeeAboveOneHundredPercentMustBeRejected -vv
++```
++
++Real output:
++
++```text
++No files changed, compilation skipped
++2026-09-14T19:35:22.577814Z  WARN evm::traces::external: etherscan config not found
++
++Ran 1 test for test/UsdtYieldVaultAudit.t.sol:UsdtYieldVaultAuditTest
++[FAIL: next call did not revert as expected] test_DepositFeeAboveOneHundredPercentMustBeRejected() (gas: 19309)
++Suite result: FAILED. 0 passed; 1 failed; 0 skipped; finished in 704.50µs (59.58µs CPU time)
++
++Ran 1 test suite in 7.57ms (704.50µs CPU time): 0 tests passed, 1 failed, 0 skipped (1 total tests)
++
++Failing tests:
++Encountered 1 failing test in test/UsdtYieldVaultAudit.t.sol:UsdtYieldVaultAuditTest
++[FAIL: next call did not revert as expected] test_DepositFeeAboveOneHundredPercentMustBeRejected() (gas: 19309)
++
++Encountered a total of 1 failing tests, 0 tests succeeded
++
++Tip: Run `forge test --rerun` to retry only the 1 failed test
++```
++
++### Fix (not applied)
++
++Define a deliberately conservative maximum fee and reject values above it with
++a custom error. Apply the same validation in both the constructor and setter.
++At an absolute minimum the bound must be no greater than 10,000 bps; a production
++vault should normally use a much lower governance-approved cap.
++
++## Scope note
++
++These tests exercise the accounting semantics that real aUSDT uses (an increasing
++token balance), but this environment did not provide a mainnet RPC endpoint, so
++I did not claim a fork-based integration result for the hard-coded USDT and Aave
++addresses. Before deployment, add a pinned-block mainnet-fork test covering real
++USDT approval/transfer, Aave supply, accrued aUSDT, and withdrawal. That missing
++integration check is not counted as a separate demonstrated finding above.
+diff --git a/test/UsdtYieldVaultAudit.t.sol b/test/UsdtYieldVaultAudit.t.sol
+new file mode 100644
+index 0000000..57607af
+--- /dev/null
++++ b/test/UsdtYieldVaultAudit.t.sol
+@@ -0,0 +1,66 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.28;
++
++import {Test} from "forge-std/Test.sol";
++
++import {UsdtYieldVault} from "../src/UsdtYieldVault.sol";
++import {MockUSDT} from "./mocks/MockUSDT.sol";
++import {MockAavePool, MockAToken} from "./mocks/MockAavePool.sol";
++
++contract UsdtYieldVaultAuditTest is Test {
++    UsdtYieldVault internal vault;
++    MockUSDT internal usdt;
++    MockAavePool internal pool;
++    MockAToken internal aUsdt;
++
++    address internal owner = makeAddr("owner");
++    address internal alice = makeAddr("alice");
++
++    function setUp() public {
++        usdt = new MockUSDT();
++        pool = new MockAavePool(address(usdt));
++        aUsdt = pool.aToken();
++        vault = new UsdtYieldVault(address(usdt), address(aUsdt), address(pool), 10, owner);
++
++        usdt.mint(alice, 1_000e6);
++        vm.prank(alice);
++        usdt.approve(address(vault), type(uint256).max);
++    }
++
++    function _depositAll() internal returns (uint256 shares) {
++        vm.prank(alice);
++        shares = vault.deposit(1_000e6);
++    }
++
++    // Aave yield appears as an increased aToken balance. It must be included in
++    // total assets for share holders to own it.
++    function test_AaveYieldMustIncreaseReportedTotalAssets() public {
++        _depositAll();
++
++        usdt.mint(address(pool), 100e6);
++        vm.prank(address(pool));
++        aUsdt.mint(address(vault), 100e6);
++
++        assertEq(vault.totalAssets(), aUsdt.balanceOf(address(vault)), "Aave yield is absent from accounting");
++    }
++
++    // The documented withdrawal fee remains in Aave. It must remain in vault
++    // accounting too; otherwise no present or future shareholder can redeem it.
++    function test_WithdrawalFeeMustRemainAccountedFor() public {
++        uint256 shares = _depositAll();
++
++        vm.prank(alice);
++        vault.withdraw(shares);
++
++        assertEq(vault.totalAssets(), aUsdt.balanceOf(address(vault)), "withdrawal fee is stranded outside accounting");
++    }
++
++    // A basis-point fee cannot exceed its denominator. Without a bound, an
++    // owner mistake makes every deposit revert in arithmetic before it reaches
++    // the explicit NoSharesMinted check.
++    function test_DepositFeeAboveOneHundredPercentMustBeRejected() public {
++        vm.prank(owner);
++        vm.expectRevert();
++        vault.setDepositFee(10_001);
++    }
++}
+
+# Untracked files and status
+ A FINDINGS.md
+ A test/UsdtYieldVaultAudit.t.sol

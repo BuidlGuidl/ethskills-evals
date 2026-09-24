@@ -1,0 +1,336 @@
+diff --git a/FINDINGS.md b/FINDINGS.md
+new file mode 100644
+index 0000000..ad0d181
+--- /dev/null
++++ b/FINDINGS.md
+@@ -0,0 +1,146 @@
++# FINDINGS
++
++Conclusion: I would not ship this vault to mainnet on Monday.
++
++I did not change anything under `src/`. I did not change `test/UsdtYieldVault.t.sol` or anything under `test/mocks/`. The repros I added are:
++
++- `test/RealMainnetUsdtCompatibility.t.sol`
++- `test/WithdrawalFeeAndYieldAccounting.t.sol`
++
++## Finding 1: real mainnet USDT deposits revert before reaching Aave
++
++Severity: Critical.
++
++The vault calls:
++
++```solidity
++usdt.approve(address(aavePool), amount);
++```
++
++through the standard `IERC20` interface. Mainnet USDT at `0xdAC17F958D2ee523a2206206994597C13D831ec7` does not return a boolean from `approve`. In Solidity 0.8, a high-level call through an interface that expects a `bool` reverts while decoding the empty return data.
++
++The mainnet-fork repro funds a user with real forked USDT, approves the vault using `SafeERC20.forceApprove`, then calls `deposit` against the real USDT, real Aave V3 Pool, and real aUSDT addresses from the README. The user-side USDT transfer and approval both succeed. The vault's own raw `approve` emits `Approval`, returns no data, and then `deposit` reverts before `aavePool.supply`.
++
++Command:
++
++```bash
++forge test --match-contract RealMainnetUsdtCompatibilityTest --fork-url https://ethereum-rpc.publicnode.com -vvvv
++```
++
++Output:
++
++```text
++stty: 'standard input': Inappropriate ioctl for device
++Compiling 1 files with Solc 0.8.28
++Solc 0.8.28 finished in 737.86ms
++Compiler run successful!
++
++Ran 1 test for test/RealMainnetUsdtCompatibility.t.sol:RealMainnetUsdtCompatibilityTest
++[FAIL: EvmError: Revert] test_RealUSDTDepositIntoAaveShouldSucceed() (gas: 955858)
++Traces:
++  [955858] RealMainnetUsdtCompatibilityTest::test_RealUSDTDepositIntoAaveShouldSucceed()
++    ├─ [788692] → new UsdtYieldVault@0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f
++    │   ├─ emit OwnershipTransferred(previousOwner: 0x0000000000000000000000000000000000000000, newOwner: RealMainnetUsdtCompatibilityTest: [0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496])
++    │   └─ ← [Return] 3596 bytes of code
++    ├─ [0] VM::addr(<pk>) [staticcall]
++    │   └─ ← [Return] alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6]
++    ├─ [0] VM::label(alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6], "alice")
++    │   └─ ← [Return]
++    ├─ [0] VM::prank(0xF977814e90dA44bFA03b6295A0616a897441aceC)
++    │   └─ ← [Return]
++    ├─ [41601] 0xdAC17F958D2ee523a2206206994597C13D831ec7::transfer(alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6], 1000000000 [1e9])
++    │   ├─ emit Transfer(from: 0xF977814e90dA44bFA03b6295A0616a897441aceC, to: alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6], value: 1000000000 [1e9])
++    │   └─ ← [Stop]
++    ├─ [0] VM::prank(alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6])
++    │   └─ ← [Return]
++    ├─ [24953] 0xdAC17F958D2ee523a2206206994597C13D831ec7::approve(UsdtYieldVault: [0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f], 1000000000 [1e9])
++    │   ├─ emit Approval(owner: alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6], spender: UsdtYieldVault: [0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f], value: 1000000000 [1e9])
++    │   └─ ← [Stop]
++    ├─ [0] VM::prank(alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6])
++    │   └─ ← [Return]
++    ├─ [58468] UsdtYieldVault::deposit(1000000000 [1e9])
++    │   ├─ [29224] 0xdAC17F958D2ee523a2206206994597C13D831ec7::transferFrom(alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6], UsdtYieldVault: [0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f], 1000000000 [1e9])
++    │   │   ├─ emit Transfer(from: alice: [0x328809Bc894f92807417D2dAD6b7C998c1aFdac6], to: UsdtYieldVault: [0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f], value: 1000000000 [1e9])
++    │   │   └─ ← [Stop]
++    │   ├─ [24953] 0xdAC17F958D2ee523a2206206994597C13D831ec7::approve(0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2, 1000000000 [1e9])
++    │   │   ├─ emit Approval(owner: UsdtYieldVault: [0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f], spender: 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2, value: 1000000000 [1e9])
++    │   │   └─ ← [Stop]
++    │   └─ ← [Revert] EvmError: Revert
++    └─ ← [Revert] EvmError: Revert
++
++Backtrace:
++  at UsdtYieldVault.deposit
++  at RealMainnetUsdtCompatibilityTest.test_RealUSDTDepositIntoAaveShouldSucceed
++
++Suite result: FAILED. 0 passed; 1 failed; 0 skipped; finished in 3.33s (2.55s CPU time)
++
++Ran 1 test suite in 6.04s (3.33s CPU time): 0 tests passed, 1 failed, 0 skipped (1 total tests)
++
++Failing tests:
++Encountered 1 failing test in test/RealMainnetUsdtCompatibility.t.sol:RealMainnetUsdtCompatibilityTest
++[FAIL: EvmError: Revert] test_RealUSDTDepositIntoAaveShouldSucceed() (gas: 955858)
++
++Encountered a total of 1 failing tests, 0 tests succeeded
++
++Tip: Run `forge test --rerun` to retry only the 1 failed test
++```
++
++What I would change:
++
++- Replace the raw `usdt.approve(address(aavePool), amount)` with a `SafeERC20` approval path that supports no-return tokens, for example `forceApprove`.
++- Consider approving Aave once to a bounded maximum during deployment/initialization or force-approving per deposit and resetting as needed. The important point is that USDT interactions must all go through optional-return-safe wrappers.
++- Keep a mainnet-fork test for the actual USDT and Aave addresses in CI.
++
++## Finding 2: withdrawal fees and Aave yield are not credited to shareholders and can be stranded
++
++Severity: High.
++
++The vault uses `totalAssetsStored` as the asset base for share conversions. That value is manually adjusted on deposits and withdrawals, but it never reads the live aUSDT balance. Aave yield increases the vault's aUSDT balance, not `totalAssetsStored`, so depositors' `balanceOfUnderlying` does not increase when the Aave position earns yield.
++
++Withdrawal fees have a similar problem. `withdraw` subtracts `grossAssets` from `totalAssetsStored` but only withdraws `netAssets` from Aave. The fee remains as aUSDT in the vault, but it is removed from accounting, so it does not accrue to remaining shareholders. If the last depositor exits after yield, the aUSDT left in the vault is stranded.
++
++Command:
++
++```bash
++forge test --match-contract WithdrawalFeeAndYieldAccountingTest
++```
++
++Output:
++
++```text
++stty: 'standard input': Inappropriate ioctl for device
++Compiling 1 files with Solc 0.8.28
++Solc 0.8.28 finished in 940.95ms
++Compiler run successful!
++
++Ran 3 tests for test/WithdrawalFeeAndYieldAccounting.t.sol:WithdrawalFeeAndYieldAccountingTest
++[FAIL: assertion failed: 1000000000 != 1050000000] test_AaveYieldShouldIncreaseShareholderUnderlyingBalance() (gas: 246041)
++[FAIL: assertion failed: 53000000 != 0] test_FullExitShouldNotLeaveAUsdtStrandedInVault() (gas: 264167)
++[FAIL: assertion failed: 1000000000 <= 1000000000] test_WithdrawalFeeShouldAccrueToRemainingShareholders() (gas: 345505)
++Suite result: FAILED. 0 passed; 3 failed; 0 skipped; finished in 1.29ms (941.65µs CPU time)
++
++Ran 1 test suite in 11.50ms (1.29ms CPU time): 0 tests passed, 3 failed, 0 skipped (3 total tests)
++
++Failing tests:
++Encountered 3 failing tests in test/WithdrawalFeeAndYieldAccounting.t.sol:WithdrawalFeeAndYieldAccountingTest
++[FAIL: assertion failed: 1000000000 != 1050000000] test_AaveYieldShouldIncreaseShareholderUnderlyingBalance() (gas: 246041)
++[FAIL: assertion failed: 53000000 != 0] test_FullExitShouldNotLeaveAUsdtStrandedInVault() (gas: 264167)
++[FAIL: assertion failed: 1000000000 <= 1000000000] test_WithdrawalFeeShouldAccrueToRemainingShareholders() (gas: 345505)
++
++Encountered a total of 3 failing tests, 0 tests succeeded
++
++Tip: Run `forge test --rerun` to retry only the 3 failed tests
++```
++
++What the failures show:
++
++- After simulated Aave yield of `50e6`, Alice's underlying balance is still `1000000000`, not `1050000000`.
++- After Alice fully exits a `1,000 USDT` deposit with `50 USDT` of simulated yield, the vault still holds `53000000` aUSDT: `50 USDT` of yield plus the `3 USDT` withdrawal fee.
++- When Alice withdraws while Bob remains, Bob's underlying balance is still exactly `1000000000`; it did not increase from Alice's withdrawal fee.
++
++What I would change:
++
++- Make `totalAssets()` derive from live vault assets, primarily `aUsdt.balanceOf(address(this))`, instead of from a manually stored principal number.
++- Base `convertToShares`, `convertToAssets`, and `sharePrice` on live assets so Aave yield and retained fees are reflected in share price.
++- Decide explicitly what happens to fees when there are no remaining shareholders. Options include waiving the final withdrawal fee, sending protocol fees to a fee recipient, or tracking protocol-owned assets separately with a recovery path. Do not leave unowned aUSDT in the vault.
++- Add tests for accrued yield, partial withdrawals, final withdrawals, and fee behavior with one remaining shareholder and with zero remaining shareholders.
+diff --git a/test/RealMainnetUsdtCompatibility.t.sol b/test/RealMainnetUsdtCompatibility.t.sol
+new file mode 100644
+index 0000000..b16d4f0
+--- /dev/null
++++ b/test/RealMainnetUsdtCompatibility.t.sol
+@@ -0,0 +1,36 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.28;
++
++import {Test} from "forge-std/Test.sol";
++import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
++import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
++
++import {UsdtYieldVault} from "../src/UsdtYieldVault.sol";
++
++contract RealMainnetUsdtCompatibilityTest is Test {
++    using SafeERC20 for IERC20;
++
++    address internal constant USDT = 0xdAC17F958D2ee523a2206206994597C13D831ec7;
++    address internal constant AAVE_V3_POOL = 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2;
++    address internal constant A_USDT = 0x23878914EFE38d27C4D67Ab83ed1b93A74D4086a;
++
++    address internal constant USDT_WHALE = 0xF977814e90dA44bFA03b6295A0616a897441aceC;
++
++    function test_RealUSDTDepositIntoAaveShouldSucceed() public {
++        UsdtYieldVault vault = new UsdtYieldVault(USDT, A_USDT, AAVE_V3_POOL, 10, address(this));
++
++        address alice = makeAddr("alice");
++        uint256 amount = 1_000e6;
++
++        vm.prank(USDT_WHALE);
++        IERC20(USDT).safeTransfer(alice, amount);
++
++        vm.prank(alice);
++        IERC20(USDT).forceApprove(address(vault), amount);
++
++        vm.prank(alice);
++        uint256 shares = vault.deposit(amount);
++
++        assertGt(shares, 0);
++    }
++}
+diff --git a/test/WithdrawalFeeAndYieldAccounting.t.sol b/test/WithdrawalFeeAndYieldAccounting.t.sol
+new file mode 100644
+index 0000000..0531ebd
+--- /dev/null
++++ b/test/WithdrawalFeeAndYieldAccounting.t.sol
+@@ -0,0 +1,131 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.28;
++
++import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
++import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
++import {Test} from "forge-std/Test.sol";
++
++import {IAavePool} from "../src/interfaces/IAavePool.sol";
++import {UsdtYieldVault} from "../src/UsdtYieldVault.sol";
++
++contract AccountingUSDT is ERC20 {
++    constructor() ERC20("Accounting USDT", "USDT") {}
++
++    function decimals() public pure override returns (uint8) {
++        return 6;
++    }
++
++    function mint(address to, uint256 amount) external {
++        _mint(to, amount);
++    }
++}
++
++contract AccountingAToken is ERC20 {
++    address public immutable pool;
++
++    constructor(address _pool) ERC20("Accounting aUSDT", "aUSDT") {
++        pool = _pool;
++    }
++
++    function decimals() public pure override returns (uint8) {
++        return 6;
++    }
++
++    function mint(address to, uint256 amount) external {
++        require(msg.sender == pool, "only pool");
++        _mint(to, amount);
++    }
++
++    function burn(address from, uint256 amount) external {
++        require(msg.sender == pool, "only pool");
++        _burn(from, amount);
++    }
++}
++
++contract YieldingAavePool is IAavePool {
++    IERC20 public immutable underlying;
++    AccountingAToken public immutable aToken;
++
++    constructor(address _underlying) {
++        underlying = IERC20(_underlying);
++        aToken = new AccountingAToken(address(this));
++    }
++
++    function supply(address, uint256 amount, address onBehalfOf, uint16) external override {
++        underlying.transferFrom(msg.sender, address(this), amount);
++        aToken.mint(onBehalfOf, amount);
++    }
++
++    function withdraw(address, uint256 amount, address to) external override returns (uint256) {
++        aToken.burn(msg.sender, amount);
++        underlying.transfer(to, amount);
++        return amount;
++    }
++
++    function addYield(address vault, uint256 amount) external {
++        AccountingUSDT(address(underlying)).mint(address(this), amount);
++        aToken.mint(vault, amount);
++    }
++}
++
++contract WithdrawalFeeAndYieldAccountingTest is Test {
++    AccountingUSDT internal usdt;
++    YieldingAavePool internal pool;
++    AccountingAToken internal aUsdt;
++    UsdtYieldVault internal vault;
++
++    address internal owner = makeAddr("owner");
++    address internal alice = makeAddr("alice");
++    address internal bob = makeAddr("bob");
++
++    function setUp() public {
++        usdt = new AccountingUSDT();
++        pool = new YieldingAavePool(address(usdt));
++        aUsdt = pool.aToken();
++        vault = new UsdtYieldVault(address(usdt), address(aUsdt), address(pool), 0, owner);
++
++        usdt.mint(alice, 100_000e6);
++        usdt.mint(bob, 100_000e6);
++
++        vm.prank(alice);
++        usdt.approve(address(vault), type(uint256).max);
++        vm.prank(bob);
++        usdt.approve(address(vault), type(uint256).max);
++    }
++
++    function _deposit(address account, uint256 amount) internal returns (uint256) {
++        vm.prank(account);
++        return vault.deposit(amount);
++    }
++
++    function test_WithdrawalFeeShouldAccrueToRemainingShareholders() public {
++        uint256 aliceShares = _deposit(alice, 1_000e6);
++        _deposit(bob, 1_000e6);
++
++        uint256 bobAssetsBefore = vault.balanceOfUnderlying(bob);
++
++        vm.prank(alice);
++        vault.withdraw(aliceShares);
++
++        assertGt(vault.balanceOfUnderlying(bob), bobAssetsBefore);
++    }
++
++    function test_AaveYieldShouldIncreaseShareholderUnderlyingBalance() public {
++        _deposit(alice, 1_000e6);
++
++        pool.addYield(address(vault), 50e6);
++
++        assertEq(vault.balanceOfUnderlying(alice), 1_050e6);
++    }
++
++    function test_FullExitShouldNotLeaveAUsdtStrandedInVault() public {
++        uint256 shares = _deposit(alice, 1_000e6);
++
++        pool.addYield(address(vault), 50e6);
++
++        vm.prank(alice);
++        vault.withdraw(shares);
++
++        assertEq(aUsdt.balanceOf(address(vault)), 0);
++    }
++}
+
+# Untracked files and status
+ A FINDINGS.md
+ A test/RealMainnetUsdtCompatibility.t.sol
+ A test/WithdrawalFeeAndYieldAccounting.t.sol

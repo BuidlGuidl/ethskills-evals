@@ -1,0 +1,267 @@
+diff --git a/packages/nextjs/app/greetings/page.tsx b/packages/nextjs/app/greetings/page.tsx
+new file mode 100644
+index 0000000..7148b54
+--- /dev/null
++++ b/packages/nextjs/app/greetings/page.tsx
+@@ -0,0 +1,206 @@
++"use client";
++
++import { FormEvent, useMemo, useState } from "react";
++import { Address } from "@scaffold-ui/components";
++import type { NextPage } from "next";
++import type { Address as AddressType } from "viem";
++import { useAccount } from "wagmi";
++import {
++  useDeployedContractInfo,
++  useScaffoldEventHistory,
++  useScaffoldReadContract,
++  useScaffoldWriteContract,
++  useTargetNetwork,
++} from "~~/hooks/scaffold-eth";
++import { notification } from "~~/utils/scaffold-eth";
++
++type GreetingChangeArgs = {
++  greetingSetter?: AddressType;
++  newGreeting?: string;
++};
++
++type GreetingChangeEvent = {
++  args?: GreetingChangeArgs;
++  blockNumber?: bigint;
++  logIndex?: number;
++  transactionHash?: string;
++};
++
++const Greetings: NextPage = () => {
++  const [newGreeting, setNewGreeting] = useState("");
++  const { address: connectedAddress, isConnected } = useAccount();
++  const { targetNetwork } = useTargetNetwork();
++
++  const { data: deployedContractData, isLoading: isLoadingContract } = useDeployedContractInfo({
++    contractName: "YourContract",
++  });
++
++  const { data: currentGreeting, refetch: refetchGreeting } = useScaffoldReadContract({
++    contractName: "YourContract",
++    functionName: "greeting",
++  });
++
++  const { data: totalCounter, refetch: refetchTotalCounter } = useScaffoldReadContract({
++    contractName: "YourContract",
++    functionName: "totalCounter",
++  });
++
++  const {
++    data: greetingChangeEvents,
++    isLoading: isLoadingEvents,
++    refetch: refetchGreetingChangeEvents,
++  } = useScaffoldEventHistory({
++    contractName: "YourContract",
++    eventName: "GreetingChange",
++    watch: true,
++    blockData: false,
++  });
++
++  const { writeContractAsync, isMining, isPending } = useScaffoldWriteContract({
++    contractName: "YourContract",
++  });
++
++  const greetingEvents = useMemo(
++    () =>
++      ((greetingChangeEvents ?? []) as GreetingChangeEvent[]).filter(
++        event => event.args?.greetingSetter && typeof event.args.newGreeting === "string",
++      ),
++    [greetingChangeEvents],
++  );
++
++  const isContractReady = Boolean(deployedContractData);
++  const isSubmitting = isMining || isPending;
++  const isSubmitDisabled = !isConnected || !isContractReady || isSubmitting;
++
++  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
++    event.preventDefault();
++
++    const greeting = newGreeting.trim();
++    if (!greeting) {
++      notification.warning("Enter a greeting first.");
++      return;
++    }
++
++    try {
++      await writeContractAsync(
++        {
++          functionName: "setGreeting",
++          args: [greeting],
++        },
++        {
++          onBlockConfirmation: () => {
++            setNewGreeting("");
++            refetchGreeting();
++            refetchTotalCounter();
++            refetchGreetingChangeEvents();
++          },
++        },
++      );
++    } catch {
++      // Transaction errors are surfaced by useTransactor notifications.
++    }
++  };
++
++  return (
++    <main className="grow bg-base-200">
++      <div className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-4 py-8 sm:px-6 lg:px-8">
++        <section className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_16rem]">
++          <div className="card bg-base-100 border border-base-300 shadow-sm">
++            <div className="card-body gap-4">
++              <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
++                <div>
++                  <h1 className="card-title text-2xl">Greetings</h1>
++                  <p className="text-sm text-base-content/70">Current message stored in YourContract</p>
++                </div>
++                {connectedAddress && (
++                  <div className="flex items-center gap-2 text-sm">
++                    <span className="text-base-content/60">Connected</span>
++                    <Address address={connectedAddress} chain={targetNetwork} size="sm" />
++                  </div>
++                )}
++              </div>
++
++              <div className="rounded border border-base-300 bg-base-200 p-4">
++                <p className="break-words text-xl font-semibold">
++                  {typeof currentGreeting === "string" ? currentGreeting : "No greeting loaded yet"}
++                </p>
++              </div>
++
++              {!isLoadingContract && !isContractReady && (
++                <div className="alert alert-warning">
++                  <span>YourContract is not available on {targetNetwork.name}.</span>
++                </div>
++              )}
++            </div>
++          </div>
++
++          <div className="stats stats-vertical border border-base-300 bg-base-100 shadow-sm">
++            <div className="stat">
++              <div className="stat-title">Total changes</div>
++              <div className="stat-value text-4xl">{totalCounter === undefined ? "..." : totalCounter.toString()}</div>
++              <div className="stat-desc">Recorded onchain</div>
++            </div>
++          </div>
++        </section>
++
++        <section className="card bg-base-100 border border-base-300 shadow-sm">
++          <form className="card-body gap-4" onSubmit={handleSubmit}>
++            <div>
++              <h2 className="card-title text-xl">Set a New Greeting</h2>
++              <p className="text-sm text-base-content/70">Submit a transaction from your connected wallet.</p>
++            </div>
++
++            <div className="join w-full">
++              <input
++                className="input join-item input-bordered w-full"
++                disabled={!isConnected || !isContractReady || isSubmitting}
++                onChange={event => setNewGreeting(event.target.value)}
++                placeholder={isConnected ? "gm, unstoppable app builders" : "Connect wallet to write"}
++                value={newGreeting}
++              />
++              <button className="btn btn-primary join-item min-w-32" disabled={isSubmitDisabled} type="submit">
++                {isSubmitting ? <span className="loading loading-spinner loading-sm" /> : "Submit"}
++              </button>
++            </div>
++          </form>
++        </section>
++
++        <section className="card bg-base-100 border border-base-300 shadow-sm">
++          <div className="card-body gap-4">
++            <div className="flex items-center justify-between gap-4">
++              <div>
++                <h2 className="card-title text-xl">Greeting Feed</h2>
++                <p className="text-sm text-base-content/70">Newest changes first</p>
++              </div>
++              {isLoadingEvents && <span className="loading loading-spinner loading-sm" />}
++            </div>
++
++            {greetingEvents.length > 0 ? (
++              <div className="divide-y divide-base-300 rounded border border-base-300">
++                {greetingEvents.map(event => {
++                  const args = event.args as Required<GreetingChangeArgs>;
++                  const eventKey = `${event.transactionHash ?? "tx"}-${event.logIndex ?? "log"}-${
++                    event.blockNumber?.toString() ?? "block"
++                  }`;
++
++                  return (
++                    <div className="grid gap-3 p-4 md:grid-cols-[14rem_minmax(0,1fr)]" key={eventKey}>
++                      <Address address={args.greetingSetter} chain={targetNetwork} size="sm" />
++                      <p className="break-words font-medium">{args.newGreeting}</p>
++                    </div>
++                  );
++                })}
++              </div>
++            ) : (
++              <div className="rounded border border-dashed border-base-300 p-6 text-center text-base-content/70">
++                {isLoadingEvents ? "Loading greeting changes..." : "No greeting changes found yet."}
++              </div>
++            )}
++          </div>
++        </section>
++      </div>
++    </main>
++  );
++};
++
++export default Greetings;
+diff --git a/packages/nextjs/components/Header.tsx b/packages/nextjs/components/Header.tsx
+index bc63eb4..0b1c616 100644
+--- a/packages/nextjs/components/Header.tsx
++++ b/packages/nextjs/components/Header.tsx
+@@ -5,12 +5,10 @@ import Image from "next/image";
+ import Link from "next/link";
+ import { usePathname } from "next/navigation";
+ import { hardhat } from "viem/chains";
+-import { Bars3Icon, BugAntIcon } from "@heroicons/react/24/outline";
++import { Bars3Icon, BugAntIcon, ChatBubbleLeftRightIcon } from "@heroicons/react/24/outline";
+ import { FaucetButton, RainbowKitCustomConnectButton } from "~~/components/scaffold-eth";
+ import { useOutsideClick, useTargetNetwork } from "~~/hooks/scaffold-eth";
+ 
+-
+-
+ type HeaderMenuLink = {
+   label: string;
+   href: string;
+@@ -19,14 +17,19 @@ type HeaderMenuLink = {
+ 
+ export const menuLinks: HeaderMenuLink[] = [
+   {
+-    label: 'Home',
+-    href: '/'
++    label: "Home",
++    href: "/",
++  },
++  {
++    label: "Greetings",
++    href: "/greetings",
++    icon: <ChatBubbleLeftRightIcon className="h-4 w-4" />,
+   },
+   {
+-    label: 'Debug Contracts',
+-    href: '/debug',
+-    icon: <BugAntIcon className="h-4 w-4" />
+-  }
++    label: "Debug Contracts",
++    href: "/debug",
++    icon: <BugAntIcon className="h-4 w-4" />,
++  },
+ ];
+ 
+ export const HeaderMenuLinks = () => {
+@@ -102,4 +105,4 @@ export const Header = () => {
+       </div>
+     </div>
+   );
+-};
+\ No newline at end of file
++};
+
+# Untracked files and status
+ A packages/nextjs/app/greetings/page.tsx
+ M packages/nextjs/components/Header.tsx

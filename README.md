@@ -2,11 +2,11 @@
 
 Evals for every skill in the [ethskills](https://ethskills.com) library, built on [skill-eval-framework](https://github.com/BuidlGuidl/skill-eval-framework).
 
-To run your part: point your [claude code](https://github.com/anthropics/claude-code) or [codex](https://github.com/openai/codex) at this repo and it orchestrates the whole benchmark itself.
+To run your part: point your [claude code](https://github.com/anthropics/claude-code), [codex](https://github.com/openai/codex) or [opencode](https://github.com/anomalyco/opencode) at this repo and it orchestrates the whole benchmark itself, on its own model or on an open one through opencode.
 
 ## Using it
 
-Two harnesses are supported right now, [claude code](https://github.com/anthropics/claude-code) and [codex](https://github.com/openai/codex), so make sure the ones you'll use are installed. Either can fill any of the three roles in a benchmark: the orchestrator you open here, the executors that perform the runs, and the judge that grades them. Mixing is fine (claude orchestrating, codex executing), and so is running everything on one. Opening it up to opencode and other harnesses is planned.
+Three harnesses are supported: [claude code](https://github.com/anthropics/claude-code), [codex](https://github.com/openai/codex) and [opencode](https://github.com/anomalyco/opencode), so make sure the ones you'll use are installed. Claude and codex can fill any of the three roles in a benchmark: the orchestrator you open here, the executors that perform the runs, and the judge that grades them. Opencode fills the first two — it is how open models (Kimi, GLM, …) get benchmarked — but not the judge, so an opencode orchestrator names a claude or codex judge explicitly. Mixing is fine (claude orchestrating, codex executing; opencode orchestrating, opencode executing, claude judging), and so is running everything on one. Opencode runs on OpenRouter, so set `OPENROUTER_API_KEY` before an opencode run, and open it on a model that supports tool use (a `:free` route does not).
 
 ```bash
 git clone https://github.com/BuidlGuidl/ethskills-evals.git
@@ -65,23 +65,23 @@ The orchestrating agent works from `AGENTS.md`, the full playbook including ever
 
 - `yarn setup` builds a clean workspace for one run: task prompt in, skill installed (or not), and a hard fail if any grading material would leak in. The isolation is load-bearing, not hygiene. An executor that knows how it's being judged starts acting smart, so it gets the task and nothing else.
 - `yarn run-executor` spawns the executor in that workspace on `TASK.md` alone, builds the CLI invocation so the load-bearing flags cannot be forgotten, saves the transcript, and records when the process finished. A run whose executor was killed stays ungradeable by design: that is a dead run, not a zero.
-- `yarn verify` grades a finished run: snapshots the output, has a blind LLM judge grade the task's `expect:` lines against it, and writes `result.yaml`. No judge is baked in; the orchestrator passes `--judge-agent` and `--judge-model`, and `result.yaml` records which judge graded which run.
+- `yarn verify` grades a finished run: snapshots the output, has a blind LLM judge grade the task's `expect:` lines against it, and writes `result.yaml`. No judge is baked in; the orchestrator passes `--judge-agent`, `--judge-model` and `--judge-effort`, and `result.yaml` records which judge graded which run, at what effort.
 
-Every run leaves a record behind: what the executor changed (`run.diff`, or a snapshot of the files for a task with no starting repo), its transcript, `executor.yaml` with the model and the exit, and the graded `result.yaml`. The orchestrating agent never performs the task itself.
+Every run leaves a record behind: what the executor changed (`run.diff`, or a snapshot of the files for a task with no starting repo), its transcript, `executor.yaml` with the model, the effort and the exit, and the graded `result.yaml`. The orchestrating agent never performs the task itself.
 
-Executors are pluggable: `--executor claude` or `--executor codex`. Skills install at the cross-agent standard `.agents/skills/` (codex reads it natively; claude runs get a bridge copy at `.claude/skills/`).
+Executors are pluggable: `--executor claude`, `--executor codex` or `--executor opencode`. Skills install at the cross-agent standard `.agents/skills/` (codex reads it natively; claude runs get a bridge copy at `.claude/skills/`, opencode runs at `.opencode/skills/`). An opencode model is named the way opencode names it, and its effort is one its catalog entry lists — `opencode models openrouter --verbose` shows them — e.g. `--model openrouter/z-ai/glm-5.3 --effort low` (kimi-k3 and glm-5.3 take `low`, `high`, `max`). opencode always reads `~/.opencode`, so `run-executor` refuses to start while that dir holds skills, agents, plugins or an `opencode.json`; move them aside for the benchmark.
 
 Because the fixed part is this small, the orchestrator can bend the framework into shapes it wasn't written for, like comparing two similar skills from different developers.
 
 ## Running a benchmark
 
 ```bash
-yarn setup --task tasks/<id>.yaml --variant no_skill --run 1 --executor claude
-yarn run-executor --run artifacts/<id>/<run-id> --model <model>
-yarn verify --run artifacts/<id>/<run-id> --judge-agent claude --judge-model <model>
+yarn setup --task tasks/<id>.yaml --variant no_skill --run 1 --executor claude --benchmark <id>
+yarn run-executor --run artifacts/<id>/<run-id> --model <model> --effort <effort>
+yarn verify --run artifacts/<id>/<run-id> --judge-agent claude --judge-model <model> --judge-effort <effort>
 ```
 
-Workspaces live outside the repo, under `~/.cache/ethskills-evals` or wherever `EVAL_WORKSPACE_ROOT` points — export it for the whole benchmark, since all three commands read it. `verify` deletes the workspace it graded; `yarn clean-workspaces --delete` reclaims the rest, and an SE2 workspace is gigabytes.
+`--benchmark` names the comparison the run is part of; the site selects runs by it, so a benchmark's runs stay apart from stray runs on the same model. Workspaces live outside the repo, under `~/.cache/ethskills-evals` or wherever `EVAL_WORKSPACE_ROOT` points — export it for the whole benchmark, since all three commands read it. `verify` deletes the workspace it graded; `yarn clean-workspaces --delete` reclaims the rest, and an SE2 workspace is gigabytes.
 
 Repeat per variant and run count, then compare `result.yaml`s and write the report. You don't normally type these; the orchestrator does. `AGENTS.md` has the full loop, the intake conversation, and the mistake-record format.
 

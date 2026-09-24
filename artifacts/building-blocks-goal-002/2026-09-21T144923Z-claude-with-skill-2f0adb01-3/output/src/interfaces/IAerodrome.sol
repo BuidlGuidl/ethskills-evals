@@ -1,0 +1,70 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.28;
+
+/// @dev Minimal Aerodrome (Aero) interfaces used by the strategy. Base mainnet addresses in README.
+interface IAerodromeRouter {
+    struct Route {
+        address from;
+        address to;
+        bool stable;
+        address factory;
+    }
+
+    function addLiquidity(
+        address tokenA,
+        address tokenB,
+        bool stable,
+        uint256 amountADesired,
+        uint256 amountBDesired,
+        uint256 amountAMin,
+        uint256 amountBMin,
+        address to,
+        uint256 deadline
+    ) external returns (uint256 amountA, uint256 amountB, uint256 liquidity);
+
+    function removeLiquidity(
+        address tokenA,
+        address tokenB,
+        bool stable,
+        uint256 liquidity,
+        uint256 amountAMin,
+        uint256 amountBMin,
+        address to,
+        uint256 deadline
+    ) external returns (uint256 amountA, uint256 amountB);
+
+    function swapExactTokensForTokens(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        Route[] calldata routes,
+        address to,
+        uint256 deadline
+    ) external returns (uint256[] memory amounts);
+}
+
+interface IAerodromePool {
+    function token0() external view returns (address);
+    function token1() external view returns (address);
+    function stable() external view returns (bool);
+    function totalSupply() external view returns (uint256);
+    function getReserves() external view returns (uint256 reserve0, uint256 reserve1, uint256 blockTimestampLast);
+}
+
+interface IAerodromeGauge {
+    function stakingToken() external view returns (address);
+    function rewardToken() external view returns (address);
+    function balanceOf(address account) external view returns (uint256);
+    function earned(address account) external view returns (uint256);
+    function deposit(uint256 amount) external;
+    function withdraw(uint256 amount) external;
+    function getReward(address account) external;
+}
+
+interface IAerodromePoolFactory {
+    function getPool(address tokenA, address tokenB, bool stable) external view returns (address);
+}
+
+interface IAerodromeVoter {
+    function gauges(address pool) external view returns (address);
+    function isAlive(address gauge) external view returns (bool);
+}

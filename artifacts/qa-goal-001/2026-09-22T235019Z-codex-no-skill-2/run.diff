@@ -1,0 +1,82 @@
+diff --git a/REVIEW.md b/REVIEW.md
+new file mode 100644
+index 0000000..27752d8
+--- /dev/null
++++ b/REVIEW.md
+@@ -0,0 +1,73 @@
++# Pre-Ship Frontend Review
++
++Verification note: I attempted `yarn workspace @se-2/nextjs check-types` and `yarn workspace @se-2/nextjs lint`, but both failed before running because the workspace has no `node_modules` install state available to Yarn. I did not run `yarn install` because this is a report-only pass. I also checked Base RPC directly: Base USDC has bytecode, but the configured Payouts address does not.
++
++## 1. Configured Payouts address has no bytecode on Base
++
++- Severity: ship-blocking
++- File: `packages/nextjs/contracts/deployedContracts.ts:10`
++- Issue: The frontend points `Payouts` at `0x7c3f2A9d41B85E60Cf14a14e2b9D073A55e0b6F2`, but `eth_getCode` on Base mainnet returns `0x` for that address. Calls to `pay`, event reads, and deployment checks will fail because there is no contract there.
++- Concrete fix: Deploy or identify the real Base `Payouts` contract, verify `eth_getCode(address, "latest") !== "0x"`, regenerate `deployedContracts.ts` from the actual deployment, and keep `deployedOnBlock` matched to the real creation block. Add a pre-release check that fails if any configured production contract address has no bytecode.
++
++## 2. Latest payouts feed scans Base from genesis in every client
++
++- Severity: ship-blocking
++- File: `packages/nextjs/app/payouts/page.tsx:29`
++- Issue: `useScaffoldEventHistory` is called with `fromBlock: 0n` and `watch: true`. The hook itself is marked as not production-optimized, and this override ignores the `deployedOnBlock` value. On Base this can trigger tens of thousands of `eth_getLogs` batches per user, quickly rate-limiting RPC and making the page unreliable.
++- Concrete fix: Move payout history to an indexer/API such as Ponder, or at minimum start from the verified deployment block, page the result, and limit the feed. Do not query all historical logs from every browser session.
++
++## 3. Production app exposes Debug Contracts
++
++- Severity: ship-blocking
++- File: `packages/nextjs/components/Header.tsx:29`
++- Issue: The production header links to `/debug`, and `packages/nextjs/app/debug/page.tsx:13` renders the SE-2 debug contract UI against the configured Base contracts. Real users can reach generic contract write controls, including USDC approvals/transfers if metadata is present.
++- Concrete fix: Remove the Debug Contracts nav item and production route, or hard-gate it behind a development-only environment flag and return `notFound()` in production. Remove the debug-contracts dependency from the production bundle if it is not needed.
++
++## 4. Payout actions can be submitted on the wrong chain
++
++- Severity: ship-blocking
++- File: `packages/nextjs/app/payouts/page.tsx:21`
++- Issue: The page uses raw `useWriteContract` with hard-coded Base addresses but does not enforce that the connected wallet is on Base before enabling `Approve` or `Send Payout`. Mainnet is also included in Wagmi for ENS support, so a user connected to mainnet can still be prompted to sign transactions to those addresses on the wrong chain.
++- Concrete fix: Use `useScaffoldWriteContract` for `Payouts` and a chain-aware write wrapper for USDC, or explicitly check `chainId === base.id`, disable both buttons while on any other chain, and route users through `switchChain({ chainId: base.id })` before constructing writes.
++
++## 5. Approval flow does not wait for mined approval or check allowance
++
++- Severity: should-fix
++- File: `packages/nextjs/app/payouts/page.tsx:36`
++- Issue: `handleApprove` returns after the approval transaction is submitted, not after it is mined, and `handlePay` never reads `allowance`. Users can click `Send Payout` immediately after approval and hit a revert, or approve an amount that no longer matches the pending payment.
++- Concrete fix: Read `allowance(connectedAddress, PAYOUTS.address)`, wait for the approval receipt with `useWaitForTransactionReceipt` or the SE-2 transactor, disable `Send Payout` until allowance is sufficient, and consider a single "Approve then send" flow with clear transaction states.
++
++## 6. Invalid input and transaction errors are only logged to the console
++
++- Severity: should-fix
++- File: `packages/nextjs/app/payouts/page.tsx:44`
++- Issue: Bad recipient addresses, zero amounts, negative numbers, more than 6 decimals, insufficient balance, parse errors, and contract reverts are caught and sent to `console.error` only. Users get no actionable feedback and the buttons remain broadly enabled.
++- Concrete fix: Validate with `isAddress`, enforce `amount > 0`, max 6 USDC decimals, amount <= balance, and memo length before enabling actions. Use `notification.error(getParsedError(error))` or the SE-2 write hooks for user-visible failures.
++
++## 7. Production RPC and WalletConnect settings still use shared defaults
++
++- Severity: should-fix
++- File: `packages/nextjs/scaffold.config.ts:16`
++- Issue: `DEFAULT_ALCHEMY_API_KEY` and the fallback WalletConnect project ID are still active, and `wagmiConnectors.tsx:49` advertises the app as `scaffold-eth-2`. Shared defaults are likely to be rate-limited or blocked by wallet/project-domain settings once real users arrive.
++- Concrete fix: Require `NEXT_PUBLIC_ALCHEMY_API_KEY` or a dedicated Base `rpcOverrides[8453]` in production, require a project-owned `NEXT_PUBLIC_WALLET_CONNECT_PROJECT_ID`, and set the RainbowKit `appName` to the payout app's real name.
++
++## 8. External USDC metadata is stored in an autogenerated file
++
++- Severity: should-fix
++- File: `packages/nextjs/contracts/deployedContracts.ts:1`
++- Issue: The file says it is autogenerated and should not be edited, but it also contains the manually added Base USDC entry at `packages/nextjs/contracts/deployedContracts.ts:50`. A future `yarn deploy` or ABI generation can overwrite it and break the payouts page.
++- Concrete fix: Keep only deployed local contracts in `deployedContracts.ts`. Move Base USDC address/ABI to `packages/nextjs/contracts/externalContracts.ts`, or to a dedicated typed constants module if it should not participate in SE-2 contract discovery.
++
++## 9. Vercel production command can ship with TypeScript errors ignored
++
++- Severity: should-fix
++- File: `packages/nextjs/package.json:16`
++- Issue: `vercel:yolo` sets `NEXT_PUBLIC_IGNORE_BUILD_ERROR=true`, and `packages/nextjs/next.config.ts:7` uses that public env var to ignore TypeScript build errors. The documented deploy command can publish a broken frontend.
++- Concrete fix: Remove `NEXT_PUBLIC_IGNORE_BUILD_ERROR` from production deploy scripts, remove `typescript.ignoreBuildErrors`, and make `yarn workspace @se-2/nextjs check-types` part of CI/release verification.
++
++## 10. Production shell still contains Scaffold-ETH template branding and invalid manifest JSON
++
++- Severity: should-fix
++- File: `packages/nextjs/app/layout.tsx:10`
++- Issue: Metadata, the home page, footer links, and `packages/nextjs/public/manifest.json:2` still ship Scaffold-ETH template content. The manifest file is also not valid JSON because keys and strings are single-quoted/unquoted.
++- Concrete fix: Replace the metadata/title/description/icons with the payouts product branding, make `/` redirect to `/payouts` or render the actual payout experience, remove template footer links, and rewrite `manifest.json` as valid JSON with the production app name and icons.
+
+# Untracked files and status
+ A REVIEW.md

@@ -1,5 +1,13 @@
 export type Variant = "no_skill" | "with_skill";
-export type Executor = "claude" | "codex";
+// The agent CLIs the harness can spawn to perform a run. opencode is the route to open
+// models: it takes any provider/model pair, and the harness drives it through OpenRouter
+// (lib/opencode-home.ts).
+export const EXECUTORS = ["claude", "codex", "opencode"] as const;
+export type Executor = (typeof EXECUTORS)[number];
+// Who can grade. opencode is not here yet: a judge needs a read-only permission set and a
+// final-message capture, neither of which has been exercised on it.
+export const JUDGE_AGENTS = ["claude", "codex"] as const;
+export type JudgeAgent = (typeof JUDGE_AGENTS)[number];
 // A retired task keeps its spec and its artifacts — the record of what it once graded stays
 // readable — but `setup` refuses to build a workspace for it, so a stale prior cannot quietly
 // re-enter a benchmark table. Anything that lists tasks should filter on this rather than on
@@ -20,8 +28,9 @@ export type TaskSpec = {
 export type ExpectStatus = "pass" | "fail";
 
 export type JudgeSpec = {
-  agent: Executor;
-  model: string | null;
+  agent: JudgeAgent;
+  model: string;
+  reasoning_effort: string;
 };
 
 // self_judged: the same agent CLI performed and graded the run. The judge process is
@@ -31,17 +40,38 @@ export type JudgeRecord = JudgeSpec & {
   self_judged: boolean;
 };
 
+// A judge as an existing record carries it. Grades written before the model and effort were
+// required name one or neither, so reading one back cannot demand what a new grade promises;
+// a fresh JudgeRecord satisfies this type, never the other way round.
+export type RecordedJudge = {
+  agent: JudgeAgent;
+  model: string | null;
+  reasoning_effort: string | null;
+  self_judged: boolean;
+};
+
 // What a run cost, so a benchmark can report more than pass counts. duration_s is the
 // harness's own wall clock and means the same thing on both stacks; everything else is
-// what the executor chose to report, hence the nulls — claude gives turns, dollars and
-// a four-way token split, codex gives a token total and nothing else. On claude the two
-// cache fields carry almost the whole run: input_tokens alone is the uncached remainder,
-// a double-digit number, and total_tokens is the sum of all four. The totals mean
-// different things on the two stacks and are only comparable variant-to-variant within one.
+// what the executor reported, hence the nulls. Both stacks give the same four-way token split
+// (codex through `exec --json`): input_tokens is the uncached remainder, the two cache fields
+// carry almost the whole run, and total_tokens is the sum of all four. claude also gives turns
+// and its own dollar cost; codex gives neither, so its cost_usd is derived from the split and a
+// list price (lib/prices.ts) and cost_source says which of the two a figure is. opencode
+// reports a cost of its own on every step, priced by opencode from models.dev's list, so it
+// records as `executor` like claude does — and, like claude's, it is a list-price figure, not
+// a bill: OpenRouter charges the routed provider's rate.
+//
+// Codex runs made before `--json` (before 2026-09-15) carry only total_tokens, taken from the
+// `tokens used` line — uncached input plus output, several times smaller than the same run's
+// total here. Those totals are a different unit from every other total in this type.
+export type CostSource = "executor" | "list_price";
+
 export type RunUsage = {
   duration_s: number | null;
   turns: number | null;
   cost_usd: number | null;
+  // absent on records made before the field existed; every one of those is claude-reported
+  cost_source: CostSource | null;
   input_tokens: number | null;
   cache_creation_input_tokens: number | null;
   cache_read_input_tokens: number | null;
@@ -55,10 +85,13 @@ export type RunUsage = {
 export type ExecutorRecord = {
   executor: Executor;
   model: string | null;
-  // codex only, and only the operator's top-level `model_reasoning_effort =`: the redirected
-  // CODEX_HOME means codex never reads it, so the harness passes it on argv and names it
-  // here. null is "none configured, codex's default ran", which is a real answer.
+  // Every executor, always passed on argv: --effort for claude and opencode, and for codex
+  // --effort or the operator's top-level `model_reasoning_effort =`. null only on records
+  // made before #118.
   reasoning_effort?: string | null;
+  // opencode only: the pinned models catalog the run's efforts and prices came from
+  // (lib/opencode-home.ts), so a re-pin partway through a benchmark shows in the record.
+  models_catalog?: string;
   started: string;
   finished: string | null;
   exit: number | null;
@@ -79,6 +112,11 @@ export type ResultRecord = {
   // runs made before the field existed — those are recovered from git history instead, for
   // as long as the branch that holds the sha survives.
   skill_content?: string | null;
+  // The benchmark this run belongs to: one id shared by every run made for one comparison,
+  // named at setup. It is what tells a run made for the site's clean re-run from the runs
+  // that came before it, which a date cannot: a benchmark takes weeks, and a stray run made
+  // by hand in that window carries no id. Absent on runs made before the field existed.
+  benchmark?: string;
   created: string;
   // Set only on a regrade: the run whose stored evidence was re-judged. The executor never
   // ran again, so this record is a second reading of one run, not a second run — never
@@ -100,7 +138,9 @@ export type ResultRecord = {
   // reads as a clean result, which is the exact condition the refusal exists to expose.
   harness_failure?: string;
   usage?: RunUsage;
-  judge?: JudgeRecord;
+  // RecordedJudge, not JudgeRecord: a grade written before the model and effort were required
+  // names one or neither, and those records still have to be readable.
+  judge?: RecordedJudge;
   // Fingerprint of the expect list this grade was made against. Two runs of one task are
   // comparable only when it matches; an edit to any expect line changes it, which is what
   // makes a stale grade detectable instead of merely wrong.

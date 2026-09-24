@@ -1,0 +1,162 @@
+diff --git a/FORK.md b/FORK.md
+new file mode 100644
+index 0000000..729091f
+--- /dev/null
++++ b/FORK.md
+@@ -0,0 +1,153 @@
++# Forking Base locally
++
++Our contract reads USDC on Base at `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`, so the
++local node has to be a fork of **Base**, not of whatever chain the default happens to be.
++
++## What the onboarding note gets wrong
++
++The note says two things, and both are wrong.
++
++### 1. `yarn fork base` does not fork Base — it forks Ethereum mainnet
++
++The root `package.json` forwards `fork` to the foundry workspace:
++
++```json
++"fork": "yarn foundry:fork",
++"foundry:fork": "yarn workspace @se-2/foundry fork",
++```
++
++and `packages/foundry/package.json` defines it as:
++
++```json
++"fork": "make fork FORK_URL=${1:-mainnet}",
++```
++
++That `${1:-mainnet}` never sees your argument. Yarn 4 (`packageManager: yarn@4.13.0`)
++does not bind CLI arguments to positional parameters in `scripts`; a script that
++references `$1` gets `Unbound argument #1`, and `${1:-mainnet}` therefore always falls
++back to `mainnet`. Verified in this checkout with a throwaway script:
++
++```
++$ yarn t1 base        # script body: echo FORK_URL=${1:-mainnet} END
++FORK_URL=mainnet END
++$ yarn t2 base        # script body: echo ONE=$1 END
++Unbound argument #1
++```
++
++So `yarn fork base` runs exactly what `yarn fork` runs. The `base` is silently discarded.
++
++`packages/foundry/Makefile`:
++
++```make
++# Start a fork
++fork: setup-anvil-wallet
++	anvil --fork-url ${FORK_URL} --chain-id 31337
++```
++
++With `FORK_URL=mainnet`, anvil resolves the alias from the `[rpc_endpoints]` table in
++`packages/foundry/foundry.toml`:
++
++```toml
++mainnet = "https://eth-mainnet.alchemyapi.io/v2/${ALCHEMY_API_KEY}"
++base    = "https://mainnet.base.org"
++```
++
++i.e. Ethereum mainnet. **That is why the token reads come back empty.** Nothing is
++deployed at `0x8335…2913` on Ethereum mainnet, so `eth_call` against it returns `0x` and
++every read decodes to zero/empty. The node is healthy, transactions mine, the contract is
++fine — it is just pointed at the wrong chain. Confirmed against a real mainnet fork:
++
++```
++$ cast code 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 --rpc-url <mainnet-fork>
++0x
++$ cast call 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 "symbol()(string)" --rpc-url <mainnet-fork>
++"USDC"     # mainnet's USDC is there; Base's is not
++```
++
++(Side note: the shared demo `ALCHEMY_API_KEY=IZYEU2cWBgnFmgiTAgpWD` in
++`packages/foundry/.env` is frequently rate-limited — while writing this, forking `mainnet`
++through it failed outright with `Error: failed to get fork block number`. Another reason
++not to rely on the `mainnet` default.)
++
++### 2. `cast chain-id` cannot tell you which chain you forked
++
++The Makefile passes `--chain-id 31337` unconditionally. That is deliberate — the frontend
++targets `chains.foundry` (`packages/nextjs/scaffold.config.ts`: `targetNetworks: [chains.foundry]`),
++which is chain id 31337 — so **do not remove it**. But it means the fork always reports
++31337 no matter what it forked. Measured on two real forks, both started by the Makefile
++recipe:
++
++| fork of | `cast chain-id` | `cast code 0x8335…2913` |
++| --- | --- | --- |
++| Base (`https://mainnet.base.org`) | `31337` | non-empty |
++| Ethereum mainnet | `31337` | `0x` |
++
++`cast chain-id` returning a number only proves *a node is listening*. The teammate who ran
++it got a true answer to a question that has the same answer on every chain, and concluded
++the fork was healthy.
++
++## The command that actually forks Base here
++
++From the repo root:
++
++```bash
++yarn workspace @se-2/foundry exec make fork FORK_URL=base
++```
++
++or equivalently from `packages/foundry`:
++
++```bash
++yarn exec make fork FORK_URL=base
++```
++
++`FORK_URL` must be set as a make variable — it is the only thing the recipe reads. `base`
++resolves through `foundry.toml`'s `[rpc_endpoints]` to `https://mainnet.base.org`; you can
++also pass a full URL (`FORK_URL=https://…`) if you want your own provider.
++
++Use `yarn exec` / run from inside the workspace rather than bare `make`: the
++`setup-anvil-wallet` prerequisite calls `shx`, which lives in `node_modules/.bin` and is
++only on `PATH` under yarn. Bare `make fork FORK_URL=base` fails with
++`/bin/sh: shx: command not found`.
++
++Verified — the command reaches anvil with the right alias:
++
++```
++$ yarn workspace @se-2/foundry exec make fork FORK_URL=base
++…
++`scaffold-eth-default` keystore was saved successfully. Address: 0xa0ee7a142d267c1f36714e4a8f75612f20a79720
++anvil --fork-url base --chain-id 31337
++```
++
++Plain `yarn fork` (no argument) still forks Ethereum mainnet. If we want `yarn fork base`
++to work as the note assumed, the script has to stop using `$1`, e.g. change
++`packages/foundry/package.json` to `"fork": "make fork"` and invoke it as
++`yarn fork FORK_URL=base` — trailing args *are* appended when the script body has no
++positional reference (`yarn t2 base` printed `B base`).
++
++## The check that would have caught this
++
++Ask the node something only Base can answer. Read the token you actually depend on:
++
++```bash
++cast call 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 "symbol()(string)" --rpc-url http://127.0.0.1:8545
++```
++
++- fork of Base → `"USDC"`
++- fork of anything else → `Error: contract 0x8335… does not have any code`
++
++A second, chain-identity check (not just "is my one address present") is the OP Stack
++`L1Block` predeploy, which exists on Base and every OP chain but not on L1:
++
++```bash
++cast call 0x4200000000000000000000000000000000000015 "number()(uint256)" --rpc-url http://127.0.0.1:8545
++```
++
++- fork of Base → a recent L1 block number, e.g. `26036031`
++- fork of Ethereum mainnet → `does not have any code`
++
++Both were run against real forks while writing this. Note that neither is fooled by
++`--chain-id 31337`, because both query *state inherited from the fork source* rather than
++the node's self-reported identity — which is exactly the property `cast chain-id` lacks.
++
++Run one of these before concluding the fork is healthy. Empty reads of a known-deployed
++mainnet-token address are a fork-target symptom far more often than a contract bug.
+
+# Untracked files and status
+ A FORK.md
