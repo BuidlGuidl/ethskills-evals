@@ -1,0 +1,210 @@
+diff --git a/REVIEW.md b/REVIEW.md
+new file mode 100644
+index 0000000..15652cc
+--- /dev/null
++++ b/REVIEW.md
+@@ -0,0 +1,201 @@
++# Pre-Ship Frontend/Config Review
++
++## 1. Severity: ship-blocking
++
++File: `packages/nextjs/app/payouts/page.tsx:70`
++
++Issue: The disconnected state renders only explanatory text, not a primary Connect Wallet button. Users arriving directly on `/payouts` have no obvious in-flow action unless they notice the header.
++
++Concrete fix: Render `RainbowKitCustomConnectButton` in the payout CTA area when `!isConnected`, and make it the only primary action in that state.
++
++## 2. Severity: ship-blocking
++
++File: `packages/nextjs/app/payouts/page.tsx:16`, `packages/nextjs/app/payouts/page.tsx:99`
++
++Issue: The payout CTA does not check the connected chain. If a wallet is connected to the wrong network, the page still shows Approve and Send Payout and relies on wagmi/header errors.
++
++Concrete fix: Read `useChainId()` and `useSwitchChain()`, compare against `scaffoldConfig.targetNetworks[0].id` or `base.id`, and render a single "Switch to Base" button in the same CTA slot whenever the active chain is not Base.
++
++## 3. Severity: ship-blocking
++
++File: `packages/nextjs/app/payouts/page.tsx:99`
++
++Issue: Approve and Send Payout are visible at the same time, with no allowance check. Users can try to pay before approval confirms, approve repeatedly, or send a transaction that is guaranteed to revert.
++
++Concrete fix: Read USDC `allowance(connectedAddress, Payouts.address)` and implement a one-button flow: Connect Wallet -> Switch to Base -> Approve exact amount if allowance is insufficient -> Send Payout once allowance is sufficient.
++
++## 4. Severity: ship-blocking
++
++File: `packages/nextjs/app/payouts/page.tsx:6`, `packages/nextjs/app/payouts/page.tsx:21`, `packages/nextjs/app/payouts/page.tsx:36`
++
++Issue: The page uses raw wagmi `useWriteContract`. `isPending` can drop after wallet signature/hash instead of after block confirmation, so the buttons can re-enable while the approval/payment is still in flight.
++
++Concrete fix: Use SE-2 `useScaffoldWriteContract` for `USDC` and `Payouts` writes, and add explicit `approvalSubmitting` plus `approveCooldown` state. Disable the Approve button with `isPending || approvalSubmitting || approveCooldown`, clear submit state in `finally`, and refetch allowance after confirmation/cooldown.
++
++## 5. Severity: ship-blocking
++
++File: `packages/nextjs/app/layout.tsx:10`, `packages/nextjs/utils/scaffold-eth/getMetadata.ts:8`
++
++Issue: Production metadata still says `Scaffold-ETH 2 App`, `Built with Scaffold-ETH 2`, and appends `| Scaffold-ETH 2` to titles.
++
++Concrete fix: Replace the metadata title/template/description with the production app name and payout-specific description, e.g. `USDC Payouts` with no SE-2 suffix.
++
++## 6. Severity: ship-blocking
++
++File: `packages/nextjs/components/Footer.tsx:50`
++
++Issue: The footer still ships SE-2/BuidlGuidl template links: `Fork me`, `Built with ... BuidlGuidl`, and `Support`.
++
++Concrete fix: Remove the template footer links entirely or replace them with production-owned links such as the app repo, docs, terms, and support channel.
++
++## 7. Severity: ship-blocking
++
++File: `README.md:1`
++
++Issue: The README is still the Scaffold-ETH 2 template, including SE-2 docs, quickstart, and contribution text. This is not acceptable for a user-facing production app/repo.
++
++Concrete fix: Replace it with project documentation: what the Base USDC payouts app does, deployed contract address, target network, env vars, local development, deployment, verification, and support/security notes.
++
++## 8. Severity: ship-blocking
++
++File: `packages/nextjs/app/page.tsx:20`, `packages/nextjs/components/Header.tsx:20`
++
++Issue: The root route is still the SE-2 welcome page and the header exposes `Debug Contracts` to production users. Real users landing on `/` see template setup instructions instead of the payouts product.
++
++Concrete fix: Make `/` the payout experience or redirect to `/payouts`, remove template instructions, and remove the debug route from production navigation. Consider disabling `/debug` entirely in production builds.
++
++## 9. Severity: should-fix
++
++File: `packages/nextjs/app/payouts/page.tsx:78`
++
++Issue: The recipient address field is a raw text input, so users get no ENS resolution, address validation, or standardized SE-2 address UX.
++
++Concrete fix: Replace it with `AddressInput` from `@scaffold-ui/components` or the SE-2 component re-export, and store the resolved/validated address before enabling payment.
++
++## 10. Severity: should-fix
++
++File: `packages/nextjs/app/payouts/page.tsx:67`
++
++Issue: The Payouts contract address is not displayed anywhere on the page, so users cannot easily verify the contract they are approving USDC for.
++
++Concrete fix: Render `PAYOUTS.address` with the SE-2 `Address` component near the form, labeled as the payout contract/spender on Base.
++
++## 11. Severity: should-fix
++
++File: `packages/nextjs/app/payouts/page.tsx:36`, `packages/nextjs/app/payouts/page.tsx:49`
++
++Issue: Transaction errors are swallowed with `console.error`, so users get no actionable feedback when approval/payment fails or reverts.
++
++Concrete fix: Use `notification.error(getParsedError(e))` or the SE-2 transactor/scaffold write helpers, and show success notifications after confirmed approval/payment.
++
++## 12. Severity: should-fix
++
++File: `packages/nextjs/app/payouts/page.tsx:85`
++
++Issue: The form allows invalid or unsafe transaction attempts: empty recipient, malformed recipient, zero/empty amount, amount greater than balance, and very long memos all reach the transaction handlers.
++
++Concrete fix: Validate recipient with `isAddress` or `AddressInput` output, require `amount > 0`, compare parsed amount with `usdcBalance`, cap memo length, and disable the CTA with inline validation messages until inputs are valid.
++
++## 13. Severity: should-fix
++
++File: `packages/nextjs/app/payouts/page.tsx:65`, `packages/nextjs/components/Footer.tsx:43`
++
++Issue: `/payouts` hardcodes `bg-black text-white` while the app still exposes the theme switcher. Light-mode users get a dark page and the DaisyUI theme system is bypassed.
++
++Concrete fix: Use DaisyUI semantic classes such as `bg-base-200 text-base-content`, or intentionally force a dark theme globally and remove the theme switcher.
++
++## 14. Severity: should-fix
++
++File: `packages/nextjs/app/payouts/page.tsx:101`
++
++Issue: Button loading state uses DaisyUI's `loading` class directly on the button, which can replace/mangle button content.
++
++Concrete fix: Keep `className="btn btn-primary"`/`btn-secondary` and render an inline `<span className="loading loading-spinner loading-sm" />` next to explicit loading text.
++
++## 15. Severity: should-fix
++
++File: `packages/nextjs/app/payouts/page.tsx:32`, `packages/nextjs/hooks/scaffold-eth/useScaffoldEventHistory.ts:56`
++
++Issue: The payouts feed explicitly queries from Base block `0`, and the hook itself is marked deprecated for production/non-local chains. This can overload/rate-limit RPCs and makes the feed slow to hydrate.
++
++Concrete fix: Remove the `fromBlock: 0n` override so the hook starts at `deployedOnBlock`, or better, move the feed to a production indexer. If keeping the hook temporarily, set a tight `fromBlock` around `33712450n` and a conservative batch size.
++
++## 16. Severity: should-fix
++
++File: `packages/nextjs/contracts/deployedContracts.ts:50`, `packages/nextjs/contracts/externalContracts.ts:14`
++
++Issue: Base USDC is manually registered in autogenerated `deployedContracts.ts` while `externalContracts.ts` is empty. A future deploy/regeneration can remove USDC and break the page.
++
++Concrete fix: Move the USDC declaration to `externalContracts.ts` under chain `8453` with its address and ABI, and leave `deployedContracts.ts` generated for deployed project contracts only.
++
++## 17. Severity: should-fix
++
++File: `packages/nextjs/scaffold.config.ts:24`, `packages/nextjs/scaffold.config.ts:29`, `packages/nextjs/scaffold.config.ts:40`, `packages/nextjs/services/web3/wagmiConfig.tsx:20`
++
++Issue: Production RPC/wallet config is still mostly template/default: `pollingInterval` is `30000`, default Alchemy and WalletConnect IDs are accepted, `rpcOverrides` is empty, and `wagmiConfig` still includes bare `http()` fallback transports.
++
++Concrete fix: Set polling to about `3000` for Base, require production env vars for RPC and WalletConnect, configure a Base RPC override, remove bare `http()` fallbacks, and verify the hosting environment has the required vars set before release.
++
++## 18. Severity: should-fix
++
++File: `packages/nextjs/services/web3/wagmiConnectors.tsx:20`, `packages/nextjs/services/web3/wagmiConnectors.tsx:49`
++
++Issue: Phantom is missing from the supported RainbowKit wallets, and WalletConnect metadata still uses `appName: "scaffold-eth-2"`.
++
++Concrete fix: Import and include `phantomWallet` in the wallet list, and set `appName` to the production app name.
++
++## 19. Severity: should-fix
++
++File: `packages/nextjs/app/payouts/page.tsx:36`, `packages/nextjs/app/payouts/page.tsx:49`
++
++Issue: Mobile WalletConnect transaction buttons do not deep-link back into the connected wallet app after firing the transaction request.
++
++Concrete fix: Add a shared `writeAndOpen` helper that calls the write first, then after a short delay opens the correct wallet scheme based on connector/session data, skipping desktop and in-app browsers. Wrap both approve and payout writes.
++
++## 20. Severity: should-fix
++
++File: `packages/nextjs/styles/globals.css:36`, `packages/nextjs/styles/globals.css:63`
++
++Issue: DaisyUI `--radius-field` remains `9999rem` in both themes, which makes textareas/selects pill-shaped and can clip form content.
++
++Concrete fix: Change `--radius-field` to a normal app radius such as `0.5rem` in both light and dark theme blocks.
++
++## 21. Severity: should-fix
++
++File: `packages/nextjs/public/manifest.json:1`
++
++Issue: `manifest.json` is not valid JSON and still contains SE-2 app metadata/logo references.
++
++Concrete fix: Replace it with valid JSON using quoted keys/string values, production app name/description, and production icon paths.
++
++## 22. Severity: should-fix
++
++File: `packages/nextjs/public/favicon.png`, `packages/nextjs/public/logo.svg`, `packages/nextjs/public/thumbnail.jpg`, `packages/nextjs/components/Header.tsx:92`
++
++Issue: Public branding assets and the header logo are still the SE-2 defaults.
++
++Concrete fix: Replace favicon/logo/thumbnail with production assets and update the header image alt text/brand copy to the payout app name.
++
++## 23. Severity: should-fix
++
++File: `packages/nextjs/app/payouts/page.tsx:75`, `packages/nextjs/app/payouts/page.tsx:126`
++
++Issue: USDC amounts are displayed without USD equivalents or fiat context.
++
++Concrete fix: Since USDC is dollar-pegged, show formatted values as both token and USD context, e.g. `123.45 USDC (~$123.45)`, for balances, entered amount previews, and payout history.
++
++## 24. Severity: should-fix
++
++File: `packages/nextjs/contracts/deployedContracts.ts:10`
++
++Issue: I could not confirm contract source verification from this environment because the explorer API requires a key, and the repo does not include a verification artifact/check. For a production payouts app, unverified source would be a trust blocker.
++
++Concrete fix: Confirm `0x7c3f2A9d41B85E60Cf14a14e2b9D073A55e0b6F2` is verified on Basescan before launch, and add the verification command/env requirements to the README/release checklist.
++
++## 25. Severity: should-fix
++
++File: repository root
++
++Issue: I could not run `yarn lint` because dependencies are not installed in this workspace (`Couldn't find the node_modules state file`). That leaves TypeScript/lint/build status unverified in this review pass.
++
++Concrete fix: Run `yarn install`, then `yarn lint` and `yarn next:build` in CI or the release environment, and fix any failures before shipping.
+
+# Untracked files and status
+ A REVIEW.md

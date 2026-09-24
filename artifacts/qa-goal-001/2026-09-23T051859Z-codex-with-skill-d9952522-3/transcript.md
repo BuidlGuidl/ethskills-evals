@@ -1,0 +1,613 @@
+# Executor transcript — 2026-09-23T051859Z-codex-with-skill-d9952522-3
+
+**executor**: codex  |  **model**: gpt-5.5  |  **effort**: high  |  **exit**: 0
+**workspace**: /home/damu/.cache/ethskills-evals/2026-09-23T051859Z-codex-with-skill-d9952522-3/qa-goal-001
+
+## assistant
+I’ll use the `qa` skill for this pass since this is exactly a Scaffold-ETH 2 pre-ship frontend review. I’ll keep it report-only and write findings into `REVIEW.md`, with no source changes.
+
+## assistant
+- **exec** `/bin/bash -lc "sed -n '1,240p' /home/damu/.cache/ethskills-evals/2026-09-23T051859Z-codex-with-skill-d9952522-3/qa-goal-001/.agents/skills/qa/SKILL.md"` → exit 0
+
+  > stty: 'standard input': Inappropriate ioctl for device
+  > ---
+  > name: qa
+  > description: "Use when a Scaffold-ETH 2 frontend is about to ship or needs a second look: \"is this ready\", \"check my dApp\", a teammate's patch. The checks people forget: wallet flow, wrong-network gating, contract registration, theme and loading states, branding, RPC posture, mobile wallets. Best from a fresh reviewer context. … [5752 more chars]
+
+## assistant
+- **exec** `/bin/bash -lc "pwd && rg --files -g '"'!*node_modules*'"' -g '"'!*.png'"' -g '"'!*.jpg'"' -g '"'!*.jpeg'"' -g '"'!*.gif'"' -g '"'!*.webp'"' | sed -n '1,240p'"` → exit 0
+
+  > stty: 'standard input': Inappropriate ioctl for device
+  > /home/damu/.cache/ethskills-evals/2026-09-23T051859Z-codex-with-skill-d9952522-3/qa-goal-001
+  > TASK.md
+  > AGENTS.md
+  > yarn.lock
+  > opencode.json
+  > package.json
+  > README.md
+  > LICENCE
+  > CONTRIBUTING.md
+  > CLAUDE.md
+  > packages/nextjs/tsconfig.json
+  > packages/hardhat/hardhat.config.ts
+  > packages/nextjs/postcss.config.js
+  > packages/hardhat/deploy/00_deploy_payouts.ts
+  > packages/ … [4801 more chars]
+
+## assistant
+I’ve got the QA checklist loaded. Next I’m reading the app/config surface first: `/payouts`, contract registrations, wagmi/RainbowKit, network config, layout metadata, and theme/footer defaults.
+
+## assistant
+- **exec** `/bin/bash -lc "nl -ba packages/nextjs/app/payouts/page.tsx | sed -n '1,260p'"` → exit 0
+
+  > stty: 'standard input': Inappropriate ioctl for device
+  >      1	"use client";
+  >      2	
+  >      3	import { useState } from "react";
+  >      4	import type { NextPage } from "next";
+  >      5	import { formatUnits, parseUnits } from "viem";
+  >      6	import { useAccount, useWriteContract } from "wagmi";
+  >      7	import deployedContracts from "~~/contracts/deployedContracts";
+  >      8	import { useScaffoldEventHistory, us … [5146 more chars]
+
+## assistant
+- **exec** `/bin/bash -lc "nl -ba packages/nextjs/scaffold.config.ts | sed -n '1,220p'"` → exit 0
+
+  > stty: 'standard input': Inappropriate ioctl for device
+  >      1	import * as chains from "viem/chains";
+  >      2	
+  >      3	
+  >      4	
+  >      5	export type BaseConfig = {
+  >      6	  targetNetworks: readonly chains.Chain[];
+  >      7	  pollingInterval: number;
+  >      8	  alchemyApiKey: string;
+  >      9	  rpcOverrides?: Record<number, string>;
+  >     10	  walletConnectProjectId: string;
+  >     11	  burnerWalletMode: "localNet … [1992 more chars]
+
+## assistant
+- **exec** `/bin/bash -lc "nl -ba packages/nextjs/services/web3/wagmiConfig.tsx | sed -n '1,240p'"` → exit 0
+
+  > stty: 'standard input': Inappropriate ioctl for device
+  >      1	import { wagmiConnectors } from "./wagmiConnectors";
+  >      2	import { Chain, createClient, fallback, http } from "viem";
+  >      3	import { hardhat, mainnet } from "viem/chains";
+  >      4	import { createConfig } from "wagmi";
+  >      5	import scaffoldConfig, { DEFAULT_ALCHEMY_API_KEY, ScaffoldConfig } from "~~/scaffold.config";
+  >      6	import { g … [1403 more chars]
+
+## assistant
+- **exec** `/bin/bash -lc "nl -ba packages/nextjs/services/web3/wagmiConnectors.tsx | sed -n '1,260p'"` → exit 0
+
+  > stty: 'standard input': Inappropriate ioctl for device
+  >      1	import { connectorsForWallets } from "@rainbow-me/rainbowkit";
+  >      2	import {
+  >      3	  baseAccount,
+  >      4	  ledgerWallet,
+  >      5	  metaMaskWallet,
+  >      6	  rainbowWallet,
+  >      7	  safeWallet,
+  >      8	  walletConnectWallet,
+  >      9	} from "@rainbow-me/rainbowkit/wallets";
+  >     10	import { rainbowkitBurnerWallet } from "burner-connector";
+  >  … [1455 more chars]
+
+## assistant
+The first pass already has several concrete risks around the payout action flow and production config. I’m checking the contract ABI/registers now so the report can distinguish runtime breakage from polish issues.
+
+## assistant
+- **exec** `/bin/bash -lc "nl -ba packages/nextjs/contracts/externalContracts.ts | sed -n '1,220p'"` → exit 0
+
+## assistant
+- **exec** `/bin/bash -lc "nl -ba packages/nextjs/contracts/deployedContracts.ts | sed -n '1,260p'"` → exit 0
+
+  > stty: 'standard input': Inappropriate ioctl for device
+  >      1	/**
+  >      2	 * This file is autogenerated by Scaffold-ETH.
+  >      3	 * You should not edit it manually or your changes might be overwritten.
+  >      4	 */
+  >      5	import { GenericContractsDeclaration } from "~~/utils/scaffold-eth/contract";
+  >      6	
+  >      7	const deployedContracts = {
+  >      8	  8453: {
+  >      9	    Payouts: {
+  >     10	      address:  … [5524 more chars]
+
+## assistant
+- **exec** `/bin/bash -lc "nl -ba packages/hardhat/contracts/Payouts.sol | sed -n '1,240p'"` → exit 0
+
+  > stty: 'standard input': Inappropriate ioctl for device
+  >      1	//SPDX-License-Identifier: MIT
+  >      2	pragma solidity >=0.8.0 <0.9.0;
+  >      3	
+  >      4	interface IERC20 {
+  >      5	    function transferFrom(address from, address to, uint256 amount) external returns (bool);
+  >      6	}
+  >      7	
+  >      8	/**
+  >      9	 * Routes USDC payouts straight to recipients and records them for the feed.
+  >     10	 */
+  >     11	cont … [650 more chars]
+
+## assistant
+- **exec** `/bin/bash -lc "nl -ba packages/hardhat/deploy/00_deploy_payouts.ts | sed -n '1,220p'"` → exit 0
+
+  > stty: 'standard input': Inappropriate ioctl for device
+  >      1	import { deployScript, artifacts } from "../rocketh/deploy.js";
+  >      2	
+  >      3	// USDC on Base
+  >      4	const USDC_ADDRESS = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+  >      5	
+  >      6	/**
+  >      7	 * Deploys the Payouts contract pointed at Base USDC.
+  >      8	 *
+  >      9	 * @param env Rocketh environment object.
+  >     10	 */
+  >     11	export defau … [531 more chars]
+
+## assistant
+A notable deployment-register issue is emerging: Base USDC is hand-added to the generated deployments file while `externalContracts.ts` is empty. I’m widening the pass to branding, navigation, and generated debug/block explorer exposure before writing the review.
+
+## assistant
+- **exec** `/bin/bash -lc "nl -ba packages/nextjs/app/layout.tsx | sed -n '1,220p'"` → exit 0
+
+  > stty: 'standard input': Inappropriate ioctl for device
+  >      1	
+  >      2	import "@rainbow-me/rainbowkit/styles.css";
+  >      3	import "@scaffold-ui/components/styles.css";
+  >      4	import { ScaffoldEthAppWithProviders } from "~~/components/ScaffoldEthAppWithProviders";
+  >      5	import { ThemeProvider } from "~~/components/ThemeProvider";
+  >      6	import "~~/styles/globals.css";
+  >      7	import { getMetadata } f … [659 more chars]
+
+## assistant
+- **exec** `/bin/bash -lc "nl -ba packages/nextjs/components/Footer.tsx | sed -n '1,260p'"` → exit 0
+
+  > stty: 'standard input': Inappropriate ioctl for device
+  >      1	import React from "react";
+  >      2	import Link from "next/link";
+  >      3	import { useFetchNativeCurrencyPrice } from "@scaffold-ui/hooks";
+  >      4	import { hardhat } from "viem/chains";
+  >      5	import { CurrencyDollarIcon, MagnifyingGlassIcon } from "@heroicons/react/24/outline";
+  >      6	import { HeartIcon } from "@heroicons/react/24/outline … [3420 more chars]
+
+## assistant
+- **exec** `/bin/bash -lc "nl -ba packages/nextjs/components/Header.tsx | sed -n '1,280p'"` → exit 0
+
+  > stty: 'standard input': Inappropriate ioctl for device
+  >      1	"use client";
+  >      2	
+  >      3	import React, { useRef } from "react";
+  >      4	import Image from "next/image";
+  >      5	import Link from "next/link";
+  >      6	import { usePathname } from "next/navigation";
+  >      7	import { hardhat } from "viem/chains";
+  >      8	import { Bars3Icon, BugAntIcon } from "@heroicons/react/24/outline";
+  >      9	import { Fa … [3636 more chars]
+
+## assistant
+- **exec** `/bin/bash -lc "nl -ba packages/nextjs/styles/globals.css | sed -n '1,260p'"` → exit 0
+
+  > stty: 'standard input': Inappropriate ioctl for device
+  >      1	@import "tailwindcss";
+  >      2	
+  >      3	@custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
+  >      4	
+  >      5	@theme {
+  >      6	  --shadow-center: 0 0 12px -2px rgb(0 0 0 / 0.05);
+  >      7	  --animate-pulse-fast: pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  >      8	}
+  >      9	
+  >     10	@plugin "daisyui" {
+  >     11	  themes:
+  >     1 … [2893 more chars]
+
+## assistant
+The app still exposes scaffold defaults in a few user-visible places: header/logo copy, footer links, metadata, and the debug route. I’m checking build/lint/runtime next so I don’t file anything speculative.
+
+## assistant
+- **exec** `/bin/bash -lc "nl -ba packages/nextjs/package.json | sed -n '1,260p'"` → exit 0
+
+## assistant
+- **exec** `/bin/bash -lc "nl -ba packages/nextjs/components/ScaffoldEthAppWithProviders.tsx | sed -n '1,260p'"` → exit 0
+
+  >      1	"use client";
+  >      2	
+  >      3	import { useEffect, useState } from "react";
+  >      4	import { RainbowKitProvider, darkTheme, lightTheme } from "@rainbow-me/rainbowkit";
+  >      5	import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+  >      6	import { AppProgressBar as ProgressBar } from "next-nprogress-bar";
+  >      7	import { useTheme } from "next-themes";
+  >      8	import { Toaster } … [1750 more chars]
+
+## assistant
+- **exec** `/bin/bash -lc "nl -ba packages/nextjs/app/page.tsx | sed -n '1,220p'"` → exit 0
+
+  > stty: 'standard input': Inappropriate ioctl for device
+  >      1	
+  >      2	"use client";
+  >      3	
+  >      4	import { useAccount } from "wagmi";
+  >      5	import { Address } from "@scaffold-ui/components";
+  >      6	import type { NextPage } from "next";
+  >      7	import Link from "next/link";
+  >      8	import { BugAntIcon, MagnifyingGlassIcon } from "@heroicons/react/24/outline";
+  >      9	import { useTargetNetwork } from … [2959 more chars]
+
+## assistant
+- **exec** `/bin/bash -lc "rg -n \"Scaffold|BuidlGuidl|Fork me|Debug|alchemy|WalletConnect|payout|useWriteContract|loading|bg-black|bg-\\[|shorten|Please connect|approve|allowance|WrongNetwork|Switch|phantom\" pa … [60 more chars]` → exit 0
+
+## assistant
+I’m going to run the static checks now. Even in review-only mode, these often turn up the simplest ship-blockers, and they also tell us whether any findings are already caught by CI.
+
+## assistant
+- **exec** `/bin/bash -lc 'yarn lint'` → exit 1
+
+  > Usage Error: Couldn't find the node_modules state file - running an install might help (findPackageLocation)
+  > 
+  > $ yarn run [--inspect] [--inspect-brk] [-T,--top-level] [-B,--binaries-only] [--require #0] <scriptName> ...
+
+## assistant
+- **exec** `/bin/bash -lc 'yarn next:check-types'` → exit 1
+
+  > Usage Error: Couldn't find the node_modules state file - running an install might help (findPackageLocation)
+  > 
+  > $ yarn run [--inspect] [--inspect-brk] [-T,--top-level] [-B,--binaries-only] [--require #0] <scriptName> ...
+
+## assistant
+The checks can’t start because dependencies are not installed in this workspace (`node_modules` state is missing). I’m not going to churn the workspace with an install for a report-only review; I’ll note that verification gap and continue with source-level findings.
+
+## assistant
+- **exec** `/bin/bash -lc "nl -ba packages/nextjs/hooks/scaffold-eth/useScaffoldEventHistory.ts | sed -n '1,260p'"` → exit 0
+
+  > stty: 'standard input': Inappropriate ioctl for device
+  >      1	import { useEffect, useState } from "react";
+  >      2	import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+  >      3	import { Abi, AbiEvent, ExtractAbiEventNames } from "abitype";
+  >      4	import { BlockNumber, GetLogsParameters } from "viem";
+  >      5	import { hardhat } from "viem/chains";
+  >      6	import { Config, UsePublicClientR … [10968 more chars]
+
+## assistant
+- **exec** `/bin/bash -lc "nl -ba packages/nextjs/hooks/scaffold-eth/useScaffoldWriteContract.ts | sed -n '1,260p'"` → exit 0
+
+  > stty: 'standard input': Inappropriate ioctl for device
+  >      1	import { useEffect, useState } from "react";
+  >      2	import { MutateOptions } from "@tanstack/react-query";
+  >      3	import { Abi, ExtractAbiFunctionNames } from "abitype";
+  >      4	import { Config, UseWriteContractParameters, useAccount, useConfig, useWriteContract } from "wagmi";
+  >      5	import { WriteContractErrorType, WriteContractReturnT … [8407 more chars]
+
+## assistant
+- **exec** `/bin/bash -lc "nl -ba packages/nextjs/app/debug/page.tsx | sed -n '1,180p'"` → exit 0
+
+  > stty: 'standard input': Inappropriate ioctl for device
+  >      1	import { DebugContracts } from "./_components/DebugContracts";
+  >      2	import type { NextPage } from "next";
+  >      3	import { getMetadata } from "~~/utils/scaffold-eth/getMetadata";
+  >      4	
+  >      5	export const metadata = getMetadata({
+  >      6	  title: "Debug Contracts",
+  >      7	  description: "Debug your deployed 🏗 Scaffold-ETH 2 contracts … [734 more chars]
+
+## assistant
+- **exec** `/bin/bash -lc "nl -ba packages/nextjs/public/manifest.json | sed -n '1,160p'"` → exit 0
+
+  > stty: 'standard input': Inappropriate ioctl for device
+  >      1	{
+  >      2	  name: 'Scaffold-ETH 2 DApp',
+  >      3	  description: 'A DApp built with Scaffold-ETH',
+  >      4	  iconPath: 'logo.svg'
+  >      5	}
+
+## assistant
+- **exec** `/bin/bash -lc "nl -ba package.json | sed -n '1,260p'"` → exit 0
+
+  > stty: 'standard input': Inappropriate ioctl for device
+  >      1	{
+  >      2	  "name": "se-2",
+  >      3	  "version": "0.0.1",
+  >      4	  "private": true,
+  >      5	  "workspaces": {
+  >      6	    "packages": [
+  >      7	      "packages/*"
+  >      8	    ]
+  >      9	  },
+  >     10	  "scripts": {
+  >     11	    "account": "yarn hardhat:account",
+  >     12	    "account:generate": "yarn workspace @se-2/hardhat account:generate",
+  >     13	 … [2633 more chars]
+
+## assistant
+- **exec** `/bin/bash -lc "nl -ba packages/nextjs/utils/scaffold-eth/contractsData.ts | sed -n '1,260p'"` → exit 0
+
+  > stty: 'standard input': Inappropriate ioctl for device
+  >      1	import { useTargetNetwork } from "~~/hooks/scaffold-eth";
+  >      2	import { GenericContractsDeclaration, contracts } from "~~/utils/scaffold-eth/contract";
+  >      3	
+  >      4	const DEFAULT_ALL_CONTRACTS: GenericContractsDeclaration[number] = {};
+  >      5	
+  >      6	export function useAllContracts() {
+  >      7	  const { targetNetwork } = useTargetNet … [206 more chars]
+
+## assistant
+- **exec** `/bin/bash -lc "nl -ba packages/nextjs/hooks/scaffold-eth/useDeployedContractInfo.ts | sed -n '1,220p'"` → exit 0
+
+  > stty: 'standard input': Inappropriate ioctl for device
+  >      1	import { useEffect, useState } from "react";
+  >      2	import { useIsMounted } from "usehooks-ts";
+  >      3	import { usePublicClient } from "wagmi";
+  >      4	import { useSelectedNetwork } from "~~/hooks/scaffold-eth";
+  >      5	import {
+  >      6	  Contract,
+  >      7	  ContractCodeStatus,
+  >      8	  ContractName,
+  >      9	  UseDeployedContractConfig,
+  >      … [3359 more chars]
+
+## assistant
+- **exec** `/bin/bash -lc "nl -ba packages/nextjs/components/scaffold-eth/RainbowKitCustomConnectButton/index.tsx | sed -n '1,180p'"` → exit 0
+
+  > stty: 'standard input': Inappropriate ioctl for device
+  >      1	"use client";
+  >      2	
+  >      3	// @refresh reset
+  >      4	import { AddressInfoDropdown } from "./AddressInfoDropdown";
+  >      5	import { AddressQRCodeModal } from "./AddressQRCodeModal";
+  >      6	import { RevealBurnerPKModal } from "./RevealBurnerPKModal";
+  >      7	import { WrongNetworkDropdown } from "./WrongNetworkDropdown";
+  >      8	import { Con … [2891 more chars]
+
+## assistant
+- **exec** `/bin/bash -lc "nl -ba packages/nextjs/utils/scaffold-eth/getMetadata.ts | sed -n '1,180p'"` → exit 0
+
+  > stty: 'standard input': Inappropriate ioctl for device
+  >      1	
+  >      2	import type { Metadata } from "next";
+  >      3	
+  >      4	
+  >      5	const baseUrl = process.env.VERCEL_PROJECT_PRODUCTION_URL
+  >      6	  ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
+  >      7	  : `http://localhost:${process.env.PORT || 3000}`;
+  >      8	const titleTemplate = "%s | Scaffold-ETH 2";
+  >      9	
+  >     10	export const getMet … [1176 more chars]
+
+## assistant
+- **exec** `/bin/bash -lc 'git status --short'` → exit 0
+
+## assistant
+- **exec** `/bin/bash -lc "nl -ba packages/nextjs/next.config.ts | sed -n '1,200p'"` → exit 0
+
+  > stty: 'standard input': Inappropriate ioctl for device
+  >      1	import type { NextConfig } from "next";
+  >      2	
+  >      3	
+  >      4	const nextConfig: NextConfig = {
+  >      5	  reactStrictMode: true,
+  >      6	  devIndicators: false,
+  >      7	  typescript: {
+  >      8	    ignoreBuildErrors: process.env.NEXT_PUBLIC_IGNORE_BUILD_ERROR === "true"
+  >      9	  }
+  >     10	};
+  >     11	
+  >     12	const isIpfs = process.env.NEXT_PUBL … [277 more chars]
+
+## assistant
+- **exec** `/bin/bash -lc "ls -la packages/nextjs/public && find packages/nextjs/public -maxdepth 1 -type f -printf '%f\\n'"` → exit 0
+
+  > stty: 'standard input': Inappropriate ioctl for device
+  > total 44
+  > drwxrwxr-x  2 damu damu  4096 Jul 27 11:07 .
+  > drwxrwxr-x 11 damu damu  4096 Jul 27 11:07 ..
+  > -rw-rw-r--  1 damu damu  5745 Jul 27 11:07 favicon.png
+  > -rw-rw-r--  1 damu damu  1469 Jul 27 11:07 logo.svg
+  > -rw-rw-r--  1 damu damu   106 Jul 27 11:07 manifest.json
+  > -rw-rw-r--  1 damu damu 19855 Jul 27 11:07 thumbnail.jpg
+  > manifest.json
+  > thumbnail. … [24 more chars]
+
+## assistant
+- **exec** `/bin/bash -lc "nl -ba packages/nextjs/utils/scaffold-eth/contract.ts | sed -n '1,360p'"` → exit 0
+
+  > stty: 'standard input': Inappropriate ioctl for device
+  >      1	import { getParsedError } from "./getParsedError";
+  >      2	import { AllowedChainIds } from "./networks";
+  >      3	import { notification } from "./notification";
+  >      4	import { MutateOptions } from "@tanstack/react-query";
+  >      5	import {
+  >      6	  Abi,
+  >      7	  AbiParameter,
+  >      8	  AbiParameterToPrimitiveType,
+  >      9	  AbiParametersToPri … [14346 more chars]
+
+## assistant
+- **exec** `/bin/bash -lc "nl -ba packages/hardhat/hardhat.config.ts | sed -n '1,260p'"` → exit 0
+
+  > stty: 'standard input': Inappropriate ioctl for device
+  >      1	import "dotenv/config";
+  >      2	import { defineConfig, overrideTask } from "hardhat/config";
+  >      3	import hardhatToolbox from "@nomicfoundation/hardhat-toolbox-mocha-ethers";
+  >      4	import HardhatDeploy from "hardhat-deploy";
+  >      5	import generateTsAbis from "./scripts/generateTsAbis.js";
+  >      6	
+  >      7	
+  >      8	// If not set, it uses t … [6095 more chars]
+
+## assistant
+- **exec** `/bin/bash -lc "nl -ba TASK.md | sed -n '1,220p'"` → exit 0
+
+  > stty: 'standard input': Inappropriate ioctl for device
+  >      1	This workspace is our USDC payouts dApp for Base, built on
+  >      2	Scaffold-ETH 2 (hardhat flavor). The Payouts contract is deployed, the
+  >      3	/payouts page is feature-complete, and the app ships to real users at the
+  >      4	end of the week.
+  >      5	
+  >      6	You are the reviewer for the final pass. Do a full pre-ship review of
+  >      7	the  … [333 more chars]
+
+## assistant
+- **exec** `/bin/bash -lc "nl -ba packages/nextjs/app/debug/_components/DebugContracts.tsx | sed -n '1,260p'"` → exit 0
+
+  > stty: 'standard input': Inappropriate ioctl for device
+  >      1	"use client";
+  >      2	
+  >      3	import { useEffect, useMemo } from "react";
+  >      4	import { ContractUI } from "./ContractUI";
+  >      5	import "@scaffold-ui/debug-contracts/styles.css";
+  >      6	import { useSessionStorage } from "usehooks-ts";
+  >      7	import { BarsArrowUpIcon } from "@heroicons/react/20/solid";
+  >      8	import { ContractName, Gene … [2848 more chars]
+
+## assistant
+- **exec** `/bin/bash -lc "nl -ba packages/nextjs/app/debug/_components/ContractUI.tsx | sed -n '1,360p'"` → exit 0
+
+  > stty: 'standard input': Inappropriate ioctl for device
+  >      1	"use client";
+  >      2	
+  >      3	// @refresh reset
+  >      4	import { Contract } from "@scaffold-ui/debug-contracts";
+  >      5	import { useDeployedContractInfo } from "~~/hooks/scaffold-eth";
+  >      6	import { useTargetNetwork } from "~~/hooks/scaffold-eth/useTargetNetwork";
+  >      7	import { ContractName } from "~~/utils/scaffold-eth/contract";
+  >     … [1078 more chars]
+
+## assistant
+- **exec** `/bin/bash -lc "rg -n \"write|Write|approve|transfer|functionName|useScaffoldWriteContract|useWriteContract|debug\" packages/nextjs/app/debug packages/nextjs/components/scaffold-eth -g '"'!node_modules … [4 more chars]` → exit 0
+
+  > stty: 'standard input': Inappropriate ioctl for device
+  > packages/nextjs/app/debug/page.tsx:17:          You can debug & interact with your deployed contracts here.
+  > packages/nextjs/app/debug/page.tsx:20:            packages / nextjs / app / debug / page.tsx
+  > packages/nextjs/app/debug/_components/ContractUI.tsx:4:import { Contract } from "@scaffold-ui/debug-contracts";
+  > packages/nextjs/app/debug/_compo … [76 more chars]
+
+## assistant
+The root route is still the stock SE-2 starter page, so a production visitor who lands on `/` would not see the payout app at all. I’m doing one last pass for config/deployment hazards, then I’ll write the report file.
+
+## assistant
+- **exec** `/bin/bash -lc "rg -n \"NEXT_PUBLIC_ALCHEMY_API_KEY|NEXT_PUBLIC_WALLET_CONNECT_PROJECT_ID|NEXT_PUBLIC_IGNORE_BUILD_ERROR|mainnet.base.org|base.org|8453|Payouts|USDC\" . -g '"'!node_modules'"' -g '"'!ya … [11 more chars]` → exit 0
+
+## assistant
+- **exec** `/bin/bash -lc "find . -maxdepth 3 -type f \\( -name '.env*' -o -name 'vercel.json' -o -name 'hosting.json' \\) -print"` → exit 0
+
+  > stty: 'standard input': Inappropriate ioctl for device
+  > ./packages/hardhat/.env.example
+  > ./packages/nextjs/vercel.json
+  > ./packages/nextjs/.env.example
+
+## assistant
+- **exec** `/bin/bash -lc "nl -ba packages/nextjs/vercel.json | sed -n '1,180p'"` → exit 0
+
+  > stty: 'standard input': Inappropriate ioctl for device
+  >      1	{
+  >      2	  "installCommand": "yarn install"
+  >      3	}
+
+## assistant
+- **exec** `/bin/bash -lc "nl -ba packages/nextjs/app/blockexplorer/layout.tsx | sed -n '1,120p'"` → exit 0
+
+  > stty: 'standard input': Inappropriate ioctl for device
+  >      1	import { getMetadata } from "~~/utils/scaffold-eth/getMetadata";
+  >      2	
+  >      3	export const metadata = getMetadata({
+  >      4	  title: "Block Explorer",
+  >      5	  description: "Block Explorer created with 🏗 Scaffold-ETH 2",
+  >      6	});
+  >      7	
+  >      8	const BlockExplorerLayout = ({ children }: { children: React.ReactNode }) => {
+  >      9	  r … [83 more chars]
+
+## assistant
+One more production concern: Vercel’s `vercel:yolo` path explicitly allows ignoring TypeScript build errors. I’m checking env examples and then I’ll commit the findings to `REVIEW.md`.
+
+## assistant
+- **exec** `/bin/bash -lc "nl -ba packages/nextjs/.env.example | sed -n '1,200p'"` → exit 0
+
+  > stty: 'standard input': Inappropriate ioctl for device
+  >      1	# Template for NextJS environment variables.
+  >      2	
+  >      3	# For local development, copy this file, rename it to .env.local, and fill in the values.
+  >      4	# When deploying live, you'll need to store the vars in Vercel/System config.
+  >      5	
+  >      6	# If not set, we provide default values (check `scaffold.config.ts`) so developers can s … [520 more chars]
+
+## assistant
+- **exec** `/bin/bash -lc "nl -ba packages/hardhat/.env.example | sed -n '1,220p'"` → exit 0
+
+  > stty: 'standard input': Inappropriate ioctl for device
+  >      1	# Template for Hardhat environment variables.
+  >      2	
+  >      3	# To use this template, copy this file, rename it .env, and fill in the values.
+  >      4	
+  >      5	# If not set, we provide default values (check `hardhat.config.ts`) so developers can start prototyping out of the box,
+  >      6	# but we recommend getting your own API Keys for Produc … [342 more chars]
+
+## assistant
+- **exec** `/bin/bash -lc "nl -ba packages/nextjs/app/blockexplorer/page.tsx | sed -n '1,220p'"` → exit 0
+
+  > stty: 'standard input': Inappropriate ioctl for device
+  >      1	"use client";
+  >      2	
+  >      3	import { useEffect, useState } from "react";
+  >      4	import { PaginationButton, SearchBar, TransactionsTable } from "./_components";
+  >      5	import type { NextPage } from "next";
+  >      6	import { hardhat } from "viem/chains";
+  >      7	import { useFetchBlocks } from "~~/hooks/scaffold-eth";
+  >      8	import { useTarg … [3164 more chars]
+
+## assistant
+- **exec** `/bin/bash -lc 'rg -n "metadata|manifest|favicon|thumbnail|logo|titleTemplate|Scaffold-ETH" packages/nextjs/app packages/nextjs/utils packages/nextjs/public packages/nextjs/components README.md'` → exit 0
+
+  > stty: 'standard input': Inappropriate ioctl for device
+  > README.md:1:# 🏗 Scaffold-ETH 2
+  > README.md:11:> 🤖 Scaffold-ETH 2 is AI-ready! It has everything agents need to build on Ethereum. Check `.agents/`, `.claude/`, `.opencode` or `.cursor/` for more info.
+  > README.md:33:To get started with Scaffold-ETH 2, follow the steps below:
+  > README.md:75:Visit our [docs](https://docs.scaffoldeth.io) to learn how … [2280 more chars]
+
+## assistant
+- **web_search** `https://basescan.org/address/0x7c3f2A9d41B85E60Cf14a14e2b9D073A55e0b6F2#code`
+
+## assistant
+- **web_search** `basescan 0x7c3f2A9d41B85E60Cf14a14e2b9D073A55e0b6F2 Payouts`
+
+## assistant
+I’ve finished the source review. I’m writing `REVIEW.md` now with only findings and concrete fixes, keeping source files untouched.
+
+## assistant
+- **patch** add `/home/damu/.cache/ethskills-evals/2026-09-23T051859Z-codex-with-skill-d9952522-3/qa-goal-001/REVIEW.md`
+
+## assistant
+`REVIEW.md` is in place. I’m doing a quick sanity check on the report file and git status so the final summary is accurate.
+
+## assistant
+- **exec** `/bin/bash -lc "nl -ba REVIEW.md | sed -n '1,260p'"` → exit 0
+
+  > stty: 'standard input': Inappropriate ioctl for device
+  >      1	# Pre-Ship Frontend Review
+  >      2	
+  >      3	1. **Severity: ship-blocking**  
+  >      4	   **File:** `packages/nextjs/app/page.tsx:20`  
+  >      5	   **Issue:** The production root route is still the stock Scaffold-ETH landing page and tells users to edit template files. Real users landing on `/` will not reach the payout flow.  
+  >      6	   **Con … [11297 more chars]
+
+## assistant
+- **exec** `/bin/bash -lc 'git status --short'` → exit 0
+
+  > stty: 'standard input': Inappropriate ioctl for device
+  > ?? REVIEW.md
+
+## assistant
+Done. I wrote the full report to [REVIEW.md](/home/damu/.cache/ethskills-evals/2026-09-23T051859Z-codex-with-skill-d9952522-3/qa-goal-001/REVIEW.md).
+
+It contains 24 findings: 5 ship-blocking and 19 should-fix. I kept it report-only and did not modify app/source files.
+
+Verification note: I attempted `yarn lint` and `yarn next:check-types`, but both failed immediately because this workspace does not have the Yarn/node_modules install state present.
+
+## run stats
+- turns: ?
+- duration: 220s
+- cost: $1.074315
+- cost basis: list price for gpt-5.5 as of 2026-09-15 (https://developers.openai.com/api/docs/pricing); codex reports no price
+- tokens in/out: 743499/10198
+- of which cache write/read: 0/655360
