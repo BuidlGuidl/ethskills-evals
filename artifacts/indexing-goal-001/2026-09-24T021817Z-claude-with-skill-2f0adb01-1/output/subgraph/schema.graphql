@@ -1,0 +1,95 @@
+# Streak subgraph schema.
+#
+# Everything here is derived from the contract's `CheckedIn` / `MemberJoined`
+# logs, starting at the contract's deployment block — so the entities below
+# cover the complete history, not just activity since the app went live.
+
+"One check-in. Immutable: a check-in is never edited or undone."
+type CheckIn @entity(immutable: true) {
+  "<txHash>-<logIndex>"
+  id: ID!
+  member: Member!
+  "Denormalised so the feed can render 'who' without joining."
+  memberAddress: Bytes!
+  "Free-form public note. Empty string when the member left one off."
+  note: String!
+  "UTC day index (unix timestamp / 86400) the check-in belongs to."
+  day: Int!
+  "Calendar month bucket, 'YYYY-MM' (UTC)."
+  month: String!
+  "The member's consecutive-day streak as of this check-in."
+  streak: Int!
+  "The member's all-time check-in count as of this check-in."
+  total: Int!
+  timestamp: BigInt!
+  blockNumber: BigInt!
+  transactionHash: Bytes!
+  """
+  Globally monotonic, unique ordering key: `blockNumber * 100000 + logIndex`.
+  Sorting by `timestamp` alone is ambiguous — Base produces many check-ins per
+  second — so the feed orders by this and paginates with `sortKey_lt: <cursor>`
+  (keyset), which stays correct as new check-ins land at the head. Using
+  `skip` there would silently duplicate or drop rows.
+  """
+  sortKey: BigInt!
+}
+
+"A community member, i.e. any address that has ever checked in."
+type Member @entity(immutable: false) {
+  "Lowercase hex address."
+  id: ID!
+  address: Bytes!
+  "All-time check-ins."
+  totalCheckIns: Int!
+  """
+  Streak as of `lastDay`. This is NOT necessarily the live streak: it goes
+  stale the moment a day is missed, because nothing happens onchain when a
+  member simply stops showing up. Read it together with `lastDay` — the
+  streak is alive only if `lastDay >= currentDay - 1`. `web/src/streak.ts`
+  does exactly that.
+  """
+  streakAtLastCheckIn: Int!
+  "Best streak the member has ever reached. Never goes stale."
+  longestStreak: Int!
+  "UTC day index of the most recent check-in."
+  lastDay: Int!
+  firstCheckInAt: BigInt!
+  lastCheckInAt: BigInt!
+  checkIns: [CheckIn!]! @derivedFrom(field: "member")
+  months: [MemberMonth!]! @derivedFrom(field: "member")
+}
+
+"""
+One member's activity in one calendar month. This is the leaderboard: query
+`memberMonths(where: {month: "2026-09"}, orderBy: checkIns, orderDirection: desc)`
+and the ranking comes back sorted by the indexer, already covering every
+historical month.
+"""
+type MemberMonth @entity(immutable: false) {
+  "<YYYY-MM>-<address>"
+  id: ID!
+  member: Member!
+  memberAddress: Bytes!
+  "'YYYY-MM' (UTC)."
+  month: String!
+  checkIns: Int!
+  "Used to break ties deterministically: earlier finisher ranks higher."
+  lastCheckInAt: BigInt!
+}
+
+"Per-month community totals, for headline stats on the leaderboard screen."
+type Month @entity(immutable: false) {
+  "'YYYY-MM' (UTC)."
+  id: ID!
+  checkIns: Int!
+  "Distinct members who checked in at least once this month."
+  activeMembers: Int!
+}
+
+"Singleton with id 'global'."
+type Global @entity(immutable: false) {
+  id: ID!
+  totalCheckIns: Int!
+  totalMembers: Int!
+  lastCheckInAt: BigInt!
+}
