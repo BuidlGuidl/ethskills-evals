@@ -29,8 +29,11 @@ const Summary = () => {
   const versions = comparisons.filter(comparison => comparison.before && comparison.after);
   const tasks = comparisons.reduce((total, comparison) => total + comparison.rows.length, 0);
   const runs = comparisons.reduce((total, comparison) => total + Object.values(comparison.runs).reduce((n, arm) => n + arm.length, 0), 0);
-  const activeModels = selected ? [...(matrix.get(selected.skill) ?? [])]
-    .filter(([model]) => selected.model === "total" || model === selected.model) : [];
+  const activePairs = selected ? [...matrix]
+    .filter(([skill]) => selected.skill === "total" || skill === selected.skill)
+    .flatMap(([skill, entries]) => [...entries]
+      .filter(([model]) => selected.model === "total" || model === selected.model)
+      .map(([model, comparison]) => ({ skill, model, comparison }))) : [];
   const panelColumn = ARM_COLUMNS[selected?.arm ?? arm];
   const overall = [
     { key: "none", label: "Without skill", cell: pool(comparisons.map(item => item.totals.noSkill)) },
@@ -93,6 +96,11 @@ const Summary = () => {
           src={`${import.meta.env.BASE_URL}icons/${icon}.svg`}
           alt={executor === "claude" ? "Claude Code" : "Codex"} />}{model}</span> };
       })}
+      totalRow={(() => {
+        const cells = Object.fromEntries(models.map(model => [model,
+          pool([...matrix.values()].map(entries => entries.get(model)?.totals[column] ?? null))]));
+        return { cells, total: pool(Object.values(cells)) };
+      })()}
       onCellClick={(skill, model) => setSelected({ skill, model, arm })} note="More models are being run."
     />
     </section>
@@ -103,14 +111,20 @@ const Summary = () => {
       <p>Results apply to the tasks, models, and skill versions tested. “New skill” means the revised version tested here.</p>
       <a target="_blank" rel="noopener noreferrer" href={`https://github.com/${index.generated.repo}/issues/1`}>Read why we chose these tasks ↗</a>
     </details>
-    {selected && <RunPanel title={`Task results for the ${selected.skill} skill`}
+    {selected && <RunPanel title={selected.skill === "total" ? "Task results for every skill" : `Task results for the ${selected.skill} skill`}
       subline={selected.model === "total" ? "All models" : selected.model}
       controls={<ArmSwitch arm={selected.arm} onChange={value => setSelected({ ...selected, arm: value })} />}
-      groups={activeModels.flatMap(([model, comparison]) => comparison.rows.flatMap((row, position) => {
+      groups={activePairs.flatMap(({ skill, model, comparison }) => comparison.rows.flatMap((row, position) => {
         const task = index.tasks.find(task => task.id === row.task);
-        return task ? [{ task, model, heading: selected.model === "total" && position === 0 ? model : undefined,
+        const heading = position === 0
+          ? selected.skill === "total" && selected.model === "total" ? `${skill} · ${model}`
+            : selected.skill === "total" ? skill
+            : selected.model === "total" ? model : undefined
+          : undefined;
+        return task ? [{ task, model, heading,
           runs: comparison.runs[panelColumn].filter(run => run.task === task.id) }] : [];
-      }))} onClose={() => setSelected(null)} footer={<Link className="panel-action" to={`/skill/${selected.skill}`}>View skill details →</Link>} />}
+      }))} onClose={() => setSelected(null)}
+      footer={selected.skill === "total" ? undefined : <Link className="panel-action" to={`/skill/${selected.skill}`}>View skill details →</Link>} />}
   </>;
 };
 export default Summary;
