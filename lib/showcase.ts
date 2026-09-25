@@ -18,12 +18,10 @@ export const loadShowcase = (filePath: string): Entry[] | null => {
   const pairs = new Set<string>();
 
   return loaded.entries.map((entry: unknown, position: number) => {
-    if (!isRecord(entry) || !["skill", "model", "before", "after"].every(key => typeof entry[key] === "string" && entry[key].length > 0)) {
-      throw new Error(`${filePath}: entry ${position + 1} must name a skill, model, before and after`);
-    }
-
-    if (entry.benchmark !== undefined && (typeof entry.benchmark !== "string" || entry.benchmark.length === 0)) {
-      throw new Error(`${filePath}: entry ${position + 1} names an empty benchmark`);
+    // The pin is required: an entry without one pools every run of the skill text on that
+    // model, earlier rounds graded on older rubrics included, and the exclusions hide it.
+    if (!isRecord(entry) || !["skill", "model", "before", "after", "benchmark"].every(key => typeof entry[key] === "string" && entry[key].length > 0)) {
+      throw new Error(`${filePath}: entry ${position + 1} must name a skill, model, before, after and benchmark`);
     }
 
     if (entry.before === entry.after) {
@@ -85,8 +83,7 @@ export const selectShowcase = <Data extends ShowcaseData>(index: Data, entries: 
   const live = new Set(liveTasks.map(task => task.id));
   const candidates = index.runs.filter(run =>
     live.has(run.task) && run.superseded_by === null && run.retracted === null && run.pass !== null &&
-    entries.some(entry => run.skill === entry.skill && run.model === entry.model &&
-      (entry.benchmark === undefined || run.benchmark === entry.benchmark) &&
+    entries.some(entry => run.skill === entry.skill && run.model === entry.model && run.benchmark === entry.benchmark &&
       (run.variant === "no_skill" || (run.variant === "with_skill" && (run.skill_content === entry.before || run.skill_content === entry.after)))),
   );
   const warnings: string[] = [];
@@ -107,7 +104,7 @@ export const selectShowcase = <Data extends ShowcaseData>(index: Data, entries: 
     const excluded: string[] = [];
     let hasTasks = false;
     for (const task of liveTasks.filter(task => task.skill === entry.skill)) {
-      const mine = candidates.filter(run => run.task === task.id && run.model === entry.model && (entry.benchmark === undefined || run.benchmark === entry.benchmark));
+      const mine = candidates.filter(run => run.task === task.id && run.model === entry.model && run.benchmark === entry.benchmark);
       const columns = [
         mine.filter(run => run.variant === "no_skill"),
         mine.filter(run => run.variant === "with_skill" && run.skill_content === entry.before),

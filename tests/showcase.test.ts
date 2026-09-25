@@ -8,10 +8,10 @@ import { loadShowcase, runModel, runUsage, selectShowcase } from "../lib/showcas
 import { compareEntry, sameRubric } from "../site/src/lib/compare.js";
 import type { Entry, Index } from "../site/src/lib/types.js";
 
-const entry: Entry = { skill: "addresses", model: "claude-opus-5", before: "big", after: "small" };
+const entry: Entry = { skill: "addresses", model: "claude-opus-5", before: "big", after: "small", benchmark: "bench" };
 const run = (id: string, content: string | null) => ({
   rubric: "checks" as string | null, prompt: "prompt" as string | null, task: "addresses-quiz-001", skill: "addresses", run: id, model: entry.model,
-  variant: content === null ? "no_skill" : "with_skill", skill_content: content, benchmark: null as string | null,
+  variant: content === null ? "no_skill" : "with_skill", skill_content: content, benchmark: "bench" as string | null,
   superseded_by: null as string | null, retracted: null as string | null, pass: true as boolean | null,
 });
 const data = {
@@ -55,9 +55,11 @@ test("older result blocks include cached tokens in the total", () => {
   assert.deepEqual(runUsage(text, null), { tokens: 131, duration_s: 12, cost_usd: 1.5, turns: 2 });
 });
 
-test("selection drops old readings, retractions, ungraded runs, retired tasks and other models or versions", () => {
+test("selection drops old readings, retractions, ungraded runs, retired tasks and other models, versions or benchmarks", () => {
   const excluded = [
     { ...run("source", "big"), superseded_by: "before" },
+    { ...run("other-benchmark", "big"), benchmark: "older" },
+    { ...run("no-benchmark", "big"), benchmark: null },
     { ...run("retracted", "big"), retracted: "executor failed" },
     { ...run("ungraded", "big"), pass: null },
     { ...run("retired", "big"), task: "addresses-retired" },
@@ -126,6 +128,8 @@ test("manifest loading distinguishes absence from an empty selection and rejects
     }
     writeFileSync(file, JSON.stringify({ entries: [{ ...entry, after: entry.before }] }));
     assert.throws(() => loadShowcase(file), { message: `${file}: entry 1 names one version twice` });
+    writeFileSync(file, JSON.stringify({ entries: [{ ...entry, benchmark: undefined }] }));
+    assert.throws(() => loadShowcase(file), { message: `${file}: entry 1 must name a skill, model, before, after and benchmark` });
     writeFileSync(file, JSON.stringify({ entries: [entry, { ...entry, model: "gpt-5.4" }] }));
     assert.equal(loadShowcase(file)?.length, 2);
   } finally {

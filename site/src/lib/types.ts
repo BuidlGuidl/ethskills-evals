@@ -1,7 +1,8 @@
 export type Variant = "no_skill" | "with_skill";
 export type ExpectStatus = "pass" | "fail";
 
-export type Entry = { skill: string; model: string; before: string; after: string; benchmark?: string };
+/** one comparison the site shows; `benchmark` is the id its runs were set up with, and only runs recorded under it are selected */
+export type Entry = { skill: string; model: string; before: string; after: string; benchmark: string };
 
 export type Run = {
   task: string;

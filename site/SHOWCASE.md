@@ -568,3 +568,16 @@ The site uses the existing dark palette by default.
 Inter and Source Code Pro load locally through `@fontsource-variable/inter` and `@fontsource-variable/source-code-pro`.
 The logos come from the Supabase evals repo, whose code uses Apache 2.0.
 The marks name the harness: the Claude mark means Claude Code, and the OpenAI mark means Codex.
+
+## 17. The benchmark pin (2026-09-25)
+
+Every entry names `benchmark`, and `loadShowcase` refuses one that does not. The id is the one
+`setup --benchmark` stamped on the runs (#126); selection keeps only runs recorded under it, in
+all three columns. Without the pin the opus entries pooled the August runs of the same skill
+text — graded on older rubrics — into the cells, which excluded 11 tasks and left standards
+(claude-opus-5) empty; with it the selection is exactly the benchmark's graded readings. §5's
+example and the `{ skill, model, before, after }` shape in §8 and §10 predate the key.
+
+The manifest holds the `major-refine-d9952522` comparison: 19 skills on claude-opus-5 (medium)
+and gpt-5.5 (high), before the text at `2f0adb01` and after the refined text at `d9952522`,
+38 entries.

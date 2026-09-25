@@ -53,7 +53,7 @@ const run = (task: string, content: string | null, rubric: string, pass: boolean
   executor: "claude",
   executor_model: "claude-opus-5",
   executor_reasoning_effort: null,
-  benchmark: null,
+  benchmark: "bench",
   model: "claude-opus-5",
   usage: { tokens: null, duration_s: null, cost_usd: null, turns: null },
   created: "2026-08-19T00:00:00.000Z",
@@ -86,7 +86,7 @@ const runs: Run[] = [
   run("addresses-quiz-002", null, "rubric-kept", true),
 ];
 
-const entry: Entry = { skill: skill.name, model: "claude-opus-5", before: "big", after: "small" };
+const entry: Entry = { skill: skill.name, model: "claude-opus-5", before: "big", after: "small", benchmark: "bench" };
 const index: Index = {
   generated: { at: "", commit: null, dirty: false, repo: "" }, showcase: [entry],
   skills: [skill], tasks, runs, reports: [], prs: [], warnings: [],
