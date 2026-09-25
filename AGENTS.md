@@ -45,7 +45,8 @@ Runs are append-only. A re-run after a patch is a new run id, never an overwrite
 **`--benchmark <id>` names the comparison a run belongs to**, and every run of one comparison
 carries the same id: same task set, same expect lines, same skill text, one model and effort
 per column, `k` runs per variant, one judge. The site selects runs by this id, so it is what
-keeps a run made for a benchmark apart from a run made by hand a day later on the same model.
+keeps a run made for a benchmark apart from a run made by hand a day later on the same model
+(the entry in `site/showcase.json` names it — see "The results site").
 Pick one readable name per benchmark, `2026-09-clean` say, and use it for every `setup` in it;
 if the benchmark has to start over (a task reworded, so its runs are made again), that is a new
 id, and the old runs stay in `artifacts/` under theirs. `setup` refuses to run without one. A
@@ -324,8 +325,18 @@ This line said the opposite until 2026-08-20 — transcripts gitignored, `output
 ## The results site
 
 `site/` is a viewer, not part of the loop: it reads what runs already produced and never
-takes part in producing them. Do not touch it while running a benchmark. After one, run
-`yarn build-index` and commit `site/derived.json` if it changed — it carries the skill text
+takes part in producing them. Do not touch it while running a benchmark.
+
+After a benchmark, add or update its entry in `site/showcase.json`.
+Each entry names `skill`, `model`, `before`, `after` and `benchmark`, with one entry per skill and model.
+`benchmark` is the id every `setup` of that comparison carried (`--benchmark`, under "The loop"). The entry selects only runs recorded under it, in all three columns, so an earlier round of the same skill text on the same model — graded on older rubrics, or not blind — cannot pool into the cells. The key is required: `build-index` refuses a manifest entry without it.
+Use 12-character skill content hashes for the vendored `before` and rewritten `after` versions, not repository commit hashes.
+Run `yarn build-index --versions --no-prs` to list known skills, version ids, line counts, and run counts on stderr.
+This list precedes manifest selection; run counts span all models, benchmarks and task statuses.
+Both versions need runs on the named model under the named benchmark.
+Run `yarn build-index`, then commit the manifest and `site/derived.json` if it changed.
+
+`site/derived.json` carries the skill text
 and the task rubric each run was measured against, and those stop being recoverable once
 the branch that held them is deleted.
 

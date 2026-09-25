@@ -3,7 +3,9 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
+import { encode } from "gpt-tokenizer/encoding/o200k_base";
 import yaml from "js-yaml";
+import { loadShowcase, runModel, runUsage, selectShowcase } from "../lib/showcase.js";
 import { orderReadings } from "../lib/readings.js";
 import { SKILL_VERSION_LENGTH, normalizeSkillText, skillContentId } from "../lib/skill.js";
 import { expectSha, inputSha, isRecord, loadTaskSpec, loadYamlFile, parseArgs, readBenchmark, requireString } from "../lib/task.js";
@@ -39,7 +41,7 @@ import { expectSha, inputSha, isRecord, loadTaskSpec, loadYamlFile, parseArgs, r
 
 const ROOT = process.cwd();
 const REPO = "BuidlGuidl/ethskills-evals";
-const INDEX_ARGS = new Set(["out", "cache", "no-prs", "no-git", "strict"]);
+const INDEX_ARGS = new Set(["out", "cache", "no-prs", "no-git", "strict", "showcase", "versions"]);
 const DEFAULT_OUT = path.join("site", "public", "index.json");
 const DEFAULT_CACHE = path.join("site", "derived.json");
 
@@ -134,6 +136,9 @@ const fetchPullRequests = (): PullRequest[] | null => {
 
 const countLines = (text: string) => text.replace(/\n$/, "").split("\n").length;
 const countWords = (text: string) => text.split(/\s+/).filter(Boolean).length;
+// What the skill costs in context. One tokenizer for every version (o200k, the one GPT models
+// use) so the counts compare across skills; Claude tokenizes differently, so it is an estimate.
+const countTokens = (text: string) => encode(text).length;
 
 const sortKeys = <T,>(record: Record<string, T>) =>
   Object.fromEntries(Object.entries(record).sort(([a], [b]) => a.localeCompare(b)));
@@ -506,6 +511,8 @@ const main = async () => {
     executor: unknown;
     executor_model: unknown;
     executor_reasoning_effort: unknown;
+    model: string;
+    usage: ReturnType<typeof runUsage>;
     created: string | null;
     pass: boolean | null;
     expects: unknown;
@@ -613,6 +620,9 @@ const main = async () => {
         derived.run_transcripts[commitKey] = touched;
       }
 
+      const transcriptPath = path.join(ROOT, runDir, "transcript.md");
+      const transcript = existsSync(transcriptPath) ? readFileSync(transcriptPath, "utf8") : "";
+
       runs.push({
         task: taskId,
         skill,
@@ -621,8 +631,10 @@ const main = async () => {
         executor: loaded.executor ?? null,
         executor_model: recorded(loaded.executor_model),
         executor_reasoning_effort: recorded(loaded.executor_reasoning_effort),
+        model: runModel(loaded),
+        usage: runUsage(transcript, loaded.usage),
         created: typeof loaded.created === "string" ? loaded.created : null,
-        pass: loaded.pass === undefined ? null : Boolean(loaded.pass),
+        pass: typeof loaded.pass === "boolean" ? loaded.pass : null,
         expects: loaded.expects ?? null,
         judge: parseJudge(loaded.judge),
         skill_version: skillVersion,
@@ -658,6 +670,12 @@ const main = async () => {
   // of a run's readings — a column filtered to one rubric — can still keep just the newest of
   // those it holds, however many hops apart they are.
   for (const lineage of readings.lineages) {
+    // Regrades have no executor transcript: wallets-quiz-006's newest readings would lose
+    // the cost of their original runs. Usage belongs to that run, not to its later judge.
+    for (const reading of lineage.slice(1)) {
+      reading.usage = lineage[0].usage;
+    }
+
     lineage.forEach((record, position) => {
       record.lineage = lineage[0].run;
       record.reading = position;
@@ -723,6 +741,7 @@ const main = async () => {
           sha: entry.sha,
           lines: countLines(entry.text),
           words: countWords(entry.text),
+          tokens: countTokens(entry.text),
           runs: entry.runs,
           in_repo: entry.id === currentId,
         };
@@ -820,11 +839,6 @@ const main = async () => {
     warnings,
   };
 
-  // Compact: nobody reads these by eye, and the indentation was a third of the download.
-  await mkdir(path.dirname(outPath), { recursive: true });
-  await writeFile(outPath, `${JSON.stringify(index)}\n`, "utf8");
-  await writeFile(path.join(path.dirname(outPath), "docs.json"), `${JSON.stringify(docs)}\n`, "utf8");
-
   const merged: Derived = {
     skill_texts: sortKeys(derived.skill_texts),
     skill_versions: sortKeys(derived.skill_versions),
@@ -838,6 +852,37 @@ const main = async () => {
     await mkdir(path.dirname(cachePath), { recursive: true });
     await writeFile(cachePath, `${JSON.stringify(merged, null, 2)}\n`, "utf8");
   }
+
+  if (args.versions !== undefined) {
+    process.stderr.write("Known skill versions (before showcase selection; runs include all models and task statuses):\n");
+    process.stderr.write("Skill\tVersion id\tLines\tRuns\n");
+    for (const skill of skills) {
+      for (const version of skill.versions) {
+        process.stderr.write(`${skill.name}\t${version.id}\t${version.lines}\t${version.runs}\n`);
+      }
+    }
+  }
+
+  // Filter only after all facts have been resolved and cached, including excluded runs.
+  const showcasePath = path.resolve(ROOT, args.showcase === undefined ? "site/showcase.json" : requireString(args.showcase, "--showcase"));
+  const entries = loadShowcase(showcasePath);
+  const selected = entries === null ? null : selectShowcase(index, entries);
+
+  if (selected !== null) {
+    warnings.push(...selected.warnings);
+  }
+
+  const { notes, warnings: _, ...selection } = selected ?? { notes: [] };
+  for (const note of notes) {
+    process.stderr.write(`${note}\n`);
+  }
+  const output = { ...index, ...selection, warnings };
+
+  // Compact: nobody reads these by eye, and the indentation was a third of the download.
+  // docs.json stays unfiltered: it is fetched only when a report or skill page opens.
+  await mkdir(path.dirname(outPath), { recursive: true });
+  await writeFile(outPath, `${JSON.stringify(output)}\n`, "utf8");
+  await writeFile(path.join(path.dirname(outPath), "docs.json"), `${JSON.stringify(docs)}\n`, "utf8");
 
   for (const warning of warnings) {
     process.stderr.write(`warning: ${warning}\n`);
@@ -855,7 +900,7 @@ const main = async () => {
     process.exit(1);
   }
 
-  const ungraded = runs.filter(run => run.pass === null).length;
+  const ungraded = output.runs.filter(run => run.pass === null).length;
   // One line per benchmark with its record count, so a mistyped id — which parseBenchmark
   // cannot tell from a real one — shows up as a benchmark of one while the run is still fresh.
   const perBenchmark = new Map<string, number>();
@@ -869,8 +914,8 @@ const main = async () => {
   const benchmarks = [...perBenchmark].sort(([a], [b]) => a.localeCompare(b)).map(([id, count]) => `${id} ${count}`).join(", ");
 
   process.stdout.write(
-    `wrote ${path.relative(ROOT, outPath)} — ${skills.length} skills, ${tasks.length} tasks, ${runs.length} runs` +
-      `${ungraded > 0 ? ` (${ungraded} ungraded)` : ""}, ${reports.length} reports, ${prs.length} pull requests\n` +
+    `wrote ${path.relative(ROOT, outPath)} — ${output.skills.length} skills, ${output.tasks.length} tasks, ${output.runs.length} runs` +
+      `${ungraded > 0 ? ` (${ungraded} ungraded)` : ""}, ${output.reports.length} reports, ${output.prs.length} pull requests\n` +
       `${benchmarks.length > 0 ? `benchmarks: ${benchmarks}\n` : ""}` +
       `${changed ? `updated ${path.relative(ROOT, cachePath)} — commit it: the site builds from this cache, not from git\n` : ""}`,
   );

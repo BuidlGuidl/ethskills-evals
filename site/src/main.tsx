@@ -4,6 +4,8 @@ import { BrowserRouter } from "react-router-dom";
 import App from "./App.js";
 import { IndexContext, loadIndex } from "./lib/data.js";
 import type { Index } from "./lib/types.js";
+import "@fontsource-variable/inter";
+import "@fontsource-variable/source-code-pro";
 import "./styles.css";
 
 const Boot = () => {

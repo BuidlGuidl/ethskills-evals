@@ -1,6 +1,9 @@
 export type Variant = "no_skill" | "with_skill";
 export type ExpectStatus = "pass" | "fail";
 
+/** one comparison the site shows; `benchmark` is the id its runs were set up with, and only runs recorded under it are selected */
+export type Entry = { skill: string; model: string; before: string; after: string; benchmark: string };
+
 export type Run = {
   task: string;
   skill: string | null;
@@ -10,6 +13,8 @@ export type Run = {
   executor_model: string | null;
   /** null on records made before effort was recorded */
   executor_reasoning_effort: string | null;
+  model: string;
+  usage: { tokens: number | null; duration_s: number | null; cost_usd: number | null; turns: number | null };
   created: string | null;
   pass: boolean | null;
   expects: Record<string, ExpectStatus> | null;
@@ -42,6 +47,8 @@ export type SkillVersion = {
   sha: string;
   lines: number;
   words: number;
+  /** tokens of the skill text under the o200k tokenizer; an estimate for models that tokenize differently */
+  tokens: number;
   runs: number;
   in_repo: boolean;
 };
@@ -90,6 +97,7 @@ export type PullRequest = {
 };
 
 export type Index = {
+  showcase?: Entry[];
   generated: { at: string; commit: string | null; dirty: boolean; repo: string };
   skills: Skill[];
   tasks: Task[];
