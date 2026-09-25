@@ -102,8 +102,12 @@ If the manifest is absent, the index includes all results.
 
 ```bash
 yarn build-index          # writes site/public/index.json (and docs.json, the prose) from artifacts/, tasks/, skills/, reports/ and the eval PRs
-cd site && yarn install && yarn dev
+cd site && yarn install && yarn dev   # serves at http://localhost:5173/evals/
 ```
+
+The site is served under `/evals` — ethskills.com/evals proxies to this deployment — so
+Vite's `base` is `/evals/`, the router's `basename` matches, and the build lands in
+`site/dist/evals`.
 
 `build-index` also refreshes `site/derived.json`, which is committed. That file holds the
 only facts that are not in the records: which `SKILL.md` text each run actually saw, and

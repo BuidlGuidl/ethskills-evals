@@ -33,7 +33,7 @@ const Boot = () => {
 
   return (
     <IndexContext.Provider value={index}>
-      <BrowserRouter>
+      <BrowserRouter basename="/evals">
         <App />
       </BrowserRouter>
     </IndexContext.Provider>
